@@ -2,6 +2,7 @@ import http from "node:http";
 import { URL } from "node:url";
 
 import { createDefaultServiceProfile } from "../../../shared/src/defaults.js";
+import { createRepositoryFromEnv } from "../repository/factory.js";
 import { InMemoryRepository } from "../repository/inMemoryRepository.js";
 import { loadConfiguredSeedData } from "../seed/configSeedLoader.js";
 import {
@@ -46,6 +47,12 @@ async function parseJsonBody(req) {
   }
   const raw = Buffer.concat(chunks).toString("utf-8");
   return JSON.parse(raw);
+}
+
+async function flushRepository(repository) {
+  if (typeof repository.flush === "function") {
+    await repository.flush();
+  }
 }
 
 export function seedDemoData(repository) {
@@ -114,7 +121,7 @@ export function seedConfiguredData(repository, options = {}) {
     });
   }
 
-  if (!repository.users.size) {
+  if (!repository.listUsers().length) {
     repository.addUser({ id: "operator_seed_user", name: "Operator Caller" });
   }
 
@@ -302,6 +309,7 @@ export function createReqmoServer({
           channel: body.channel,
           context: requestContext
         });
+        await flushRepository(repository);
 
         return jsonResponse(res, 200, result);
       }
@@ -335,6 +343,7 @@ export function createReqmoServer({
           reason: body.reason ?? "OPERATOR_CANCELLED",
           context: requestContext
         });
+        await flushRepository(repository);
         return jsonResponse(res, 200, result);
       }
 
@@ -359,6 +368,7 @@ export function createReqmoServer({
           capturedAt: body.capturedAt,
           context: requestContext
         });
+        await flushRepository(repository);
 
         return jsonResponse(res, 200, result);
       }
@@ -389,6 +399,7 @@ export function createReqmoServer({
           preferredVehicleId: body.preferredVehicleId ?? null,
           context: requestContext
         });
+        await flushRepository(repository);
 
         return jsonResponse(res, 200, result);
       }
@@ -422,6 +433,7 @@ export function createReqmoServer({
           adapterType: body.adapterType,
           payload: body.payload ?? body
         });
+        await flushRepository(repository);
 
         return jsonResponse(res, 200, result);
       }
@@ -432,6 +444,7 @@ export function createReqmoServer({
           repository,
           profile: body
         });
+        await flushRepository(repository);
         return jsonResponse(res, 200, result);
       }
 
@@ -441,6 +454,7 @@ export function createReqmoServer({
           repository,
           farePolicy: body
         });
+        await flushRepository(repository);
         return jsonResponse(res, 200, result);
       }
 
@@ -450,6 +464,7 @@ export function createReqmoServer({
           repository,
           config: body
         });
+        await flushRepository(repository);
         return jsonResponse(res, 200, result);
       }
 
@@ -462,6 +477,7 @@ export function createReqmoServer({
           phoneNumber: body.phoneNumber,
           verified: body.verified ?? true
         });
+        await flushRepository(repository);
         return jsonResponse(res, 200, result);
       }
 
@@ -482,12 +498,37 @@ export function createReqmoServer({
   };
 }
 
+export async function createReqmoServerFromEnv({
+  repositoryAdapter,
+  tenantId,
+  firestore,
+  ...serverOptions
+} = {}) {
+  const repository = await createRepositoryFromEnv({
+    adapter: repositoryAdapter,
+    tenantId,
+    firestore
+  });
+
+  return createReqmoServer({
+    ...serverOptions,
+    repository
+  });
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const { server } = createReqmoServer();
   const port = Number(process.env.PORT ?? 8787);
 
-  server.listen(port, () => {
-    // eslint-disable-next-line no-console
-    console.log(`Reqmo backend API listening on http://localhost:${port}`);
-  });
+  createReqmoServerFromEnv()
+    .then(({ server }) => {
+      server.listen(port, () => {
+        // eslint-disable-next-line no-console
+        console.log(`Reqmo backend API listening on http://localhost:${port}`);
+      });
+    })
+    .catch((error) => {
+      // eslint-disable-next-line no-console
+      console.error("Failed to bootstrap Reqmo backend:", error);
+      process.exit(1);
+    });
 }

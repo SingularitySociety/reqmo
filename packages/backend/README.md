@@ -37,3 +37,9 @@ npm run test:core
 - `SEED_SERVICE_PROFILE_PATH`
 - `SEED_FARE_POLICY_PATH`
 - `SEED_TELEPHONY_CONFIG_PATH`
+
+## Repository Adapter
+
+- `REPOSITORY_ADAPTER=memory` (default, local development)
+- `REPOSITORY_ADAPTER=firestore` (persistent runtime)
+- `REQMO_TENANT_ID` (tenant document id for Firestore mode)

@@ -1,4 +1,6 @@
 export * from "./repository/inMemoryRepository.js";
+export * from "./repository/firestoreRepository.js";
+export * from "./repository/factory.js";
 export * from "./location/resolver.js";
 export * from "./dispatch/engine.js";
 export * from "./dispatch/insertion.js";

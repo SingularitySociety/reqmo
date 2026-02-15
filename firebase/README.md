@@ -1,14 +1,14 @@
 # Reqmo Firebase Adapter
 
-This folder contains Firebase deployment scaffolding.
+This folder contains generic Firebase adapter scaffolding for Reqmo.
 
-## Files
+## Runtime switch
 
-- `firebase.json`: Firebase project configuration
-- `firestore.rules`: baseline tenant-scoped auth rule
-- `functions/index.js`: function bridge to Reqmo core backend APIs
+- `REPOSITORY_ADAPTER=memory` for local development
+- `REPOSITORY_ADAPTER=firestore` for persistent runtime
+- `REQMO_TENANT_ID` to select target tenant document
 
 ## Notes
 
-- Replace `InMemoryRepository` with Firestore-backed repository before production rollout.
-- Keep algorithm and telephony logic in `packages/backend/src`.
+- Domain logic lives in `packages/backend/src`.
+- Tenant-specific deploy settings should be kept in a private repository.

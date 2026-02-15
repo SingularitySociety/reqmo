@@ -5,74 +5,102 @@
  * Domain logic lives in ../../packages/backend/src
  */
 
-const { onCall } = require("firebase-functions/v2/https");
-const { initializeApp } = require("firebase-admin/app");
+import { onCall } from "firebase-functions/v2/https";
+import { getApps, initializeApp } from "firebase-admin/app";
+import { getFirestore } from "firebase-admin/firestore";
 
-initializeApp();
-
-let repoRef = null;
-let coreRef = null;
-
-async function loadCore() {
-  if (!coreRef) {
-    coreRef = await import("../../packages/backend/src/index.js");
-  }
-  if (!repoRef) {
-    repoRef = new coreRef.InMemoryRepository();
-  }
-  return { core: coreRef, repository: repoRef };
+if (!getApps().length) {
+  initializeApp();
 }
 
-exports.createRideRequestFn = onCall((request) => {
-  return loadCore().then(({ core, repository }) =>
-    core.createRideRequest({
+let runtimeRef = null;
+
+async function loadRuntime() {
+  if (!runtimeRef) {
+    const core = await import("../../packages/backend/src/index.js");
+    const repositoryAdapter = process.env.REPOSITORY_ADAPTER ?? "memory";
+    const tenantId = process.env.REQMO_TENANT_ID ?? "tenant_default";
+
+    const repository = await core.createRepositoryFromEnv({
+      adapter: repositoryAdapter,
+      tenantId,
+      firestore: repositoryAdapter === "firestore" ? getFirestore() : undefined
+    });
+
+    runtimeRef = {
+      core,
       repository,
-      ...request.data
-    })
-  );
+      tenantId
+    };
+  }
+
+  return runtimeRef;
+}
+
+async function flushRepository(repository) {
+  if (typeof repository.flush === "function") {
+    await repository.flush();
+  }
+}
+
+export const createRideRequestFn = onCall(async (request) => {
+  const { core, repository, tenantId } = await loadRuntime();
+  const result = await core.createRideRequest({
+    repository,
+    ...request.data,
+    tenantId: request.data?.tenantId ?? tenantId
+  });
+  await flushRepository(repository);
+  return result;
 });
 
-exports.ingestCallEventFn = onCall((request) => {
-  return loadCore().then(({ core, repository }) =>
-    core.ingestCall({
-      repository,
-      ...request.data
-    })
-  );
+export const ingestCallEventFn = onCall(async (request) => {
+  const { core, repository } = await loadRuntime();
+  const result = core.ingestCall({
+    repository,
+    ...request.data
+  });
+  await flushRepository(repository);
+  return result;
 });
 
-exports.createRideRequestByPhoneFn = onCall((request) => {
-  return loadCore().then(({ core, repository }) =>
-    core.createPhoneRideRequest({
-      repository,
-      ...request.data
-    })
-  );
+export const createRideRequestByPhoneFn = onCall(async (request) => {
+  const { core, repository, tenantId } = await loadRuntime();
+  const result = await core.createPhoneRideRequest({
+    repository,
+    ...request.data,
+    tenantId: request.data?.tenantId ?? tenantId
+  });
+  await flushRepository(repository);
+  return result;
 });
 
-exports.upsertServiceProfileFn = onCall((request) => {
-  return loadCore().then(({ core, repository }) =>
-    core.upsertServiceProfile({
-      repository,
-      profile: request.data
-    })
-  );
+export const upsertServiceProfileFn = onCall(async (request) => {
+  const { core, repository } = await loadRuntime();
+  const result = core.upsertServiceProfile({
+    repository,
+    profile: request.data
+  });
+  await flushRepository(repository);
+  return result;
 });
 
-exports.upsertFarePolicyFn = onCall((request) => {
-  return loadCore().then(({ core, repository }) =>
-    core.upsertFarePolicy({
-      repository,
-      farePolicy: request.data
-    })
-  );
+export const upsertFarePolicyFn = onCall(async (request) => {
+  const { core, repository } = await loadRuntime();
+  const result = core.upsertFarePolicy({
+    repository,
+    farePolicy: request.data
+  });
+  await flushRepository(repository);
+  return result;
 });
 
-exports.upsertTelephonyConfigFn = onCall((request) => {
-  return loadCore().then(({ core, repository }) =>
-    core.upsertTelephonyConfig({
-      repository,
-      config: request.data
-    })
-  );
+export const upsertTelephonyConfigFn = onCall(async (request) => {
+  const { core, repository } = await loadRuntime();
+  const result = core.upsertTelephonyConfig({
+    repository,
+    config: request.data
+  });
+  await flushRepository(repository);
+  return result;
 });

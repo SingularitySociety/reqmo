@@ -12,7 +12,7 @@ export class InMemoryRepository {
     this.serviceProfiles = new Map();
     this.farePolicies = new Map();
     this.telephonyConfigs = new Map();
-    this._counter = 0;
+    this._counter = Number(seed.counter ?? 0);
 
     const defaultProfile = createDefaultServiceProfile();
     this.serviceProfiles.set(defaultProfile.id, defaultProfile);
@@ -29,6 +29,26 @@ export class InMemoryRepository {
     if (seed.serviceProfiles) {
       seed.serviceProfiles.forEach((profile) => this.serviceProfiles.set(profile.id, { ...profile }));
     }
+    if (seed.farePolicies) {
+      seed.farePolicies.forEach((farePolicy) => this.farePolicies.set(farePolicy.id, { ...farePolicy }));
+    }
+    if (seed.telephonyConfigs) {
+      seed.telephonyConfigs.forEach((config) => this.telephonyConfigs.set(config.id, { ...config }));
+    }
+    if (seed.rideRequests) {
+      seed.rideRequests.forEach((request) => this.rideRequests.set(request.id, { ...request }));
+    }
+    if (seed.trips) {
+      seed.trips.forEach((trip) => this.trips.set(trip.id, { ...trip }));
+    }
+    if (seed.callEvents) {
+      seed.callEvents.forEach((event) => this.callEvents.set(event.id, { ...event }));
+    }
+    if (seed.phoneIdentities) {
+      seed.phoneIdentities.forEach((identity) => {
+        this.phoneIdentities.set(identity.normalizedPhoneE164, { ...identity });
+      });
+    }
   }
 
   nextId(prefix) {
@@ -39,6 +59,10 @@ export class InMemoryRepository {
   addUser(user) {
     this.users.set(user.id, { ...user });
     return this.users.get(user.id);
+  }
+
+  listUsers() {
+    return Array.from(this.users.values());
   }
 
   addVehicle(vehicle) {

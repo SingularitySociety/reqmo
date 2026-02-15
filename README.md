@@ -24,6 +24,12 @@ API examples:
 - `POST /api/phone-rides`
 - `POST /api/telephony/ingest`
 
+Repository adapter:
+
+- `REPOSITORY_ADAPTER=memory` (default)
+- `REPOSITORY_ADAPTER=firestore`
+- `REQMO_TENANT_ID=tenant_default` (used in Firestore mode)
+
 ## Seed Data Inputs (optional)
 
 The backend can load generic seed data by environment variable:
