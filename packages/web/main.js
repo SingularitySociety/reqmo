@@ -16,9 +16,15 @@ const vuetify = createVuetify({
   }
 });
 
-const API_BASE =
-  window.REQMO_API_BASE ??
-  (window.location.port === "18080" ? "" : "http://localhost:18787");
+const API_BASE = (() => {
+  if (window.REQMO_API_BASE) {
+    return window.REQMO_API_BASE;
+  }
+  if (window.location.protocol === "file:") {
+    return "http://localhost:18787";
+  }
+  return "";
+})();
 const ROUTE_CACHE_MAX_ENTRIES = 400;
 const ROUTE_CACHE_RETRY_MS = 30 * 1000;
 const ROUTE_SEGMENT_METRICS_RETRY_MS = 30 * 1000;
