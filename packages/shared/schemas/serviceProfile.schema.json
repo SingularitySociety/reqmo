@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reqmo.dev/schemas/serviceProfile.schema.json",
+  "title": "Reqmo Service Profile",
+  "type": "object",
+  "required": [
+    "id",
+    "locationPolicy",
+    "reservationPolicy",
+    "fleetPolicy",
+    "poolingPolicy",
+    "dispatchPolicy",
+    "telephonyPolicy"
+  ],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "name": { "type": "string" },
+    "locationPolicy": {
+      "type": "object",
+      "required": ["mode", "freePointEnabled", "virtualStopEnabled", "virtualStopRadiusMeters"],
+      "properties": {
+        "mode": { "enum": ["FREE_ONLY", "VIRTUAL_ONLY", "HYBRID"] },
+        "freePointEnabled": { "type": "boolean" },
+        "virtualStopEnabled": { "type": "boolean" },
+        "virtualStopRadiusMeters": { "type": "number", "minimum": 0 },
+        "peakHoursUseVirtualStop": { "type": "boolean" }
+      }
+    },
+    "reservationPolicy": {
+      "type": "object",
+      "required": ["maxAdvanceDays", "minLeadMinutes", "sameDayCutoffLocalTime"],
+      "properties": {
+        "maxAdvanceDays": { "type": "integer", "minimum": 0 },
+        "minLeadMinutes": { "type": "integer", "minimum": 0 },
+        "sameDayCutoffLocalTime": { "type": "string" }
+      }
+    },
+    "fleetPolicy": {
+      "type": "object",
+      "required": ["maxActiveVehicles", "minStandbyVehicles", "activationStrategy"],
+      "properties": {
+        "maxActiveVehicles": { "type": "integer", "minimum": 1 },
+        "minStandbyVehicles": { "type": "integer", "minimum": 0 },
+        "activationStrategy": { "enum": ["MANUAL", "DEMAND_BASED"] }
+      }
+    },
+    "poolingPolicy": {
+      "type": "object",
+      "required": ["enabled", "maxOnboardPerVehicle", "maxDetourMinutes", "maxAdditionalStops"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "maxOnboardPerVehicle": { "type": "integer", "minimum": 1 },
+        "maxDetourMinutes": { "type": "number", "minimum": 0 },
+        "maxAdditionalStops": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "dispatchPolicy": {
+      "type": "object",
+      "required": ["maxWaitMinutes", "candidateVehicleLimit", "algorithmPrimary", "algorithmFallback", "weights"],
+      "properties": {
+        "maxWaitMinutes": { "type": "number", "minimum": 1 },
+        "candidateVehicleLimit": { "type": "integer", "minimum": 1 },
+        "algorithmPrimary": { "enum": ["GREEDY", "INSERTION"] },
+        "algorithmFallback": { "enum": ["GREEDY", "INSERTION"] },
+        "reoptimizationIntervalSec": { "type": "integer", "minimum": 1 },
+        "cruiseSpeedKmh": { "type": "number", "exclusiveMinimum": 0 },
+        "pickupServiceMinutes": { "type": "number", "minimum": 0 },
+        "dropoffServiceMinutes": { "type": "number", "minimum": 0 },
+        "weights": {
+          "type": "object",
+          "required": ["pickupDelay", "detour", "deadhead", "lateness"],
+          "properties": {
+            "pickupDelay": { "type": "number", "minimum": 0 },
+            "detour": { "type": "number", "minimum": 0 },
+            "deadhead": { "type": "number", "minimum": 0 },
+            "lateness": { "type": "number", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "farePolicyRef": { "type": "string" },
+    "telephonyPolicy": {
+      "type": "object",
+      "required": ["defaultCountryCode", "allowAnonymousCaller", "requireAdditionalIdentityCheck", "denyList"],
+      "properties": {
+        "defaultCountryCode": { "type": "string" },
+        "allowAnonymousCaller": { "type": "boolean" },
+        "requireAdditionalIdentityCheck": { "type": "boolean" },
+        "denyList": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    }
+  }
+}

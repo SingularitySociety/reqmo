@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reqmo.dev/schemas/farePolicy.schema.json",
+  "title": "Reqmo Fare Policy",
+  "type": "object",
+  "required": ["id", "model", "currency", "params"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "model": { "enum": ["FIXED", "DISTANCE", "TIME", "ZONAL", "HYBRID", "PLUGIN"] },
+    "currency": { "type": "string", "minLength": 3, "maxLength": 3 },
+    "params": {
+      "type": "object",
+      "properties": {
+        "fixedFare": { "type": "number", "minimum": 0 },
+        "baseFare": { "type": "number", "minimum": 0 },
+        "perKm": { "type": "number", "minimum": 0 },
+        "perMinute": { "type": "number", "minimum": 0 },
+        "sharedDiscountRate": { "type": "number", "minimum": 0, "maximum": 1 },
+        "minFare": { "type": "number", "minimum": 0 }
+      }
+    }
+  }
+}

@@ -1,0 +1,12 @@
+.DS_Store
+node_modules/
+coverage/
+.flutter-plugins
+.flutter-plugins-dependencies
+
+mobile/reqmo_mobile/.dart_tool/
+mobile/reqmo_mobile/build/
+mobile/reqmo_mobile/.packages
+mobile/reqmo_mobile/ios/Flutter/Generated.xcconfig
+mobile/reqmo_mobile/ios/Flutter/flutter_export_environment.sh
+mobile/reqmo_mobile/macos/Flutter/ephemeral/
