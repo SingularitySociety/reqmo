@@ -99,13 +99,20 @@ export function seedConfiguredData(repository, options = {}) {
     telephonyConfigPath
   });
 
-  if (!loaded.stopsCount || loaded.stopsCount === 0) {
+  const stopsCountAfterLoad = repository.listStops().length;
+  if (stopsCountAfterLoad === 0) {
     return {
       profileId: seedDemoData(repository),
       source: "demo-fallback",
       stopsCount: repository.listStops().length
     };
   }
+
+  const resolvedProfile =
+    repository.getServiceProfile(loaded.profileId) ??
+    repository.listServiceProfiles()[0] ??
+    null;
+  const profileId = resolvedProfile?.id ?? loaded.profileId;
 
   if (!repository.listVehicles().length) {
     const primaryStop = repository.listStops()[0];
@@ -125,7 +132,11 @@ export function seedConfiguredData(repository, options = {}) {
     repository.addUser({ id: "operator_seed_user", name: "Operator Caller" });
   }
 
-  return loaded;
+  return {
+    ...loaded,
+    profileId,
+    stopsCount: stopsCountAfterLoad
+  };
 }
 
 function toRideInput(body) {
