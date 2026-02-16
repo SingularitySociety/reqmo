@@ -552,8 +552,9 @@ createApp({
         const source = typeof response?.source === "string" ? response.source.toUpperCase() : "";
         const durationMinutes = Number(response?.durationMinutes);
         const distanceMeters = Number(response?.distanceMeters);
+        const supportsMetricDisplay = source === "OSRM" || source === "STRAIGHT_LINE";
         if (
-          source !== "OSRM" ||
+          !supportsMetricDisplay ||
           !Number.isFinite(durationMinutes) ||
           durationMinutes < 0 ||
           !Number.isFinite(distanceMeters) ||
