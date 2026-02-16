@@ -1,5 +1,5 @@
-import { FirestoreRepository } from "./firestoreRepository.js";
-import { InMemoryRepository } from "./inMemoryRepository.js";
+import { FirestoreRepository } from "./firestoreRepository.ts";
+import { InMemoryRepository } from "./inMemoryRepository.ts";
 
 export async function createRepositoryFromEnv({
   adapter = process.env.REPOSITORY_ADAPTER ?? "memory",

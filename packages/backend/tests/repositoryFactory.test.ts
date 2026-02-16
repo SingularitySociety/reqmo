@@ -1,10 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { createRepositoryFromEnv } from "../src/repository/factory.js";
-import { FirestoreRepository } from "../src/repository/firestoreRepository.js";
-import { InMemoryRepository } from "../src/repository/inMemoryRepository.js";
-import { FakeFirestore } from "./helpers/fakeFirestore.js";
+import { createRepositoryFromEnv } from "../src/repository/factory.ts";
+import { FirestoreRepository } from "../src/repository/firestoreRepository.ts";
+import { InMemoryRepository } from "../src/repository/inMemoryRepository.ts";
+import { FakeFirestore } from "./helpers/fakeFirestore.ts";
 
 test("repository factory returns InMemoryRepository for local development", async () => {
   const repository = await createRepositoryFromEnv({

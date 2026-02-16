@@ -1,16 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { createDefaultServiceProfile } from "../../shared/src/defaults.js";
-import { estimateTravelMinutes } from "../../shared/src/geo.js";
-import { InMemoryRepository } from "../src/repository/inMemoryRepository.js";
+import { createDefaultServiceProfile } from "../../shared/src/defaults.ts";
+import { estimateTravelMinutes } from "../../shared/src/geo.ts";
+import { InMemoryRepository } from "../src/repository/inMemoryRepository.ts";
 import {
   cancelRideRequest,
   createRideRequest,
   previewRideRequest,
   updateVehicleLocation,
   upsertServiceProfile
-} from "../src/api/functions.js";
+} from "../src/api/functions.ts";
 
 function seedRepository() {
   const repository = new InMemoryRepository();
@@ -408,6 +408,13 @@ test("dispatch rejects excessive detour that would keep onboard passenger riding
 
   assert.equal(preview.status, "REJECTED");
   assert.equal(preview.reason, "NO_FEASIBLE_VEHICLE");
+  assert.ok(preview.diagnostics);
+  assert.equal(typeof preview.diagnostics.summary, "string");
+  assert.equal(Array.isArray(preview.diagnostics.countermeasureCandidates), true);
+  assert.equal(Array.isArray(preview.diagnostics.breakdown), true);
+  assert.equal(typeof preview.diagnostics.rejectionCounts, "object");
+  assert.equal(typeof preview.diagnostics.constraints, "object");
+  assert.equal(typeof preview.diagnostics.observed, "object");
 });
 
 test("dispatch accepts additional reservation when existing route delay stays zero", async () => {
@@ -480,4 +487,172 @@ test("dispatch can backtrack slightly to pick up another customer en route", asy
     impactedExisting.dropoffDeltaMinutes <= createDefaultServiceProfile().poolingPolicy.maxDetourMinutes,
     true
   );
+});
+
+test("dispatch can accept feasible plans that include consecutive pickups", async () => {
+  const repository = new InMemoryRepository();
+  const baseProfile = createDefaultServiceProfile();
+  const profile = createDefaultServiceProfile({
+    id: "consecutive_pickup_profile",
+    dispatchPolicy: {
+      ...baseProfile.dispatchPolicy,
+      maxWaitMinutes: 1.2
+    },
+    poolingPolicy: {
+      ...baseProfile.poolingPolicy,
+      maxDetourMinutes: 0.6,
+      maxOnboardPerVehicle: 4,
+      maxAdditionalStops: 4
+    }
+  });
+  upsertServiceProfile({ repository, profile });
+
+  repository.addVehicle({
+    id: "veh_1",
+    status: "ACTIVE",
+    capacity: 4,
+    onboardCount: 0,
+    currentLocation: { lat: 33.0, lng: 132.9 },
+    route: [
+      { type: "PICKUP", requestId: "r1", point: { lat: 33.0002, lng: 132.9002 }, loadChange: 1 },
+      { type: "DROPOFF", requestId: "r1", point: { lat: 33.0009, lng: 132.9009 }, loadChange: -1 },
+      { type: "PICKUP", requestId: "r2", point: { lat: 33.001, lng: 132.901 }, loadChange: 3 },
+      { type: "DROPOFF", requestId: "r2", point: { lat: 33.004, lng: 132.904 }, loadChange: -3 }
+    ]
+  });
+
+  const preview = await previewRideRequest({
+    repository,
+    serviceProfileId: profile.id,
+    tenantId: "tenant_default",
+    requesterId: "user_consecutive_pickup",
+    pickup: {
+      mode: "FREE_POINT",
+      point: { lat: 33.00089232296793, lng: 132.90086842753976 }
+    },
+    dropoff: {
+      mode: "FREE_POINT",
+      point: { lat: 33.00404704691556, lng: 132.90391928939525 }
+    },
+    partySize: 1
+  });
+
+  assert.equal(preview.status, "ASSIGNABLE");
+  const hasConsecutivePickup = preview.simulation.routeAfter.some(
+    (task, index, route) => index > 0 && route[index - 1].type === "PICKUP" && task.type === "PICKUP"
+  );
+  assert.equal(hasConsecutivePickup, true);
+});
+
+test("dispatch prefers dropoff-first plan when dropoffPriority is enabled", async () => {
+  const repository = new InMemoryRepository();
+  const baseProfile = createDefaultServiceProfile();
+  const profileNoPriority = createDefaultServiceProfile({
+    id: "dropoff_priority_off",
+    dispatchPolicy: {
+      ...baseProfile.dispatchPolicy,
+      weights: {
+        ...baseProfile.dispatchPolicy.weights,
+        dropoffPriority: 0
+      }
+    }
+  });
+  const profileWithPriority = createDefaultServiceProfile({
+    id: "dropoff_priority_on",
+    dispatchPolicy: {
+      ...baseProfile.dispatchPolicy,
+      weights: {
+        ...baseProfile.dispatchPolicy.weights,
+        dropoffPriority: 1
+      }
+    }
+  });
+  upsertServiceProfile({ repository, profile: profileNoPriority });
+  upsertServiceProfile({ repository, profile: profileWithPriority });
+
+  repository.addVehicle({
+    id: "veh_1",
+    status: "ACTIVE",
+    capacity: 4,
+    onboardCount: 0,
+    currentLocation: { lat: 33, lng: 132.9 },
+    route: [
+      {
+        type: "PICKUP",
+        requestId: "r1",
+        point: { lat: 33.00123234077136, lng: 132.9027022653273 },
+        loadChange: 1
+      },
+      {
+        type: "DROPOFF",
+        requestId: "r1",
+        point: { lat: 33.004617000194514, lng: 132.90038125198956 },
+        loadChange: -1
+      },
+      {
+        type: "PICKUP",
+        requestId: "r2",
+        point: { lat: 33.00265903659541, lng: 132.90487605641985 },
+        loadChange: 2
+      },
+      {
+        type: "DROPOFF",
+        requestId: "r2",
+        point: { lat: 33.0020492158169, lng: 132.9001024799698 },
+        loadChange: -2
+      }
+    ]
+  });
+
+  const input = {
+    tenantId: "tenant_default",
+    requesterId: "user_dropoff_priority",
+    pickup: {
+      mode: "FREE_POINT",
+      point: { lat: 33.00405860618066, lng: 132.90040670554254 }
+    },
+    dropoff: {
+      mode: "FREE_POINT",
+      point: { lat: 33.00488278887875, lng: 132.90207485043206 }
+    },
+    partySize: 1
+  };
+
+  const withoutPriority = await previewRideRequest({
+    repository,
+    serviceProfileId: profileNoPriority.id,
+    ...input
+  });
+  const withPriority = await previewRideRequest({
+    repository,
+    serviceProfileId: profileWithPriority.id,
+    ...input
+  });
+
+  assert.equal(withoutPriority.status, "ASSIGNABLE");
+  assert.equal(withPriority.status, "ASSIGNABLE");
+
+  const countConsecutivePickupPairs = (route) =>
+    route.reduce((count, task, index) => {
+      if (index === 0) {
+        return count;
+      }
+      return route[index - 1].type === "PICKUP" && task.type === "PICKUP"
+        ? count + 1
+        : count;
+    }, 0);
+
+  const withoutPairs = countConsecutivePickupPairs(withoutPriority.simulation.routeAfter);
+  const withPairs = countConsecutivePickupPairs(withPriority.simulation.routeAfter);
+  assert.equal(withoutPairs > withPairs, true);
+
+  const dropoffR1WithPriority = withPriority.simulation.routeAfter.findIndex(
+    (task) => task.requestId === "r1" && task.type === "DROPOFF"
+  );
+  const pickupNewWithPriority = withPriority.simulation.routeAfter.findIndex(
+    (task) => task.requestLabel === "新規予約" && task.type === "PICKUP"
+  );
+  assert.ok(dropoffR1WithPriority >= 0);
+  assert.ok(pickupNewWithPriority >= 0);
+  assert.equal(dropoffR1WithPriority < pickupNewWithPriority, true);
 });

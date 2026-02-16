@@ -1,8 +1,8 @@
 import {
   LOCATION_MODES,
   RESOLVED_AS
-} from "../../../shared/src/constants.js";
-import { haversineDistanceMeters } from "../../../shared/src/geo.js";
+} from "../../../shared/src/constants.ts";
+import { haversineDistanceMeters } from "../../../shared/src/geo.ts";
 
 export function findNearestStop(point, stops) {
   if (!point || !Array.isArray(stops) || stops.length === 0) {

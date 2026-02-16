@@ -1,6 +1,6 @@
-import { CHANNELS } from "../../../shared/src/constants.js";
-import { normalizeAdapterEvent } from "./adapters.js";
-import { normalizePhoneNumber } from "./phoneNumber.js";
+import { CHANNELS } from "../../../shared/src/constants.ts";
+import { normalizeAdapterEvent } from "./adapters.ts";
+import { normalizePhoneNumber } from "./phoneNumber.ts";
 
 export function resolveCallerIdentity({ repository, telephonyPolicy, callerRaw }) {
   const callerE164 = normalizePhoneNumber(callerRaw, telephonyPolicy.defaultCountryCode);

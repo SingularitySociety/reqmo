@@ -1,8 +1,12 @@
-import { findGreedyVehicle } from "./greedy.js";
-import { findBestInsertionAcrossVehicles, findBestInsertionPlan } from "./insertion.js";
-import { resolveRideRequestLocations } from "../location/resolver.js";
-import { estimateTravelMinutes } from "../../../shared/src/geo.js";
-import { createTravelEstimator } from "../routing/service.js";
+import { findGreedyVehicle } from "./greedy.ts";
+import {
+  analyzeInsertionCandidateFailures,
+  findBestInsertionAcrossVehicles,
+  findBestInsertionPlan
+} from "./insertion.ts";
+import { resolveRideRequestLocations } from "../location/resolver.ts";
+import { estimateTravelMinutes } from "../../../shared/src/geo.ts";
+import { createTravelEstimator } from "../routing/service.ts";
 
 const DEFAULT_CRUISE_SPEED_KMH = 25;
 
@@ -330,6 +334,279 @@ function chooseBestPlan({ requestForDispatch, vehicles, serviceProfile, travelMi
   });
 }
 
+const INSERTION_REJECTION_KEYS = [
+  "CONSECUTIVE_PICKUP",
+  "CAPACITY",
+  "MAX_WAIT",
+  "MAX_DETOUR",
+  "MAX_ADDITIONAL_STOPS"
+];
+
+function createInsertionRejectionCounts() {
+  return {
+    CONSECUTIVE_PICKUP: 0,
+    CAPACITY: 0,
+    MAX_WAIT: 0,
+    MAX_DETOUR: 0,
+    MAX_ADDITIONAL_STOPS: 0
+  };
+}
+
+function normalizeNonNegativeInteger(value, fallback = 0) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return fallback;
+  }
+  return Math.max(0, Math.trunc(numeric));
+}
+
+function minFinite(current, next) {
+  if (!Number.isFinite(next)) {
+    return current;
+  }
+  if (!Number.isFinite(current)) {
+    return next;
+  }
+  return Math.min(current, next);
+}
+
+function summarizeVehicleStatuses(vehicles) {
+  const statusCounts = {};
+  for (const vehicle of vehicles) {
+    const status =
+      typeof vehicle?.status === "string" && vehicle.status.trim()
+        ? vehicle.status.trim().toUpperCase()
+        : "UNKNOWN";
+    statusCounts[status] = (statusCounts[status] ?? 0) + 1;
+  }
+  return statusCounts;
+}
+
+function resolveCandidateVehicleLimit(serviceProfile, vehicleCount) {
+  const configured = normalizeNonNegativeInteger(
+    serviceProfile?.dispatchPolicy?.candidateVehicleLimit,
+    vehicleCount
+  );
+  return configured;
+}
+
+function pushCandidateSuggestion(suggestions, message) {
+  if (typeof message !== "string" || !message.trim()) {
+    return;
+  }
+  if (!suggestions.includes(message)) {
+    suggestions.push(message);
+  }
+}
+
+function summarizeNoFeasibleOutcome({
+  totalVehicleCount,
+  inspectedVehicleCount,
+  activeVehicleCount,
+  candidateCount,
+  feasibleCount
+}) {
+  if (totalVehicleCount === 0) {
+    return "候補車両が存在しないため、予約を受け付けできません。";
+  }
+  if (inspectedVehicleCount === 0) {
+    return "候補車両の探索対象が0台のため、予約を受け付けできません。";
+  }
+  if (activeVehicleCount === 0) {
+    return "探索対象の車両がすべて稼働停止中のため、予約を受け付けできません。";
+  }
+  if (candidateCount === 0) {
+    return "候補ルートを生成できないため、予約を受け付けできません。";
+  }
+  if (feasibleCount === 0) {
+    return `${candidateCount}件の候補ルートを評価しましたが、すべて制約で除外されました。`;
+  }
+  return "候補ルートの評価で条件を満たす案が見つかりませんでした。";
+}
+
+function buildCountermeasureCandidates({
+  diagnostics,
+  rejectionCounts
+}) {
+  const candidates = [];
+  const {
+    totalVehicleCount,
+    inspectedVehicleCount,
+    activeVehicleCount,
+    skippedVehicleCount,
+    constraints,
+    observed
+  } = diagnostics;
+
+  if (totalVehicleCount === 0) {
+    pushCandidateSuggestion(
+      candidates,
+      "稼働可能な車両を追加するか、車両フィルタ条件を見直してください。"
+    );
+  }
+  if (inspectedVehicleCount === 0 && totalVehicleCount > 0) {
+    pushCandidateSuggestion(
+      candidates,
+      "候補車両上限が0台です。candidateVehicleLimit を1以上に設定して再試算してください。"
+    );
+  }
+  if (activeVehicleCount === 0 && inspectedVehicleCount > 0) {
+    pushCandidateSuggestion(
+      candidates,
+      "探索対象車両を ACTIVE に変更するか、ACTIVE車両を追加してください。"
+    );
+  }
+  if (skippedVehicleCount > 0) {
+    pushCandidateSuggestion(
+      candidates,
+      `候補車両上限(${constraints.candidateVehicleLimit}台)により${skippedVehicleCount}台が探索対象外です。上限の拡大を検討してください。`
+    );
+  }
+  if (rejectionCounts.MAX_WAIT > 0) {
+    const minEta = observed.minEtaPickupMinutes;
+    const maxWait = constraints.maxWaitMinutes;
+    if (Number.isFinite(minEta) && Number.isFinite(maxWait)) {
+      pushCandidateSuggestion(
+        candidates,
+        `最短乗車到達は約${Math.round(minEta)}分です。希望時刻調整または maxWaitMinutes(${Math.round(maxWait)}分) の見直しを検討してください。`
+      );
+    } else {
+      pushCandidateSuggestion(
+        candidates,
+        "乗車待ち時間制約により除外されています。希望時刻調整または maxWaitMinutes の見直しを検討してください。"
+      );
+    }
+  }
+  if (rejectionCounts.MAX_DETOUR > 0) {
+    const minDetour = observed.minDetourMinutes;
+    const maxDetour = constraints.maxDetourMinutes;
+    if (Number.isFinite(minDetour) && Number.isFinite(maxDetour)) {
+      pushCandidateSuggestion(
+        candidates,
+        `既存予約への最小遅延は約${Math.round(minDetour)}分です。乗降地点の見直し、または maxDetourMinutes(${Math.round(maxDetour)}分) の調整を検討してください。`
+      );
+    } else {
+      pushCandidateSuggestion(
+        candidates,
+        "既存予約への遅延制約で除外されています。乗降地点または maxDetourMinutes の見直しを検討してください。"
+      );
+    }
+  }
+  if (rejectionCounts.CAPACITY > 0) {
+    pushCandidateSuggestion(
+      candidates,
+      `同時乗車人数制約で除外されています。partySize の調整、または maxOnboardPerVehicle(${constraints.maxOnboardPerVehicle}人) の見直しを検討してください。`
+    );
+  }
+  if (rejectionCounts.MAX_ADDITIONAL_STOPS > 0) {
+    pushCandidateSuggestion(
+      candidates,
+      `追加停留所制約で除外されています。maxAdditionalStops(${constraints.maxAdditionalStops}) の見直しを検討してください。`
+    );
+  }
+  if (rejectionCounts.CONSECUTIVE_PICKUP > 0) {
+    pushCandidateSuggestion(
+      candidates,
+      "既存ルート構成では降車前に連続乗車が発生します。先行予約完了後に再試算するか、乗車地点・時刻の変更を検討してください。"
+    );
+  }
+  if (!candidates.length) {
+    pushCandidateSuggestion(
+      candidates,
+      "車両現在地を更新して再試算し、必要に応じて配車制約値を見直してください。"
+    );
+  }
+
+  return candidates.slice(0, 6);
+}
+
+function buildNoFeasibleDiagnostics({
+  vehicles,
+  requestForDispatch,
+  serviceProfile,
+  travelMinutes = defaultTravelMinutes
+}) {
+  const candidateVehicleLimit = resolveCandidateVehicleLimit(serviceProfile, vehicles.length);
+  const inspectedVehicles =
+    candidateVehicleLimit > 0 ? vehicles.slice(0, candidateVehicleLimit) : [];
+
+  const rejectionCounts = createInsertionRejectionCounts();
+  let candidateCount = 0;
+  let feasibleCount = 0;
+  let minEtaPickupMinutes = null;
+  let minDetourMinutes = null;
+
+  const perVehicle = inspectedVehicles.map((vehicle) => {
+    const analysis = analyzeInsertionCandidateFailures({
+      vehicle,
+      request: requestForDispatch,
+      serviceProfile,
+      travelMinutes
+    });
+    candidateCount += analysis.candidateCount;
+    feasibleCount += analysis.feasibleCount;
+    minEtaPickupMinutes = minFinite(minEtaPickupMinutes, analysis.minEtaPickupMinutes);
+    minDetourMinutes = minFinite(minDetourMinutes, analysis.minDetourMinutes);
+
+    for (const key of INSERTION_REJECTION_KEYS) {
+      rejectionCounts[key] += analysis.rejectionCounts[key] ?? 0;
+    }
+    return analysis;
+  });
+
+  const activeVehicleCount = inspectedVehicles.filter((vehicle) => {
+    const status = typeof vehicle?.status === "string" ? vehicle.status.trim().toUpperCase() : "";
+    return status === "ACTIVE";
+  }).length;
+  const skippedVehicleCount = Math.max(0, vehicles.length - inspectedVehicles.length);
+  const diagnostics = {
+    algorithmPrimary: selectAlgorithm(serviceProfile),
+    algorithmFallback: selectFallbackAlgorithm(serviceProfile),
+    totalVehicleCount: vehicles.length,
+    inspectedVehicleCount: inspectedVehicles.length,
+    skippedVehicleCount,
+    activeVehicleCount,
+    vehicleStatusCounts: summarizeVehicleStatuses(vehicles),
+    candidateCount,
+    feasibleCount,
+    rejectionCounts,
+    constraints: {
+      candidateVehicleLimit,
+      maxWaitMinutes: normalizeNonNegative(serviceProfile?.dispatchPolicy?.maxWaitMinutes, 0),
+      maxDetourMinutes: normalizeNonNegative(serviceProfile?.poolingPolicy?.maxDetourMinutes, 0),
+      maxAdditionalStops: normalizeNonNegativeInteger(serviceProfile?.poolingPolicy?.maxAdditionalStops, 0),
+      maxOnboardPerVehicle: normalizeNonNegativeInteger(serviceProfile?.poolingPolicy?.maxOnboardPerVehicle, 0)
+    },
+    observed: {
+      minEtaPickupMinutes: roundMinutes(minEtaPickupMinutes),
+      minDetourMinutes: roundMinutes(minDetourMinutes)
+    },
+    perVehicle
+  };
+
+  diagnostics.summary = summarizeNoFeasibleOutcome(diagnostics);
+  diagnostics.countermeasureCandidates = buildCountermeasureCandidates({
+    diagnostics,
+    rejectionCounts
+  });
+  diagnostics.breakdown = INSERTION_REJECTION_KEYS
+    .map((code) => {
+      const count = rejectionCounts[code] ?? 0;
+      if (count <= 0) {
+        return null;
+      }
+      return {
+        code,
+        count,
+        ratioPercent: candidateCount > 0 ? Math.round((count / candidateCount) * 100) : null
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => right.count - left.count);
+
+  return diagnostics;
+}
+
 function filterVehiclesByAllowedIds(vehicles, allowedVehicleIds = null) {
   if (!Array.isArray(allowedVehicleIds) || !allowedVehicleIds.length) {
     return vehicles;
@@ -416,7 +693,12 @@ async function evaluateDispatchPlan({
     return {
       status: "REJECTED",
       reason: "NO_FEASIBLE_VEHICLE",
-      resolvedLocations
+      resolvedLocations,
+      diagnostics: buildNoFeasibleDiagnostics({
+        vehicles,
+        requestForDispatch,
+        serviceProfile
+      })
     };
   }
   const travelEstimator = await createTravelEstimator({
@@ -435,7 +717,13 @@ async function evaluateDispatchPlan({
     return {
       status: "REJECTED",
       reason: "NO_FEASIBLE_VEHICLE",
-      resolvedLocations
+      resolvedLocations,
+      diagnostics: buildNoFeasibleDiagnostics({
+        vehicles,
+        requestForDispatch,
+        serviceProfile,
+        travelMinutes: travelEstimator.travelMinutes
+      })
     };
   }
 
@@ -444,7 +732,13 @@ async function evaluateDispatchPlan({
     return {
       status: "REJECTED",
       reason: "NO_FEASIBLE_VEHICLE",
-      resolvedLocations
+      resolvedLocations,
+      diagnostics: buildNoFeasibleDiagnostics({
+        vehicles,
+        requestForDispatch,
+        serviceProfile,
+        travelMinutes: travelEstimator.travelMinutes
+      })
     };
   }
 
@@ -529,7 +823,8 @@ export async function previewRideRequestDispatch({
     return {
       status: "REJECTED",
       reason: evaluated.reason,
-      resolvedLocations: evaluated.resolvedLocations
+      resolvedLocations: evaluated.resolvedLocations,
+      diagnostics: evaluated.diagnostics ?? null
     };
   }
 
@@ -574,7 +869,12 @@ export async function listRideRequestDispatchOptions({
       reason: "NO_FEASIBLE_VEHICLE",
       resolvedLocations,
       desiredDropoffAt: normalizeDateInput(desiredDropoffAt)?.toISOString() ?? null,
-      options: []
+      options: [],
+      diagnostics: buildNoFeasibleDiagnostics({
+        vehicles,
+        requestForDispatch,
+        serviceProfile
+      })
     };
   }
 
@@ -644,7 +944,13 @@ export async function listRideRequestDispatchOptions({
       reason: "NO_FEASIBLE_VEHICLE",
       resolvedLocations,
       desiredDropoffAt: desiredDropoffDate?.toISOString() ?? null,
-      options: []
+      options: [],
+      diagnostics: buildNoFeasibleDiagnostics({
+        vehicles,
+        requestForDispatch,
+        serviceProfile,
+        travelMinutes: travelEstimator.travelMinutes
+      })
     };
   }
 
@@ -692,7 +998,8 @@ export async function dispatchRideRequest({
     return {
       status: "REJECTED",
       rideRequest: rejected,
-      resolvedLocations: evaluated.resolvedLocations
+      resolvedLocations: evaluated.resolvedLocations,
+      diagnostics: evaluated.diagnostics ?? null
     };
   }
 

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { createTravelEstimator, resolveRoutePath } from "../src/routing/service.js";
+import { createTravelEstimator, resolveRoutePath } from "../src/routing/service.ts";
 
 const pointA = { lat: 33.0, lng: 132.9 };
 const pointB = { lat: 33.01, lng: 132.905 };

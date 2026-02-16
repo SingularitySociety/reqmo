@@ -73,7 +73,8 @@
             "pickupDelay": { "type": "number", "minimum": 0 },
             "detour": { "type": "number", "minimum": 0 },
             "deadhead": { "type": "number", "minimum": 0 },
-            "lateness": { "type": "number", "minimum": 0 }
+            "lateness": { "type": "number", "minimum": 0 },
+            "dropoffPriority": { "type": "number", "minimum": 0 }
           }
         }
       }

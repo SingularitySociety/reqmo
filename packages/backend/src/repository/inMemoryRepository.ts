@@ -1,4 +1,4 @@
-import { createDefaultServiceProfile } from "../../../shared/src/defaults.js";
+import { createDefaultServiceProfile } from "../../../shared/src/defaults.ts";
 
 export class InMemoryRepository {
   constructor(seed = {}) {

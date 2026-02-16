@@ -4,12 +4,12 @@ Config-driven dispatch and telephony integration logic for Reqmo.
 
 ## Key Modules
 
-- `src/location/resolver.js`: fixed/free/hybrid location resolution
-- `src/dispatch/insertion.js`: incremental insertion dispatch heuristic
-- `src/telephony/service.js`: caller identity resolution and phone-request flow
-- `src/api/functions.js`: high-level API entrypoints
-- `src/repository/inMemoryRepository.js`: reference repository for tests and local runs
-- `src/seed/configSeedLoader.js`: generic seed data loader
+- `src/location/resolver.ts`: fixed/free/hybrid location resolution
+- `src/dispatch/insertion.ts`: incremental insertion dispatch heuristic
+- `src/telephony/service.ts`: caller identity resolution and phone-request flow
+- `src/api/functions.ts`: high-level API entrypoints
+- `src/repository/inMemoryRepository.ts`: reference repository for tests and local runs
+- `src/seed/configSeedLoader.ts`: generic seed data loader
 
 ## Test
 
@@ -37,6 +37,7 @@ npm run test:core
 - `SEED_SERVICE_PROFILE_PATH`
 - `SEED_FARE_POLICY_PATH`
 - `SEED_TELEPHONY_CONFIG_PATH`
+- `SEED_OVERWRITE_EXISTING` (`true` のとき既存DBデータをシード値で上書き)
 
 ## Repository Adapter
 

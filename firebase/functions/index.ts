@@ -17,7 +17,7 @@ let runtimeRef = null;
 
 async function loadRuntime() {
   if (!runtimeRef) {
-    const core = await import("../../packages/backend/src/index.js");
+    const core = await import("../../packages/backend/src/index.ts");
     const repositoryAdapter = process.env.REPOSITORY_ADAPTER ?? "memory";
     const tenantId = process.env.REQMO_TENANT_ID ?? "tenant_default";
 

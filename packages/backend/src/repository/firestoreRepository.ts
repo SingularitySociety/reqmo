@@ -1,4 +1,4 @@
-import { InMemoryRepository } from "./inMemoryRepository.js";
+import { InMemoryRepository } from "./inMemoryRepository.ts";
 
 const COLLECTIONS = [
   "users",

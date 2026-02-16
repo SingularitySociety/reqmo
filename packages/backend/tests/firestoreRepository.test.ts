@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { FirestoreRepository } from "../src/repository/firestoreRepository.js";
-import { FakeFirestore } from "./helpers/fakeFirestore.js";
+import { FirestoreRepository } from "../src/repository/firestoreRepository.ts";
+import { FakeFirestore } from "./helpers/fakeFirestore.ts";
 
 test("FirestoreRepository loads tenant data and persists updates", async () => {
   const firestore = new FakeFirestore({

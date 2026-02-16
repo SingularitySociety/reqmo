@@ -1,10 +1,10 @@
 import http from "node:http";
 import { URL } from "node:url";
 
-import { createDefaultServiceProfile } from "../../../shared/src/defaults.js";
-import { createRepositoryFromEnv } from "../repository/factory.js";
-import { InMemoryRepository } from "../repository/inMemoryRepository.js";
-import { loadConfiguredSeedData } from "../seed/configSeedLoader.js";
+import { createDefaultServiceProfile } from "../../../shared/src/defaults.ts";
+import { createRepositoryFromEnv } from "../repository/factory.ts";
+import { InMemoryRepository } from "../repository/inMemoryRepository.ts";
+import { loadConfiguredSeedData } from "../seed/configSeedLoader.ts";
 import {
   cancelRideRequest,
   createRideRequest,
@@ -18,9 +18,9 @@ import {
   upsertFarePolicy,
   upsertServiceProfile,
   upsertTelephonyConfig
-} from "./functions.js";
-import { createRoutingContextFromEnv } from "../routing/service.js";
-import { reverseGeocodePoint } from "../location/reverseGeocode.js";
+} from "./functions.ts";
+import { createRoutingContextFromEnv } from "../routing/service.ts";
+import { reverseGeocodePoint } from "../location/reverseGeocode.ts";
 
 function jsonResponse(res, status, body) {
   const payload = JSON.stringify(body);
@@ -87,7 +87,8 @@ export function seedConfiguredData(repository, options = {}) {
     stopsPath = process.env.SEED_STOPS_PATH,
     serviceProfilePath = process.env.SEED_SERVICE_PROFILE_PATH,
     farePolicyPath = process.env.SEED_FARE_POLICY_PATH,
-    telephonyConfigPath = process.env.SEED_TELEPHONY_CONFIG_PATH
+    telephonyConfigPath = process.env.SEED_TELEPHONY_CONFIG_PATH,
+    overwriteExisting = process.env.SEED_OVERWRITE_EXISTING === "true"
   } = options;
 
   const loaded = loadConfiguredSeedData({
@@ -96,7 +97,8 @@ export function seedConfiguredData(repository, options = {}) {
     stopsPath,
     serviceProfilePath,
     farePolicyPath,
-    telephonyConfigPath
+    telephonyConfigPath,
+    overwriteExisting
   });
 
   const stopsCountAfterLoad = repository.listStops().length;

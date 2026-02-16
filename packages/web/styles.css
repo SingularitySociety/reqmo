@@ -538,6 +538,55 @@ html, body, #app {
   border-color: rgba(220, 38, 38, 0.2);
 }
 
+.rq-preview-reject-summary {
+  margin-top: 8px;
+  font-size: 0.68rem;
+  color: #475569;
+}
+
+.rq-preview-reject-section {
+  margin-top: 10px;
+}
+
+.rq-preview-reject-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rq-preview-reject-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 8px;
+  padding: 6px 8px;
+  background: rgba(248, 250, 252, 0.85);
+}
+
+.rq-preview-reject-item-label {
+  font-size: 0.66rem;
+  color: var(--rq-ink);
+  font-weight: 700;
+}
+
+.rq-preview-reject-item-meta {
+  font-size: 0.63rem;
+  color: #64748b;
+  white-space: nowrap;
+}
+
+.rq-preview-countermeasure-list {
+  margin: 6px 0 0;
+  padding-left: 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.66rem;
+  color: #334155;
+}
+
 .rq-impact-list {
   display: flex;
   flex-direction: column;

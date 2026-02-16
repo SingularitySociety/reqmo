@@ -1,4 +1,4 @@
-import { ADAPTER_TYPES } from "../../../shared/src/constants.js";
+import { ADAPTER_TYPES } from "../../../shared/src/constants.ts";
 
 function readFirst(payload, keys) {
   for (const key of keys) {

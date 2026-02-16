@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { createReqmoServer } from "../src/api/server.js";
-import { InMemoryRepository } from "../src/repository/inMemoryRepository.js";
-import { createDefaultServiceProfile } from "../../shared/src/defaults.js";
+import { createReqmoServer } from "../src/api/server.ts";
+import { InMemoryRepository } from "../src/repository/inMemoryRepository.ts";
+import { createDefaultServiceProfile } from "../../shared/src/defaults.ts";
 
 test("server bootstrap seeds repository for standalone operation", () => {
   const { repository, serviceProfileId, server } = createReqmoServer();

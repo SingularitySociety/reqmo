@@ -1,4 +1,4 @@
-import { estimateTravelMinutes, haversineDistanceMeters } from "../../../shared/src/geo.js";
+import { estimateTravelMinutes, haversineDistanceMeters } from "../../../shared/src/geo.ts";
 
 const DEFAULT_PROVIDER = "STRAIGHT_LINE";
 const DEFAULT_TIMEOUT_MS = 3500;

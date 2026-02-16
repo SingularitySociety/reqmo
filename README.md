@@ -14,7 +14,7 @@ Reqmo is an open-source, config-driven on-demand dispatch platform.
 From repository root:
 
 ```bash
-node packages/backend/src/api/server.js
+node --import tsx packages/backend/src/api/server.ts
 ```
 
 API examples:
@@ -39,6 +39,7 @@ The backend can load generic seed data by environment variable:
 - `SEED_SERVICE_PROFILE_PATH`
 - `SEED_FARE_POLICY_PATH`
 - `SEED_TELEPHONY_CONFIG_PATH`
+- `SEED_OVERWRITE_EXISTING` (`true` to force seed data overwrite)
 
 ## Flutter Mobile Test
 

@@ -1,4 +1,4 @@
-import { LOCATION_MODES } from "./constants.js";
+import { LOCATION_MODES } from "./constants.ts";
 
 export function createDefaultServiceProfile(overrides = {}) {
   return {
@@ -39,7 +39,8 @@ export function createDefaultServiceProfile(overrides = {}) {
         pickupDelay: 0.4,
         detour: 0.25,
         deadhead: 0.2,
-        lateness: 0.15
+        lateness: 0.15,
+        dropoffPriority: 1
       }
     },
     farePolicy: {

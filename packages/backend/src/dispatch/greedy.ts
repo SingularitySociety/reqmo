@@ -1,4 +1,4 @@
-import { estimateTravelMinutes } from "../../../shared/src/geo.js";
+import { estimateTravelMinutes } from "../../../shared/src/geo.ts";
 
 function defaultTravelMinutes(a, b) {
   return estimateTravelMinutes(a, b);

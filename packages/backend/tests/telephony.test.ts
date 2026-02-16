@@ -1,17 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { createDefaultServiceProfile } from "../../shared/src/defaults.js";
-import { ADAPTER_TYPES } from "../../shared/src/constants.js";
-import { InMemoryRepository } from "../src/repository/inMemoryRepository.js";
+import { createDefaultServiceProfile } from "../../shared/src/defaults.ts";
+import { ADAPTER_TYPES } from "../../shared/src/constants.ts";
+import { InMemoryRepository } from "../src/repository/inMemoryRepository.ts";
 import {
   linkPhoneIdentity,
   ingestCall,
   createPhoneRideRequest,
   listPhoneRideOptions,
   previewFare
-} from "../src/api/functions.js";
-import { normalizePhoneNumber } from "../src/telephony/phoneNumber.js";
+} from "../src/api/functions.ts";
+import { normalizePhoneNumber } from "../src/telephony/phoneNumber.ts";
 
 function seedForTelephony() {
   const repository = new InMemoryRepository();

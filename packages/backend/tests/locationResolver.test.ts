@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { createDefaultServiceProfile } from "../../shared/src/defaults.js";
-import { LOCATION_MODES, RESOLVED_AS } from "../../shared/src/constants.js";
-import { resolveLocationInput } from "../src/location/resolver.js";
+import { createDefaultServiceProfile } from "../../shared/src/defaults.ts";
+import { LOCATION_MODES, RESOLVED_AS } from "../../shared/src/constants.ts";
+import { resolveLocationInput } from "../src/location/resolver.ts";
 
 const STOPS = [
   { id: "stop_a", name: "A", lat: 33.0, lng: 132.9 },

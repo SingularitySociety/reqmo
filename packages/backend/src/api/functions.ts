@@ -1,18 +1,18 @@
-import { CHANNELS } from "../../../shared/src/constants.js";
+import { CHANNELS } from "../../../shared/src/constants.ts";
 import {
   cancelRideRequestDispatch,
   dispatchRideRequest,
   listRideRequestDispatchOptions,
   previewRideRequestDispatch,
   reoptimizeVehicleDispatchFromLocation
-} from "../dispatch/engine.js";
+} from "../dispatch/engine.ts";
 import {
   createRideRequestByPhone,
   ingestCallEvent,
   resolveCallerIdentity
-} from "../telephony/service.js";
-import { normalizePhoneNumber } from "../telephony/phoneNumber.js";
-import { resolveRoutePath } from "../routing/service.js";
+} from "../telephony/service.ts";
+import { normalizePhoneNumber } from "../telephony/phoneNumber.ts";
+import { resolveRoutePath } from "../routing/service.ts";
 
 function generatePreviewRequestId() {
   const stamp = Date.now().toString(36);

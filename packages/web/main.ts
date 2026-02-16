@@ -165,6 +165,26 @@ function previewReasonLabel(reason) {
   return "予約案を算出できませんでした。";
 }
 
+const PREVIEW_REJECTION_LABELS = {
+  CONSECUTIVE_PICKUP: "乗車タスクが連続して成立しない",
+  CAPACITY: "同時乗車人数の上限を超える",
+  MAX_WAIT: "乗車までの待ち時間上限を超える",
+  MAX_DETOUR: "既存予約への迂回遅延上限を超える",
+  MAX_ADDITIONAL_STOPS: "追加停留所数の上限を超える"
+};
+
+const PREVIEW_REJECTION_ORDER = [
+  "CONSECUTIVE_PICKUP",
+  "CAPACITY",
+  "MAX_WAIT",
+  "MAX_DETOUR",
+  "MAX_ADDITIONAL_STOPS"
+];
+
+function previewRejectionCodeLabel(code) {
+  return PREVIEW_REJECTION_LABELS[code] ?? code;
+}
+
 function formatCoordinate(value) {
   return Number.isFinite(value) ? Number(value).toFixed(6) : "-";
 }
@@ -178,6 +198,27 @@ function statusColor(status) {
     CANCELLED: "error"
   };
   return map[status] ?? "default";
+}
+
+function normalizeRouteTaskType(value) {
+  if (typeof value !== "string") {
+    return "";
+  }
+  const normalized = value.trim().toUpperCase().replace(/[\s-]+/g, "_");
+  if (normalized === "PICKUP" || normalized === "PICK_UP") {
+    return "PICKUP";
+  }
+  if (normalized === "DROPOFF" || normalized === "DROP_OFF") {
+    return "DROPOFF";
+  }
+  return "";
+}
+
+function normalizeRequestStatus(value) {
+  if (typeof value !== "string") {
+    return "";
+  }
+  return value.trim().toUpperCase();
 }
 
 const LOCATION_INPUT_OPTIONS = [
@@ -556,6 +597,24 @@ createApp({
       }
     }
 
+    function resolveRouteTaskServiceMinutes(taskType) {
+      const dispatchPolicy = serviceProfile.value?.dispatchPolicy ?? {};
+      const pickupServiceRaw = Number(dispatchPolicy.pickupServiceMinutes);
+      const dropoffServiceRaw = Number(dispatchPolicy.dropoffServiceMinutes);
+      const pickupServiceMinutes =
+        Number.isFinite(pickupServiceRaw) && pickupServiceRaw >= 0 ? pickupServiceRaw : 0;
+      const dropoffServiceMinutes =
+        Number.isFinite(dropoffServiceRaw) && dropoffServiceRaw >= 0 ? dropoffServiceRaw : 0;
+
+      if (taskType === "PICKUP") {
+        return pickupServiceMinutes;
+      }
+      if (taskType === "DROPOFF") {
+        return dropoffServiceMinutes;
+      }
+      return 0;
+    }
+
     function routeMetricsByRequest(vehicle) {
       if (!vehicle || !hasPoint(vehicle.currentLocation)) {
         return new Map();
@@ -575,6 +634,7 @@ createApp({
         if (!hasPoint(task?.point)) {
           continue;
         }
+        const taskType = normalizeRouteTaskType(task?.type);
         const segmentMetrics = getRouteSegmentMetricsFromCache(current, task.point);
         if (!segmentMetrics) {
           void requestRouteSegmentMetrics(current, task.point);
@@ -586,30 +646,52 @@ createApp({
         }
         timeline.push({
           task,
+          taskType,
           elapsedDistanceKm,
           elapsedMinutes
         });
         current = task.point;
+        if (Number.isFinite(elapsedMinutes)) {
+          elapsedMinutes += resolveRouteTaskServiceMinutes(taskType);
+        }
       }
 
       const result = new Map();
       for (let index = 0; index < timeline.length; index += 1) {
         const entry = timeline[index];
         const requestId = entry.task?.requestId;
-        if (!requestId || entry.task?.type !== "DROPOFF") {
+        if (!requestId || entry.taskType !== "DROPOFF") {
           continue;
         }
         if (result.has(requestId)) {
           continue;
         }
 
+        const nextTaskIndex = timeline.findIndex(
+          (candidate, candidateIndex) => candidateIndex > index && Boolean(candidate.taskType)
+        );
+        const nextTaskEntry = nextTaskIndex >= 0 ? timeline[nextTaskIndex] : null;
         const nextPickupIndex = timeline.findIndex(
-          (candidate, candidateIndex) => candidateIndex > index && candidate.task?.type === "PICKUP"
+          (candidate, candidateIndex) => candidateIndex > index && candidate.taskType === "PICKUP"
         );
         const nextPickupEntry = nextPickupIndex >= 0 ? timeline[nextPickupIndex] : null;
+        const hasNextTask = nextTaskEntry !== null;
+        const nextTaskType = hasNextTask ? nextTaskEntry.taskType : "";
         const hasNextPickup = nextPickupEntry !== null;
         const dropoffDistanceKm = Number.isFinite(entry.elapsedDistanceKm) ? entry.elapsedDistanceKm : null;
         const dropoffMinutes = Number.isFinite(entry.elapsedMinutes) ? entry.elapsedMinutes : null;
+        const nextTaskDistanceKm =
+          hasNextTask &&
+          Number.isFinite(nextTaskEntry.elapsedDistanceKm) &&
+          Number.isFinite(entry.elapsedDistanceKm)
+            ? Math.max(0, nextTaskEntry.elapsedDistanceKm - entry.elapsedDistanceKm)
+            : null;
+        const nextTaskMinutes =
+          hasNextTask &&
+          Number.isFinite(nextTaskEntry.elapsedMinutes) &&
+          Number.isFinite(entry.elapsedMinutes)
+            ? Math.max(0, nextTaskEntry.elapsedMinutes - entry.elapsedMinutes)
+            : null;
         const nextPickupDistanceKm =
           hasNextPickup &&
           Number.isFinite(nextPickupEntry.elapsedDistanceKm) &&
@@ -626,6 +708,10 @@ createApp({
         result.set(requestId, {
           dropoffDistanceKm,
           dropoffMinutes,
+          nextTaskDistanceKm,
+          nextTaskMinutes,
+          nextTaskType,
+          hasNextTask,
           nextPickupDistanceKm,
           nextPickupMinutes,
           hasNextPickup
@@ -646,6 +732,95 @@ createApp({
       return metrics;
     });
 
+    const nextPickupByRequest = computed(() => {
+      const result = new Map();
+      const requestsByVehicle = new Map();
+
+      function isFuturePickupCandidate(status) {
+        return (
+          status !== "PICKED_UP" &&
+          status !== "COMPLETED" &&
+          status !== "CANCELLED" &&
+          status !== "CANCELED" &&
+          status !== "REJECTED"
+        );
+      }
+
+      for (const request of requests.value) {
+        const status = normalizeRequestStatus(request.status);
+        const vehicleId = typeof request.assignment?.vehicleId === "string" ? request.assignment.vehicleId.trim() : "";
+        if (!vehicleId) {
+          continue;
+        }
+        const pickupEtaRaw = Number(request.assignment?.etaPickupMinutes);
+        const dropoffEtaRaw = Number(request.assignment?.etaDropoffMinutes);
+        const pickupEtaMinutes = Number.isFinite(pickupEtaRaw) ? Math.max(0, pickupEtaRaw) : null;
+        const dropoffEtaMinutes = Number.isFinite(dropoffEtaRaw) ? Math.max(0, dropoffEtaRaw) : null;
+        if (pickupEtaMinutes === null && dropoffEtaMinutes === null) {
+          continue;
+        }
+        const dropoffPoint = resolveLocationPoint(request.dropoff);
+        if (!requestsByVehicle.has(vehicleId)) {
+          requestsByVehicle.set(vehicleId, []);
+        }
+        requestsByVehicle.get(vehicleId).push({
+          requestId: request.id,
+          status,
+          pickupEtaMinutes,
+          dropoffEtaMinutes,
+          pickupPoint: resolveLocationPoint(request.pickup),
+          dropoffPoint
+        });
+      }
+
+      requestsByVehicle.forEach((entries) => {
+        if (!Array.isArray(entries) || entries.length === 0) {
+          return;
+        }
+        const pickupCandidates = entries
+          .filter((entry) => isFuturePickupCandidate(entry.status) && Number.isFinite(entry.pickupEtaMinutes))
+          .sort((left, right) => left.pickupEtaMinutes - right.pickupEtaMinutes);
+        if (!pickupCandidates.length) {
+          return;
+        }
+
+        entries.forEach((entry) => {
+          if (!Number.isFinite(entry.dropoffEtaMinutes)) {
+            return;
+          }
+
+          const nextEntry =
+            pickupCandidates.find(
+              (candidate) =>
+                candidate.requestId !== entry.requestId &&
+                Number.isFinite(candidate.pickupEtaMinutes) &&
+                candidate.pickupEtaMinutes > entry.dropoffEtaMinutes
+            ) ?? null;
+          if (!nextEntry) {
+            return;
+          }
+
+          const etaDeltaMinutes = roundedEta(nextEntry.pickupEtaMinutes - entry.dropoffEtaMinutes);
+          let distanceKm = null;
+          if (hasPoint(entry.dropoffPoint) && hasPoint(nextEntry.pickupPoint)) {
+            const segmentMetrics = getRouteSegmentMetricsFromCache(entry.dropoffPoint, nextEntry.pickupPoint);
+            if (segmentMetrics) {
+              distanceKm = roundedDistanceKm(segmentMetrics.distanceKm);
+            } else {
+              void requestRouteSegmentMetrics(entry.dropoffPoint, nextEntry.pickupPoint);
+            }
+          }
+
+          result.set(entry.requestId, {
+            etaMinutes: etaDeltaMinutes,
+            distanceKm
+          });
+        });
+      });
+
+      return result;
+    });
+
     watch(
       vehicles,
       (nextVehicles) => {
@@ -658,7 +833,30 @@ createApp({
 
     const requestRows = computed(() =>
       [...requests.value]
-        .sort((left, right) => new Date(left.createdAt ?? 0).getTime() - new Date(right.createdAt ?? 0).getTime())
+        .sort((left, right) => {
+          const leftPickupEta = Number(left.assignment?.etaPickupMinutes);
+          const rightPickupEta = Number(right.assignment?.etaPickupMinutes);
+          const leftPickupSort = Number.isFinite(leftPickupEta) ? Math.max(0, leftPickupEta) : Number.POSITIVE_INFINITY;
+          const rightPickupSort = Number.isFinite(rightPickupEta) ? Math.max(0, rightPickupEta) : Number.POSITIVE_INFINITY;
+          if (leftPickupSort !== rightPickupSort) {
+            return leftPickupSort - rightPickupSort;
+          }
+
+          const leftDropoffEta = Number(left.assignment?.etaDropoffMinutes);
+          const rightDropoffEta = Number(right.assignment?.etaDropoffMinutes);
+          const leftDropoffSort = Number.isFinite(leftDropoffEta) ? Math.max(0, leftDropoffEta) : Number.POSITIVE_INFINITY;
+          const rightDropoffSort = Number.isFinite(rightDropoffEta) ? Math.max(0, rightDropoffEta) : Number.POSITIVE_INFINITY;
+          if (leftDropoffSort !== rightDropoffSort) {
+            return leftDropoffSort - rightDropoffSort;
+          }
+
+          const leftCreatedAt = new Date(left.createdAt ?? 0).getTime();
+          const rightCreatedAt = new Date(right.createdAt ?? 0).getTime();
+          if (leftCreatedAt !== rightCreatedAt) {
+            return leftCreatedAt - rightCreatedAt;
+          }
+          return String(left.id ?? "").localeCompare(String(right.id ?? ""));
+        })
         .map((request) => {
           const pickupPoint = resolveLocationPoint(request.pickup);
           const dropoffPoint = resolveLocationPoint(request.dropoff);
@@ -666,12 +864,30 @@ createApp({
           const etaDropoffRaw = Number(request.assignment?.etaDropoffMinutes);
           const etaMinutes = roundedEta(etaRaw);
           const etaDropoffMinutes = roundedEta(etaDropoffRaw);
+          const vehicleId = request.assignment?.vehicleId ?? "-";
           const routeMetrics = requestRouteMetrics.value.get(request.id);
           const dropoffTravelDistanceKm = roundedDistanceKm(routeMetrics?.dropoffDistanceKm);
           const dropoffTravelMinutes = roundedEta(routeMetrics?.dropoffMinutes);
-          const nextPickupTravelDistanceKm = roundedDistanceKm(routeMetrics?.nextPickupDistanceKm);
-          const nextPickupTravelMinutes = roundedEta(routeMetrics?.nextPickupMinutes);
-          const hasNextPickup = Boolean(routeMetrics?.hasNextPickup);
+          let nextTaskTravelDistanceKm = roundedDistanceKm(routeMetrics?.nextTaskDistanceKm);
+          let nextTaskTravelMinutes = roundedEta(routeMetrics?.nextTaskMinutes);
+          let hasNextTask = Boolean(routeMetrics?.hasNextTask);
+          let nextTaskType =
+            typeof routeMetrics?.nextTaskType === "string" ? routeMetrics.nextTaskType : "";
+          if (!hasNextTask) {
+            const fallback = nextPickupByRequest.value.get(request.id);
+            if (fallback) {
+              hasNextTask = true;
+              nextTaskType = "PICKUP";
+              if (nextTaskTravelDistanceKm === null) {
+                nextTaskTravelDistanceKm = fallback.distanceKm;
+              }
+              if (nextTaskTravelMinutes === null) {
+                nextTaskTravelMinutes = fallback.etaMinutes;
+              }
+            }
+          }
+          const nextTaskLabel =
+            nextTaskType === "DROPOFF" ? "降車" : nextTaskType === "PICKUP" ? "乗車" : "停車";
           const plannedPickup = etaMinutes !== null ? addMinutes(now.value, etaMinutes) : new Date(request.createdAt ?? now.value);
           const plannedDropoff = etaDropoffMinutes !== null
             ? addMinutes(now.value, etaDropoffMinutes)
@@ -691,18 +907,20 @@ createApp({
             statusColor: statusColor(request.status),
             channel: request.channel,
             partySize: request.partySize ?? 1,
-            vehicleId: request.assignment?.vehicleId ?? "-",
+            vehicleId,
             etaMinutes,
             etaDropoffMinutes,
             dropoffTravelDistanceKm,
             dropoffTravelMinutes,
             dropoffTravelDistanceLabel: formatDistanceLabel(dropoffTravelDistanceKm),
             dropoffTravelMinutesLabel: formatMinutesLabel(dropoffTravelMinutes),
-            nextPickupTravelDistanceKm,
-            nextPickupTravelMinutes,
-            nextPickupTravelDistanceLabel: formatDistanceLabel(nextPickupTravelDistanceKm),
-            nextPickupTravelMinutesLabel: formatMinutesLabel(nextPickupTravelMinutes),
-            hasNextPickup,
+            nextTaskTravelDistanceKm,
+            nextTaskTravelMinutes,
+            nextTaskTravelDistanceLabel: formatDistanceLabel(nextTaskTravelDistanceKm),
+            nextTaskTravelMinutesLabel: formatMinutesLabel(nextTaskTravelMinutes),
+            hasNextTask,
+            nextTaskType,
+            nextTaskLabel,
             displayTime: formatClock(plannedPickup),
             dropoffDisplayTime: formatClock(plannedDropoff),
             createdTime: formatTimeLabel(request.createdAt),
@@ -767,6 +985,178 @@ createApp({
     const previewDropoffClock = computed(
       () => formatTimeLabel(previewSimulation.value?.plannedDropoffAt)
     );
+    const previewRejectDiagnostics = computed(() =>
+      dispatchPreview.value?.status === "REJECTED" ? dispatchPreview.value?.diagnostics ?? null : null
+    );
+    const previewRejectSummary = computed(() => {
+      const diagnostics = previewRejectDiagnostics.value;
+      if (!diagnostics) {
+        return "";
+      }
+      const summary = typeof diagnostics.summary === "string" ? diagnostics.summary.trim() : "";
+      if (summary) {
+        return summary;
+      }
+      const inspected = Number(diagnostics.inspectedVehicleCount);
+      const candidateCount = Number(diagnostics.candidateCount);
+      if (Number.isFinite(candidateCount) && candidateCount > 0) {
+        return `${Math.round(candidateCount)}件の候補ルートを評価しましたが、条件を満たす案がありません。`;
+      }
+      if (Number.isFinite(inspected) && inspected > 0) {
+        return `${Math.round(inspected)}台を評価しましたが、条件を満たす案がありません。`;
+      }
+      return "";
+    });
+    const previewRejectBreakdown = computed(() => {
+      const diagnostics = previewRejectDiagnostics.value;
+      if (!diagnostics) {
+        return [];
+      }
+
+      const breakdown = Array.isArray(diagnostics.breakdown) ? diagnostics.breakdown : [];
+      const fromBreakdown = breakdown
+        .map((item) => {
+          const count = Number(item?.count);
+          if (!Number.isFinite(count) || count <= 0) {
+            return null;
+          }
+          const code = typeof item?.code === "string" ? item.code : "UNKNOWN";
+          const ratio = Number(item?.ratioPercent);
+          return {
+            code,
+            label: previewRejectionCodeLabel(code),
+            count: Math.round(count),
+            ratioPercent: Number.isFinite(ratio) ? Math.round(ratio) : null
+          };
+        })
+        .filter(Boolean);
+      if (fromBreakdown.length) {
+        return fromBreakdown;
+      }
+
+      const counts = diagnostics.rejectionCounts ?? {};
+      const candidateCount = Number(diagnostics.candidateCount);
+      const normalizedCandidateCount =
+        Number.isFinite(candidateCount) && candidateCount > 0 ? candidateCount : 0;
+      return PREVIEW_REJECTION_ORDER
+        .map((code) => {
+          const count = Number(counts[code]);
+          if (!Number.isFinite(count) || count <= 0) {
+            return null;
+          }
+          return {
+            code,
+            label: previewRejectionCodeLabel(code),
+            count: Math.round(count),
+            ratioPercent:
+              normalizedCandidateCount > 0
+                ? Math.round((count / normalizedCandidateCount) * 100)
+                : null
+          };
+        })
+        .filter(Boolean);
+    });
+    const previewRejectConstraintSummary = computed(() => {
+      const constraints = previewRejectDiagnostics.value?.constraints;
+      if (!constraints || typeof constraints !== "object") {
+        return "";
+      }
+      const segments = [];
+      const maxWait = Number(constraints.maxWaitMinutes);
+      const maxDetour = Number(constraints.maxDetourMinutes);
+      const maxAdditionalStops = Number(constraints.maxAdditionalStops);
+      const maxOnboard = Number(constraints.maxOnboardPerVehicle);
+      const candidateVehicleLimit = Number(constraints.candidateVehicleLimit);
+
+      if (Number.isFinite(maxWait)) {
+        segments.push(`最大待ち ${Math.round(maxWait)}分`);
+      }
+      if (Number.isFinite(maxDetour)) {
+        segments.push(`最大迂回遅延 ${Math.round(maxDetour)}分`);
+      }
+      if (Number.isFinite(maxAdditionalStops)) {
+        segments.push(`追加停留所 ${Math.round(maxAdditionalStops)}`);
+      }
+      if (Number.isFinite(maxOnboard)) {
+        segments.push(`同乗上限 ${Math.round(maxOnboard)}人`);
+      }
+      if (Number.isFinite(candidateVehicleLimit)) {
+        segments.push(`候補車両上限 ${Math.round(candidateVehicleLimit)}台`);
+      }
+      if (!segments.length) {
+        return "";
+      }
+      return `判定条件: ${segments.join(" / ")}`;
+    });
+    const previewRejectCountermeasures = computed(() => {
+      const diagnostics = previewRejectDiagnostics.value;
+      if (!diagnostics) {
+        return [];
+      }
+      const backendCandidates = Array.isArray(diagnostics.countermeasureCandidates)
+        ? diagnostics.countermeasureCandidates
+            .map((item) => (typeof item === "string" ? item.trim() : ""))
+            .filter(Boolean)
+        : [];
+      if (backendCandidates.length) {
+        return backendCandidates.slice(0, 6);
+      }
+
+      const counts = diagnostics.rejectionCounts ?? {};
+      const constraints = diagnostics.constraints ?? {};
+      const observed = diagnostics.observed ?? {};
+      const items = [];
+      const addUnique = (text) => {
+        if (!text || items.includes(text)) {
+          return;
+        }
+        items.push(text);
+      };
+      const countOf = (code) => {
+        const value = Number(counts[code]);
+        return Number.isFinite(value) && value > 0 ? Math.round(value) : 0;
+      };
+
+      if (Number(diagnostics.activeVehicleCount) === 0) {
+        addUnique("稼働中の車両を ACTIVE に変更するか、車両を追加してください。");
+      }
+      if (countOf("MAX_WAIT") > 0) {
+        const minEta = Number(observed.minEtaPickupMinutes);
+        const maxWait = Number(constraints.maxWaitMinutes);
+        if (Number.isFinite(minEta) && Number.isFinite(maxWait)) {
+          addUnique(
+            `最短でも乗車まで約${Math.round(minEta)}分です。希望時刻調整または最大待ち時間(${Math.round(maxWait)}分)の見直しを検討してください。`
+          );
+        } else {
+          addUnique("乗車希望時刻を調整するか、最大待ち時間の設定を見直してください。");
+        }
+      }
+      if (countOf("MAX_DETOUR") > 0) {
+        const minDetour = Number(observed.minDetourMinutes);
+        const maxDetour = Number(constraints.maxDetourMinutes);
+        if (Number.isFinite(minDetour) && Number.isFinite(maxDetour)) {
+          addUnique(
+            `既存予約への最小遅延は約${Math.round(minDetour)}分です。地点変更または最大迂回遅延(${Math.round(maxDetour)}分)の見直しを検討してください。`
+          );
+        } else {
+          addUnique("乗降地点を調整するか、最大迂回遅延の設定を見直してください。");
+        }
+      }
+      if (countOf("CAPACITY") > 0) {
+        addUnique("人数を減らすか、同乗上限設定を見直してください。");
+      }
+      if (countOf("MAX_ADDITIONAL_STOPS") > 0) {
+        addUnique("追加停留所上限の緩和または既存予約完了後の再受付を検討してください。");
+      }
+      if (countOf("CONSECUTIVE_PICKUP") > 0) {
+        addUnique("先行予約の降車後に再試算するか、乗車地点・時刻の調整を検討してください。");
+      }
+      if (!items.length) {
+        addUnique("車両現在地を更新して再試算してください。");
+      }
+
+      return items.slice(0, 6);
+    });
     const previewRoutePoints = computed(() =>
       (previewSimulation.value?.routeAfter ?? [])
         .map((task) => task.point)
@@ -1946,6 +2336,11 @@ createApp({
       hasAssignablePreview,
       previewPickupClock,
       previewDropoffClock,
+      previewRejectDiagnostics,
+      previewRejectSummary,
+      previewRejectBreakdown,
+      previewRejectConstraintSummary,
+      previewRejectCountermeasures,
       selectedVehicle,
       selectedVehiclePointLabel,
       callQueue,
@@ -1983,8 +2378,10 @@ createApp({
       clearDispatchPreview,
       cancelRideRequestById,
       updateVehicleLocationFromForm,
+      formatTimeLabel,
       formatSignedMinutes,
       previewReasonLabel,
+      previewRejectionCodeLabel,
       simulateInboundCall,
       fetchPhoneRideOptions,
       createPhoneRide,
@@ -2168,8 +2565,8 @@ createApp({
                     </v-chip>
                   </div>
                   <div class="rq-impact-times">
-                    <span>乗車 {{ impact.pickupBeforeAt ? impact.pickupBeforeAt.slice(11,16) : '--:--' }} → {{ impact.pickupAfterAt ? impact.pickupAfterAt.slice(11,16) : '--:--' }}</span>
-                    <span>降車 {{ impact.dropoffBeforeAt ? impact.dropoffBeforeAt.slice(11,16) : '--:--' }} → {{ impact.dropoffAfterAt ? impact.dropoffAfterAt.slice(11,16) : '--:--' }}</span>
+                    <span>乗車 {{ formatTimeLabel(impact.pickupBeforeAt) }} → {{ formatTimeLabel(impact.pickupAfterAt) }}</span>
+                    <span>降車 {{ formatTimeLabel(impact.dropoffBeforeAt) }} → {{ formatTimeLabel(impact.dropoffAfterAt) }}</span>
                   </div>
                 </div>
               </div>
@@ -2181,7 +2578,7 @@ createApp({
               <div class="rq-driver-steps">
                 <div v-for="step in previewSimulation.routeAfter" :key="step.sequence + '-' + step.requestId + '-' + step.type" class="rq-driver-step">
                   <span class="rq-step-index">{{ step.sequence }}</span>
-                  <span class="rq-step-time">{{ step.etaAt ? step.etaAt.slice(11,16) : '--:--' }}</span>
+                  <span class="rq-step-time">{{ formatTimeLabel(step.etaAt) }}</span>
                   <span class="rq-step-label">{{ step.type === 'PICKUP' ? '乗車' : '降車' }}: {{ step.locationLabel }}</span>
                 </div>
               </div>
@@ -2191,6 +2588,33 @@ createApp({
 
         <template v-else>
           <div class="rq-preview-alert rq-preview-alert--error">{{ previewReasonLabel(dispatchPreview.reason) }}</div>
+          <div v-if="previewRejectSummary" class="rq-preview-reject-summary">{{ previewRejectSummary }}</div>
+
+          <div v-if="previewRejectBreakdown.length" class="rq-preview-reject-section">
+            <div class="rq-preview-subtitle">受付不可の内訳</div>
+            <div class="rq-preview-reject-list">
+              <div v-for="item in previewRejectBreakdown" :key="'reject-' + item.code" class="rq-preview-reject-item">
+                <span class="rq-preview-reject-item-label">{{ previewRejectionCodeLabel(item.code) }}</span>
+                <span class="rq-preview-reject-item-meta">
+                  {{ item.count }}件
+                  <span v-if="item.ratioPercent !== null">({{ item.ratioPercent }}%)</span>
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="previewRejectCountermeasures.length" class="rq-preview-reject-section">
+            <div class="rq-preview-subtitle">対策候補</div>
+            <ul class="rq-preview-countermeasure-list">
+              <li v-for="(candidate, index) in previewRejectCountermeasures" :key="'countermeasure-' + index">
+                {{ candidate }}
+              </li>
+            </ul>
+          </div>
+
+          <div v-if="previewRejectConstraintSummary" class="rq-inline-help">
+            {{ previewRejectConstraintSummary }}
+          </div>
         </template>
       </v-card-text>
 
@@ -2666,10 +3090,10 @@ createApp({
             </span>
             <span class="rq-req-metric">
               <v-icon size="12" color="#0f766e">mdi-map-clock-outline</v-icon>
-              <template v-if="row.hasNextPickup">
-                次の乗車まで 距離 {{ row.nextPickupTravelDistanceLabel ?? "算出中" }} / 時間 {{ row.nextPickupTravelMinutesLabel ?? "算出中" }}
+              <template v-if="row.hasNextTask">
+                次の{{ row.nextTaskLabel }}まで 距離 {{ row.nextTaskTravelDistanceLabel ?? "算出中" }} / 時間 {{ row.nextTaskTravelMinutesLabel ?? "算出中" }}
               </template>
-              <template v-else>次の乗車予定なし</template>
+              <template v-else>次の乗降予定なし</template>
             </span>
           </div>
         </button>
