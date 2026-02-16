@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { Readable } from "node:stream";
 
 import { createReqmoServer } from "../src/api/server.ts";
 import { InMemoryRepository } from "../src/repository/inMemoryRepository.ts";
@@ -29,4 +30,58 @@ test("server bootstrap does not inject demo stops when repository already has st
   assert.ok(stopIds.includes("shimanto_stop_1"));
   assert.equal(stopIds.includes("stop_a"), false);
   assert.equal(stopIds.includes("stop_b"), false);
+});
+
+function invokeServer({ server, method, url, body }) {
+  return new Promise((resolve) => {
+    const req = Readable.from([]);
+    req.method = method;
+    req.url = url;
+    req.body = body;
+
+    const responseState = {
+      statusCode: 0,
+      headers: {},
+      payload: ""
+    };
+
+    const res = {
+      setHeader(name, value) {
+        responseState.headers[name] = value;
+      },
+      writeHead(status, headers = {}) {
+        responseState.statusCode = status;
+        responseState.headers = {
+          ...responseState.headers,
+          ...headers
+        };
+      },
+      end(chunk = "") {
+        responseState.payload += String(chunk ?? "");
+        resolve(responseState);
+      }
+    };
+
+    server.emit("request", req, res);
+  });
+}
+
+test("api accepts JSON payload from pre-parsed req.body", async () => {
+  const { server } = createReqmoServer();
+  const response = await invokeServer({
+    server,
+    method: "POST",
+    url: "/api/ride-requests/preview",
+    body: {
+      pickup: { mode: "FIXED_STOP", stopId: "stop_a" },
+      dropoff: { mode: "FIXED_STOP", stopId: "stop_b" },
+      partySize: 1
+    }
+  });
+
+  assert.equal(response.statusCode, 200);
+  const parsed = JSON.parse(response.payload);
+  assert.equal(typeof parsed.status, "string");
+  assert.equal(parsed.status.length > 0, true);
+  assert.equal(Object.hasOwn(parsed, "error"), false);
 });

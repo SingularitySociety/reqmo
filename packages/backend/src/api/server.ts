@@ -38,6 +38,26 @@ function writeCorsHeaders(res, origin = "*") {
 }
 
 async function parseJsonBody(req) {
+  if (req && typeof req === "object") {
+    const parsedBody = req.body;
+    if (parsedBody && typeof parsedBody === "object") {
+      return parsedBody;
+    }
+    if (typeof parsedBody === "string") {
+      return parsedBody.trim() ? JSON.parse(parsedBody) : {};
+    }
+
+    const rawBody = req.rawBody;
+    if (Buffer.isBuffer(rawBody)) {
+      const rawText = rawBody.toString("utf-8").trim();
+      return rawText ? JSON.parse(rawText) : {};
+    }
+    if (typeof rawBody === "string") {
+      const rawText = rawBody.trim();
+      return rawText ? JSON.parse(rawText) : {};
+    }
+  }
+
   const chunks = [];
   for await (const chunk of req) {
     chunks.push(chunk);
