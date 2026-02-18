@@ -11,6 +11,8 @@ import {
   listPhoneRideOptions,
   previewRideRequest,
   createPhoneRideRequest,
+  recordVehiclePassengerEvent,
+  resetRideRequests,
   getRoutePath,
   ingestCall,
   linkPhoneIdentity,
@@ -366,6 +368,14 @@ export function createReqmoServer({
         return jsonResponse(res, 200, result);
       }
 
+      if (req.method === "POST" && pathname === "/api/ride-requests/reset") {
+        const result = await resetRideRequests({
+          repository
+        });
+        await flushRepository(repository);
+        return jsonResponse(res, 200, result);
+      }
+
       const cancelPathMatch = pathname.match(/^\/api\/ride-requests\/([^/]+)\/cancel$/);
       if (req.method === "POST" && cancelPathMatch) {
         const body = await parseJsonBody(req);
@@ -399,7 +409,27 @@ export function createReqmoServer({
           heading: body.heading,
           speedKmh: body.speedKmh,
           capturedAt: body.capturedAt,
+          skipReoptimization: body.skipReoptimization === true,
           context: requestContext
+        });
+        await flushRepository(repository);
+
+        return jsonResponse(res, 200, result);
+      }
+
+      const passengerEventPathMatch = pathname.match(/^\/api\/vehicles\/([^/]+)\/passenger-events$/);
+      if (req.method === "POST" && passengerEventPathMatch) {
+        const body = await parseJsonBody(req);
+        const vehicleId = decodeURIComponent(passengerEventPathMatch[1]);
+
+        const result = await recordVehiclePassengerEvent({
+          repository,
+          serviceProfileId: body.serviceProfileId ?? activeServiceProfileId,
+          vehicleId,
+          requestId: body.requestId ?? null,
+          taskType: body.taskType ?? null,
+          source: body.source ?? "SIMULATION",
+          processedAt: body.processedAt ?? null
         });
         await flushRepository(repository);
 

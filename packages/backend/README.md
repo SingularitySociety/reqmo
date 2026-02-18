@@ -22,10 +22,13 @@ npm run test:core
 - `GET /api/health`
 - `GET /api/state`
 - `GET /api/stops`
+- `GET /api/vehicles`
 - `GET /api/ride-requests`
 - `GET /api/call-events`
 - `GET /api/service-profiles`
 - `POST /api/ride-requests`
+- `POST /api/vehicles/:vehicleId/location` (`skipReoptimization=true`で再最適化を無効化)
+- `POST /api/vehicles/:vehicleId/passenger-events` (ルート先頭タスクの乗降イベントを記録)
 - `POST /api/phone-rides`
 - `POST /api/telephony/ingest`
 - `POST /api/service-profiles`

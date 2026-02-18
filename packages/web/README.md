@@ -11,3 +11,14 @@ python -m http.server 5173
 ```
 
 Open [http://localhost:5173](http://localhost:5173).
+
+## Simulation Page
+
+- Main dispatch UI: [http://localhost:5173](http://localhost:5173)
+- Bus simulation UI: [http://localhost:5173/simulation/](http://localhost:5173/simulation/)
+- Query shortcut: [http://localhost:5173/?simulator](http://localhost:5173/?simulator)
+
+The simulation page sends:
+
+- GPS updates to `POST /api/vehicles/:vehicleId/location`
+- Passenger events to `POST /api/vehicles/:vehicleId/passenger-events`

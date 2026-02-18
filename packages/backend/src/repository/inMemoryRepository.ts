@@ -179,6 +179,29 @@ export class InMemoryRepository {
     return Array.from(this.rideRequests.values());
   }
 
+  resetRideRequests() {
+    const clearedRideRequests = this.rideRequests.size;
+    const clearedTrips = this.trips.size;
+    const updatedVehicles = this.vehicles.size;
+
+    this.rideRequests.clear();
+    this.trips.clear();
+
+    this.vehicles.forEach((vehicle, vehicleId) => {
+      this.vehicles.set(vehicleId, {
+        ...vehicle,
+        onboardCount: 0,
+        route: []
+      });
+    });
+
+    return {
+      clearedRideRequests,
+      clearedTrips,
+      updatedVehicles
+    };
+  }
+
   createTrip(trip) {
     const id = trip.id ?? this.nextId("trip");
     const now = new Date().toISOString();

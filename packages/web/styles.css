@@ -877,6 +877,7 @@ html, body, #app {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   padding: 10px 12px 8px;
   border-bottom: 1px solid var(--rq-border);
   flex-shrink: 0;
@@ -897,6 +898,19 @@ html, body, #app {
   align-items: center;
   gap: 6px;
   letter-spacing: 0.03em;
+  min-width: 0;
+  flex: 1;
+}
+
+.rq-reset-btn {
+  flex-shrink: 0;
+  min-width: 92px !important;
+  padding: 0 8px !important;
+  border: 1px solid rgba(185, 28, 28, 0.35) !important;
+  background: rgba(254, 242, 242, 0.95) !important;
+  color: #b91c1c !important;
+  font-weight: 700;
+  letter-spacing: 0.02em;
 }
 
 .rq-count-badge {
@@ -1145,6 +1159,12 @@ html, body, #app {
 .rq-empty--sm {
   flex: none;
   padding: 12px;
+}
+
+.rq-danger-note {
+  color: #b91c1c;
+  font-size: 0.82rem;
+  font-weight: 700;
 }
 
 /* ===== 設定ドロワー ===== */

@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Reqmo Bus Simulation</title>
+    <link href="https://cdn.jsdelivr.net/npm/@mdi/font@7.4.47/css/materialdesignicons.min.css" rel="stylesheet" />
+    <link href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" rel="stylesheet" />
+    <link href="./styles.css" rel="stylesheet" />
+  </head>
+  <body>
+    <div id="app" class="sim-app">
+      <header class="sim-header">
+        <div>
+          <h1>運行シミュレーション</h1>
+          <p>ルートに沿って移動し、GPSと乗降イベントを送信します。</p>
+        </div>
+        <div class="sim-header-actions">
+          <button class="ghost" type="button" @click="manualReload" :disabled="loading || tickBusy">
+            最新化
+          </button>
+          <a class="ghost" href="/">メイン画面</a>
+        </div>
+      </header>
+
+      <section class="sim-controls">
+        <label>
+          車両
+          <select v-model="selectedVehicleId" :disabled="loading || running || tickBusy">
+            <option disabled value="">車両を選択</option>
+            <option v-for="vehicle in vehicles" :key="vehicle.id" :value="vehicle.id">
+              {{ vehicle.id }} (route: {{ (vehicle.route ?? []).length }})
+            </option>
+          </select>
+        </label>
+
+        <label>
+          平均速度 (km/h)
+          <input v-model.number="averageSpeedKmh" type="number" min="1" max="120" step="1" />
+        </label>
+
+        <label>
+          速度変動幅 ±(km/h)
+          <input v-model.number="speedVariationKmh" type="number" min="0" max="30" step="1" />
+        </label>
+
+        <label>
+          1人あたり乗降時間 (秒)
+          <input v-model.number="perPassengerServiceSeconds" type="number" min="0" max="120" step="1" />
+        </label>
+
+        <label>
+          乗降時間変動幅 ±(秒)
+          <input v-model.number="perPassengerServiceVariationSeconds" type="number" min="0" max="60" step="1" />
+        </label>
+
+        <label>
+          送信間隔 (秒)
+          <input v-model.number="tickSeconds" type="number" min="1" max="60" step="1" />
+        </label>
+
+        <div class="sim-control-buttons">
+          <button type="button" @click="startSimulation" :disabled="running || !selectedVehicleId || tickBusy">
+            開始
+          </button>
+          <button type="button" class="warn" @click="pauseSimulation" :disabled="!running">
+            一時停止
+          </button>
+        </div>
+      </section>
+
+      <p v-if="errorMessage" class="sim-error">{{ errorMessage }}</p>
+      <p v-else-if="infoMessage" class="sim-info">{{ infoMessage }}</p>
+
+      <main class="sim-grid">
+        <section class="sim-map-panel">
+          <h2>位置情報とバス画面</h2>
+          <div id="sim-map" aria-label="simulation map"></div>
+          <div class="sim-map-meta">
+            <span>現在地: {{ currentPositionLabel }}</span>
+            <span>速度: {{ currentSpeedLabel }}</span>
+            <span>次地点まで: {{ distanceToNextLabel }}</span>
+          </div>
+        </section>
+
+        <section class="sim-stats-panel">
+          <h2>乗降状況</h2>
+          <div class="sim-kpi-grid">
+            <article>
+              <h3>現在の乗車人数</h3>
+              <p>{{ currentOnboard }}</p>
+            </article>
+            <article>
+              <h3>合計乗車人数</h3>
+              <p>{{ totalBoarded }}</p>
+            </article>
+            <article>
+              <h3>合計下車人数</h3>
+              <p>{{ totalAlighted }}</p>
+            </article>
+            <article>
+              <h3>残タスク</h3>
+              <p>{{ routeTasks.length }}</p>
+            </article>
+            <article>
+              <h3>累計移動距離</h3>
+              <p>{{ totalDistanceLabel }}</p>
+            </article>
+            <article>
+              <h3>累計待機時間</h3>
+              <p>{{ totalWaitingTimeLabel }}</p>
+            </article>
+            <article>
+              <h3>乗車予定時間ずれ</h3>
+              <p>{{ pickupScheduleDeltaLatestLabel }}</p>
+              <small>{{ pickupScheduleDeltaMetaLabel }}</small>
+            </article>
+            <article>
+              <h3>降車予定時間ずれ</h3>
+              <p>{{ dropoffScheduleDeltaLatestLabel }}</p>
+              <small>{{ dropoffScheduleDeltaMetaLabel }}</small>
+            </article>
+          </div>
+
+          <div class="sim-next-grid">
+            <article>
+              <h3>次回の乗車予定地</h3>
+              <p>{{ nextPickupSummary?.location ?? "なし" }}</p>
+              <small>予定人数: {{ nextPickupSummary?.count ?? 0 }}人</small>
+            </article>
+            <article>
+              <h3>次回の下車予定地</h3>
+              <p>{{ nextDropoffSummary?.location ?? "なし" }}</p>
+              <small>予定人数: {{ nextDropoffSummary?.count ?? 0 }}人</small>
+            </article>
+          </div>
+
+          <article class="sim-last-event">
+            <h3>直近イベント</h3>
+            <template v-if="lastEvent">
+              <p>{{ lastEvent.taskType }} / request: {{ lastEvent.requestId ?? "-" }}</p>
+              <small>
+                乗車 {{ lastEvent.boardedCount }}人 / 下車 {{ lastEvent.alightedCount }}人 / {{ formatTimestamp(lastEvent.processedAt) }}
+              </small>
+            </template>
+            <p v-else>まだイベントはありません。</p>
+          </article>
+        </section>
+      </main>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/vue@3.5.13/dist/vue.global.prod.js"></script>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="./main.js"></script>
+  </body>
+</html>

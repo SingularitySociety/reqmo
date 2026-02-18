@@ -7,6 +7,7 @@ Reqmo is an open-source, config-driven on-demand dispatch platform.
 - `packages/backend`: dispatch engine, routing and telephony API
 - `packages/shared`: shared defaults and constants
 - `packages/web`: dispatcher/admin web UI (Vue + Vuetify)
+- `packages/web/simulation`: bus movement simulator UI (GPS + passenger event sender)
 - `mobile/reqmo_mobile`: Flutter mobile baseline
 
 ## Backend API (local)

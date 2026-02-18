@@ -29,6 +29,14 @@ const ROUTE_CACHE_MAX_ENTRIES = 400;
 const ROUTE_CACHE_RETRY_MS = 30 * 1000;
 const ROUTE_SEGMENT_METRICS_RETRY_MS = 30 * 1000;
 
+const simulatorQuery = new URLSearchParams(window.location.search);
+if (simulatorQuery.has("simulator")) {
+  const simulatorUrl = new URL("./simulation/index.html", window.location.href);
+  simulatorUrl.search = "";
+  simulatorUrl.hash = "";
+  window.location.replace(simulatorUrl.toString());
+}
+
 async function apiGet(path) {
   const res = await fetch(`${API_BASE}${path}`);
   if (!res.ok) {
@@ -221,6 +229,33 @@ function normalizeRequestStatus(value) {
   return value.trim().toUpperCase();
 }
 
+const STATUS_LABELS = {
+  ASSIGNABLE: "配車可能",
+  ASSIGNED: "配車済み",
+  PENDING: "受付済み",
+  PICKED_UP: "乗車済み",
+  COMPLETED: "完了",
+  CANCELLED: "キャンセル済み",
+  CANCELED: "キャンセル済み",
+  REJECTED: "却下",
+  MATCHING: "マッチング中",
+  RECEIVED: "受信",
+  IGNORED: "対象外",
+  FAILED: "失敗",
+  LINKED: "連携済み",
+  UNREGISTERED: "未登録",
+  ANONYMOUS: "匿名",
+  BLOCKED: "拒否"
+};
+
+function statusLabel(status) {
+  const normalized = normalizeRequestStatus(status);
+  if (!normalized) {
+    return "-";
+  }
+  return STATUS_LABELS[normalized] ?? normalized;
+}
+
 const LOCATION_INPUT_OPTIONS = [
   {
     title: "バス停を指定",
@@ -307,6 +342,7 @@ createApp({
     const requests = ref([]);
     const dispatchPreview = ref(null);
     const previewDialogOpen = ref(false);
+    const resetRequestsDialogOpen = ref(false);
     const previewPayload = ref(null);
     const previewDirty = ref(false);
     const callQueue = ref([]);
@@ -905,6 +941,7 @@ createApp({
           return {
             id: request.id,
             status: request.status,
+            statusLabel: statusLabel(request.status),
             statusColor: statusColor(request.status),
             channel: request.channel,
             partySize: request.partySize ?? 1,
@@ -980,6 +1017,7 @@ createApp({
 
     const previewSimulation = computed(() => dispatchPreview.value?.simulation ?? null);
     const hasAssignablePreview = computed(() => dispatchPreview.value?.status === "ASSIGNABLE");
+    const previewStatusLabel = computed(() => statusLabel(dispatchPreview.value?.status));
     const previewPickupClock = computed(
       () => formatTimeLabel(previewSimulation.value?.plannedPickupAt)
     );
@@ -1476,6 +1514,52 @@ createApp({
       }
     }
 
+    const BUS_ICON_COLORS = [
+      "#0284c7",
+      "#059669",
+      "#ea580c",
+      "#7c3aed",
+      "#dc2626",
+      "#0f766e",
+      "#b45309",
+      "#2563eb"
+    ];
+
+    function hashVehicleColorSeed(value) {
+      const text = String(value ?? "");
+      let hash = 0;
+      for (let i = 0; i < text.length; i += 1) {
+        hash = (hash << 5) - hash + text.charCodeAt(i);
+        hash |= 0;
+      }
+      return hash;
+    }
+
+    function resolveVehicleColor(vehicleId) {
+      const index = Math.abs(hashVehicleColorSeed(vehicleId)) % BUS_ICON_COLORS.length;
+      return BUS_ICON_COLORS[index];
+    }
+
+    function buildVehicleBusIcon({ leaflet, vehicleId, isSelected = false }) {
+      const color = resolveVehicleColor(vehicleId);
+      const size = isSelected ? 32 : 28;
+      const borderColor = isSelected ? "#0f172a" : "#ffffff";
+
+      return leaflet.divIcon({
+        className: "rq-bus-icon",
+        html:
+          `<div style="width:${size}px;height:${size}px;border-radius:999px;` +
+          `background:${color};border:2px solid ${borderColor};` +
+          "box-shadow:0 3px 10px rgba(15,23,42,0.35);" +
+          "display:flex;align-items:center;justify-content:center;" +
+          "color:#ffffff;font-size:16px;line-height:1;\">" +
+          "<span class=\"mdi mdi-bus\"></span></div>",
+        iconSize: [size, size],
+        iconAnchor: [size / 2, size / 2],
+        popupAnchor: [0, -size / 2]
+      });
+    }
+
     function scheduleRouteMapRefresh() {
       if (!leafletMap || routeRefreshTimer) {
         return;
@@ -1607,24 +1691,16 @@ createApp({
 
         const isSelectedVehicle = vehicle.id === locationForm.value.vehicleId;
         const tooltipText = `${vehicle.id} 現在地 ${formatTimeLabel(vehicle.lastLocationAt)}`;
-
-        leaflet
-          .circleMarker(toLeafletLatLng(vehicle.currentLocation), {
-            radius: isSelectedVehicle ? 12 : 9,
-            color: isSelectedVehicle ? "#082f49" : "#e0f2fe",
-            weight: isSelectedVehicle ? 2.5 : 1.5,
-            fillColor: isSelectedVehicle ? "#38bdf8" : "#7dd3fc",
-            fillOpacity: isSelectedVehicle ? 0.4 : 0.28
-          })
-          .addTo(mapLayers.vehicles);
+        const vehicleColor = resolveVehicleColor(vehicle.id);
 
         const vehicleMarker = leaflet
-          .circleMarker(toLeafletLatLng(vehicle.currentLocation), {
-            radius: isSelectedVehicle ? 7 : 6,
-            color: "#e0f2fe",
-            weight: 2,
-            fillColor: isSelectedVehicle ? "#0369a1" : "#0284c7",
-            fillOpacity: 0.95
+          .marker(toLeafletLatLng(vehicle.currentLocation), {
+            icon: buildVehicleBusIcon({
+              leaflet,
+              vehicleId: vehicle.id,
+              isSelected: isSelectedVehicle
+            }),
+            zIndexOffset: isSelectedVehicle ? 1200 : 500
           })
           .bindTooltip(tooltipText, {
             direction: "right",
@@ -1643,9 +1719,9 @@ createApp({
             layer: mapLayers.vehicleRoutes,
             points: routeLatLngs,
             style: {
-              color: "#0f766e",
+              color: vehicleColor,
               weight: 3,
-              opacity: 0.42,
+              opacity: isSelectedVehicle ? 0.5 : 0.38,
               dashArray: "8 8"
             }
           });
@@ -2001,6 +2077,39 @@ createApp({
       }
     }
 
+    function openResetRequestsDialog() {
+      if (loading.value || !requestRows.value.length) {
+        return;
+      }
+      resetRequestsDialogOpen.value = true;
+    }
+
+    function closeResetRequestsDialog() {
+      resetRequestsDialogOpen.value = false;
+    }
+
+    async function resetRideRequests() {
+      if (!requestRows.value.length) {
+        resetRequestsDialogOpen.value = false;
+        return;
+      }
+
+      errorMessage.value = "";
+      loading.value = true;
+      try {
+        await apiPost("/api/ride-requests/reset", {
+          reason: "OPERATOR_RESET"
+        });
+        resetRequestsDialogOpen.value = false;
+        clearDispatchPreview();
+        await refreshAll();
+      } catch (error) {
+        errorMessage.value = error.message;
+      } finally {
+        loading.value = false;
+      }
+    }
+
     async function updateVehicleLocationFromForm({ point: directPoint = null, source = "DISPATCHER_WEB" } = {}) {
       if (!locationForm.value.vehicleId) {
         errorMessage.value = "車両を選択してください。";
@@ -2332,9 +2441,11 @@ createApp({
       requests,
       dispatchPreview,
       previewDialogOpen,
+      resetRequestsDialogOpen,
       previewDirty,
       previewSimulation,
       hasAssignablePreview,
+      previewStatusLabel,
       previewPickupClock,
       previewDropoffClock,
       previewRejectDiagnostics,
@@ -2365,6 +2476,7 @@ createApp({
       requestRows,
       selectedRequestId,
       selectedRequest,
+      statusLabel,
       selectRequest,
       canCancelRequest,
       leafletMapEl,
@@ -2378,6 +2490,9 @@ createApp({
       confirmDispatchRequest,
       clearDispatchPreview,
       cancelRideRequestById,
+      openResetRequestsDialog,
+      closeResetRequestsDialog,
+      resetRideRequests,
       updateVehicleLocationFromForm,
       formatTimeLabel,
       formatSignedMinutes,
@@ -2523,7 +2638,7 @@ createApp({
             size="small"
             variant="tonal"
           >
-            {{ dispatchPreview.status }}
+            {{ previewStatusLabel }}
           </v-chip>
         </div>
         <div class="rq-preview-dialog-subtitle">オペレータ確認: この案で予約追加してよいか判断してください</div>
@@ -2639,6 +2754,26 @@ createApp({
           @click="confirmDispatchRequest"
         >
           OK: この案で予約を追加
+        </v-btn>
+      </v-card-actions>
+    </v-card>
+  </v-dialog>
+
+  <v-dialog v-model="resetRequestsDialogOpen" max-width="460">
+    <v-card>
+      <v-card-title class="text-h6 d-flex align-center">
+        <v-icon color="error" size="18" class="mr-2">mdi-alert</v-icon>
+        予約案をリセット
+      </v-card-title>
+      <v-card-text>
+        <div>右側の予約案をすべて削除します（{{ requestRows.length }}件）。</div>
+        <div class="rq-danger-note mt-2">削除すると取り消しはできません。実行しますか？</div>
+      </v-card-text>
+      <v-card-actions>
+        <v-spacer />
+        <v-btn variant="text" @click="closeResetRequestsDialog">キャンセル</v-btn>
+        <v-btn color="error" :loading="loading" @click="resetRideRequests">
+          削除してリセット
         </v-btn>
       </v-card-actions>
     </v-card>
@@ -3038,6 +3173,18 @@ createApp({
     <div class="rq-panel rq-panel--right">
       <div class="rq-panel-header">
         <div class="rq-panel-title">予約案 <span class="rq-count-badge">{{ requestRows.length }}</span></div>
+        <v-btn
+          variant="outlined"
+          color="error"
+          density="compact"
+          size="small"
+          prepend-icon="mdi-trash-can-outline"
+          class="rq-reset-btn"
+          :disabled="loading || !requestRows.length"
+          @click="openResetRequestsDialog"
+        >
+          リセット
+        </v-btn>
       </div>
 
       <div class="rq-request-list" v-if="requestRows.length">
@@ -3054,7 +3201,7 @@ createApp({
             <span class="rq-req-subtime">降車 {{ row.dropoffDisplayTime }}</span>
             <div class="rq-req-actions">
               <v-chip :color="row.statusColor" size="x-small" variant="tonal" class="rq-req-status">
-                {{ row.status }}
+                {{ row.statusLabel }}
               </v-chip>
               <v-btn
                 v-if="canCancelRequest(row)"
@@ -3118,7 +3265,7 @@ createApp({
           <v-icon size="14" color="#ea580c">mdi-phone-incoming</v-icon>
           <div class="rq-call-body">
             <div class="rq-call-number">{{ c.callerE164 ?? c.callerRaw }}</div>
-            <div class="rq-call-meta">{{ c.id }} / {{ c.status }}</div>
+            <div class="rq-call-meta">{{ c.id }} / {{ statusLabel(c.status) }}</div>
           </div>
         </div>
       </div>

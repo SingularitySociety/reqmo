@@ -46,6 +46,36 @@ function normalizePreferredVehicleId(value) {
   return normalized || null;
 }
 
+function normalizeVehicleTaskType(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim().toUpperCase();
+  if (normalized === "PICKUP" || normalized === "DROPOFF") {
+    return normalized;
+  }
+  return null;
+}
+
+function normalizeTimestamp(value, fieldName) {
+  if (!value) {
+    return new Date().toISOString();
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    throw new Error(`${fieldName} must be a valid ISO datetime`);
+  }
+  return date.toISOString();
+}
+
+function normalizeInteger(value, fallback = 0) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return fallback;
+  }
+  return Math.trunc(numeric);
+}
+
 export async function previewRideRequest({
   repository,
   tenantId,
@@ -154,6 +184,20 @@ export async function cancelRideRequest({
   });
 }
 
+export async function resetRideRequests({
+  repository
+}) {
+  if (typeof repository?.resetRideRequests !== "function") {
+    throw new Error("Repository does not support ride request reset");
+  }
+
+  const summary = await repository.resetRideRequests();
+  return {
+    status: "RESET",
+    ...summary
+  };
+}
+
 export async function updateVehicleLocation({
   repository,
   serviceProfileId,
@@ -163,6 +207,7 @@ export async function updateVehicleLocation({
   heading = null,
   speedKmh = null,
   capturedAt = null,
+  skipReoptimization = false,
   context = {}
 }) {
   const serviceProfile = repository.getServiceProfile(serviceProfileId);
@@ -198,6 +243,14 @@ export async function updateVehicleLocation({
     throw new Error("Vehicle not found");
   }
 
+  if (skipReoptimization) {
+    return {
+      status: "UPDATED",
+      vehicle: updated,
+      reoptimization: null
+    };
+  }
+
   const reoptimization = await reoptimizeVehicleDispatchFromLocation({
     repository,
     vehicleId,
@@ -209,6 +262,123 @@ export async function updateVehicleLocation({
     status: "UPDATED",
     vehicle: reoptimization.vehicle ?? updated,
     reoptimization
+  };
+}
+
+export async function recordVehiclePassengerEvent({
+  repository,
+  serviceProfileId,
+  vehicleId,
+  requestId = null,
+  taskType = null,
+  source = "SIMULATION",
+  processedAt = null
+}) {
+  const serviceProfile = repository.getServiceProfile(serviceProfileId);
+  if (!serviceProfile) {
+    throw new Error("No active service profile configured");
+  }
+
+  const vehicle = repository.listVehicles().find((entry) => entry.id === vehicleId);
+  if (!vehicle) {
+    throw new Error("Vehicle not found");
+  }
+
+  const route = Array.isArray(vehicle.route) ? vehicle.route : [];
+  if (!route.length) {
+    throw new Error("Vehicle route is empty");
+  }
+
+  const currentTask = route[0];
+  const currentTaskType = normalizeVehicleTaskType(currentTask.type);
+  if (!currentTaskType) {
+    throw new Error("Current route task is invalid");
+  }
+
+  const requestedTaskType = normalizeVehicleTaskType(taskType);
+  if (requestedTaskType && requestedTaskType !== currentTaskType) {
+    throw new Error("Task type does not match current route head");
+  }
+  if (
+    typeof requestId === "string" &&
+    requestId.trim() &&
+    currentTask.requestId &&
+    requestId !== currentTask.requestId
+  ) {
+    throw new Error("Request id does not match current route head");
+  }
+
+  const eventAt = normalizeTimestamp(processedAt, "processedAt");
+  const loadChange = normalizeInteger(currentTask.loadChange, 0);
+  const boardedCount = Math.max(0, loadChange);
+  const alightedCount = Math.max(0, -loadChange);
+  const onboardBefore = Math.max(0, normalizeInteger(vehicle.onboardCount, 0));
+  const onboardAfter = Math.max(0, onboardBefore + loadChange);
+  const telemetry = vehicle.telemetry ?? {};
+  const totalBoarded = Math.max(0, normalizeInteger(telemetry.totalBoarded, 0)) + boardedCount;
+  const totalAlighted = Math.max(0, normalizeInteger(telemetry.totalAlighted, 0)) + alightedCount;
+
+  const updatedVehicle = repository.updateVehicle(vehicleId, {
+    onboardCount: onboardAfter,
+    route: route.slice(1),
+    lastLocationAt: eventAt,
+    telemetry: {
+      ...telemetry,
+      source,
+      totalBoarded,
+      totalAlighted,
+      lastPassengerEvent: {
+        taskType: currentTaskType,
+        requestId: currentTask.requestId ?? null,
+        boardedCount,
+        alightedCount,
+        onboardBefore,
+        onboardAfter,
+        processedAt: eventAt,
+        point: currentTask.point ?? null
+      }
+    }
+  });
+
+  if (!updatedVehicle) {
+    throw new Error("Vehicle not found");
+  }
+
+  let rideRequest = null;
+  if (currentTask.requestId) {
+    const existingRequest = repository.getRideRequest(currentTask.requestId);
+    if (existingRequest) {
+      const assignment = {
+        ...(existingRequest.assignment ?? {}),
+        ...(currentTaskType === "PICKUP"
+          ? { actualPickupAt: eventAt }
+          : { actualDropoffAt: eventAt })
+      };
+      const updates =
+        currentTaskType === "DROPOFF"
+          ? {
+              status: "COMPLETED",
+              assignment
+            }
+          : { assignment };
+      rideRequest = repository.updateRideRequest(existingRequest.id, updates);
+    }
+  }
+
+  return {
+    status: "RECORDED",
+    vehicle: updatedVehicle,
+    rideRequest,
+    event: {
+      taskType: currentTaskType,
+      requestId: currentTask.requestId ?? null,
+      boardedCount,
+      alightedCount,
+      onboardBefore,
+      onboardAfter,
+      processedAt: eventAt,
+      point: currentTask.point ?? null
+    }
   };
 }
 

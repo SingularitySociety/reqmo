@@ -1,0 +1,270 @@
+@import url("https://fonts.googleapis.com/css2?family=M+PLUS+1:wght@400;500;700;800&display=swap");
+
+:root {
+  --sim-bg: #edf2f7;
+  --sim-surface: #ffffff;
+  --sim-border: rgba(15, 23, 42, 0.1);
+  --sim-text: #1f2937;
+  --sim-muted: #64748b;
+  --sim-primary: #0f766e;
+  --sim-primary-soft: rgba(15, 118, 110, 0.12);
+  --sim-warning: #b45309;
+  --sim-error: #b91c1c;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+  font-family: "M PLUS 1", "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif;
+  color: var(--sim-text);
+  background:
+    radial-gradient(ellipse at 0% 0%, rgba(16, 185, 129, 0.15), transparent 40%),
+    radial-gradient(ellipse at 100% 0%, rgba(249, 115, 22, 0.14), transparent 45%),
+    var(--sim-bg);
+}
+
+.sim-app {
+  max-width: 1320px;
+  margin: 0 auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.sim-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.sim-header h1 {
+  margin: 0;
+  font-size: 1.45rem;
+  letter-spacing: 0.01em;
+}
+
+.sim-header p {
+  margin: 6px 0 0;
+  color: var(--sim-muted);
+  font-size: 0.92rem;
+}
+
+.sim-header-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.sim-controls {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(140px, 1fr));
+  gap: 12px;
+  background: var(--sim-surface);
+  border: 1px solid var(--sim-border);
+  border-radius: 14px;
+  padding: 14px;
+}
+
+.sim-controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--sim-muted);
+}
+
+.sim-controls input,
+.sim-controls select,
+.sim-control-buttons button,
+.sim-header-actions button,
+.sim-header-actions a {
+  border: 1px solid var(--sim-border);
+  border-radius: 10px;
+  min-height: 38px;
+  padding: 0 10px;
+  font-size: 0.92rem;
+  color: var(--sim-text);
+  background: #fff;
+}
+
+.sim-controls input,
+.sim-controls select {
+  width: 100%;
+}
+
+.sim-control-buttons {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.sim-control-buttons button {
+  flex: 1;
+  cursor: pointer;
+  background: var(--sim-primary);
+  color: #fff;
+  border-color: transparent;
+  font-weight: 700;
+}
+
+.sim-control-buttons .warn {
+  background: var(--sim-warning);
+}
+
+.sim-control-buttons button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.sim-header-actions .ghost,
+.sim-header-actions a {
+  background: transparent;
+  color: var(--sim-text);
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  font-weight: 600;
+}
+
+.sim-grid {
+  display: grid;
+  grid-template-columns: minmax(360px, 1fr) 420px;
+  gap: 14px;
+  min-height: 0;
+}
+
+.sim-map-panel,
+.sim-stats-panel {
+  background: var(--sim-surface);
+  border: 1px solid var(--sim-border);
+  border-radius: 14px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.sim-map-panel h2,
+.sim-stats-panel h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+#sim-map {
+  width: 100%;
+  min-height: 420px;
+  border-radius: 12px;
+  border: 1px solid var(--sim-border);
+}
+
+.sim-map-meta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  font-size: 0.8rem;
+  color: var(--sim-muted);
+}
+
+.sim-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.sim-kpi-grid article,
+.sim-next-grid article,
+.sim-last-event {
+  border: 1px solid var(--sim-border);
+  border-radius: 12px;
+  padding: 10px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+}
+
+.sim-kpi-grid h3,
+.sim-next-grid h3,
+.sim-last-event h3 {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--sim-muted);
+  font-weight: 700;
+}
+
+.sim-kpi-grid p,
+.sim-next-grid p,
+.sim-last-event p {
+  margin: 6px 0 0;
+  font-size: 1.2rem;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+.sim-next-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.sim-next-grid small,
+.sim-last-event small {
+  display: block;
+  margin-top: 4px;
+  color: var(--sim-muted);
+}
+
+.sim-info,
+.sim-error {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-size: 0.85rem;
+}
+
+.sim-info {
+  background: var(--sim-primary-soft);
+  color: var(--sim-primary);
+}
+
+.sim-error {
+  background: rgba(185, 28, 28, 0.12);
+  color: var(--sim-error);
+}
+
+@media (max-width: 1120px) {
+  .sim-controls {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .sim-grid {
+    grid-template-columns: 1fr;
+  }
+
+  #sim-map {
+    min-height: 340px;
+  }
+}
+
+@media (max-width: 720px) {
+  .sim-app {
+    padding: 12px;
+  }
+
+  .sim-header {
+    flex-direction: column;
+  }
+
+  .sim-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .sim-map-meta {
+    grid-template-columns: 1fr;
+  }
+}

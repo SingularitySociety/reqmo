@@ -111,6 +111,12 @@ export class FirestoreRepository extends InMemoryRepository {
     });
   }
 
+  deleteDocument(collection, id) {
+    this.enqueue(async () => {
+      await this.collection(collection).doc(id).delete();
+    });
+  }
+
   persistCounter() {
     const counter = this._counter;
     this.enqueue(async () => {
@@ -186,6 +192,28 @@ export class FirestoreRepository extends InMemoryRepository {
       this.writeDocument("rideRequests", next.id, next);
     }
     return next;
+  }
+
+  resetRideRequests() {
+    const rideRequestIds = Array.from(this.rideRequests.keys());
+    const tripIds = Array.from(this.trips.keys());
+    const vehicleIds = Array.from(this.vehicles.keys());
+    const summary = super.resetRideRequests();
+
+    rideRequestIds.forEach((requestId) => {
+      this.deleteDocument("rideRequests", requestId);
+    });
+    tripIds.forEach((tripId) => {
+      this.deleteDocument("trips", tripId);
+    });
+    vehicleIds.forEach((vehicleId) => {
+      const vehicle = this.vehicles.get(vehicleId);
+      if (vehicle) {
+        this.writeDocument("vehicles", vehicleId, vehicle);
+      }
+    });
+
+    return summary;
   }
 
   createTrip(trip) {
