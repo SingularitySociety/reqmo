@@ -19,11 +19,17 @@ function selectFallbackAlgorithm(serviceProfile) {
 }
 
 function buildDispatchRequest(rideRequest, resolvedLocations) {
+  const desiredPickupAt = normalizeDateInput(
+    rideRequest?.timeWindow?.desiredPickupAt ?? rideRequest?.timeWindow?.scheduledAt
+  );
+  const desiredDropoffAt = normalizeDateInput(rideRequest?.timeWindow?.desiredDropoffAt);
   return {
     id: rideRequest.id,
     partySize: rideRequest.partySize ?? 1,
     pickupPoint: resolvedLocations.pickup.resolvedPoint,
-    dropoffPoint: resolvedLocations.dropoff.resolvedPoint
+    dropoffPoint: resolvedLocations.dropoff.resolvedPoint,
+    desiredPickupAt: desiredPickupAt?.toISOString() ?? null,
+    desiredDropoffAt: desiredDropoffAt?.toISOString() ?? null
   };
 }
 
@@ -71,6 +77,405 @@ function safeTravelMinutes(from, to, travelMinutes = defaultTravelMinutes) {
 
 function roundMinutes(value) {
   return Number.isFinite(value) ? Number(value.toFixed(2)) : null;
+}
+
+function pad2(value) {
+  return String(value).padStart(2, "0");
+}
+
+function formatLocalClock(date) {
+  return `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+}
+
+function parseLocalClockMinutes(value, fallbackMinutes) {
+  if (typeof value !== "string") {
+    return fallbackMinutes;
+  }
+  const [hourRaw, minuteRaw] = value.split(":");
+  const hour = Number(hourRaw);
+  const minute = Number(minuteRaw);
+  if (
+    !Number.isInteger(hour) ||
+    !Number.isInteger(minute) ||
+    hour < 0 ||
+    hour > 23 ||
+    minute < 0 ||
+    minute > 59
+  ) {
+    return fallbackMinutes;
+  }
+  return hour * 60 + minute;
+}
+
+function buildLocalTimeDate(baseDate, minutesOfDay) {
+  const date = new Date(baseDate);
+  date.setSeconds(0, 0);
+  const hour = Math.floor(minutesOfDay / 60);
+  const minute = minutesOfDay % 60;
+  date.setHours(hour, minute, 0, 0);
+  return date;
+}
+
+function resolveOfficePointFromPolicy(serviceProfile, vehicle = null) {
+  const vehicleOfficePoint = isFinitePoint(vehicle?.officePoint)
+    ? vehicle.officePoint
+    : vehicle?.homeBase;
+  if (isFinitePoint(vehicleOfficePoint)) {
+    return {
+      lat: Number(vehicleOfficePoint.lat),
+      lng: Number(vehicleOfficePoint.lng)
+    };
+  }
+  const officePoint = serviceProfile?.operationPolicy?.office?.point;
+  if (isFinitePoint(officePoint)) {
+    return {
+      lat: Number(officePoint.lat),
+      lng: Number(officePoint.lng)
+    };
+  }
+  return null;
+}
+
+function resolveLunchBreakWindow(operationPolicy, now) {
+  const lunchBreak = operationPolicy?.lunchBreak ?? {};
+  const startMinutes = parseLocalClockMinutes(lunchBreak.startLocalTime, 11 * 60);
+  const endMinutes = parseLocalClockMinutes(lunchBreak.endLocalTime, 12 * 60);
+  const startAt = buildLocalTimeDate(now, startMinutes);
+  const endAt = buildLocalTimeDate(now, endMinutes);
+  if (endAt.getTime() <= startAt.getTime()) {
+    endAt.setDate(endAt.getDate() + 1);
+  }
+  return {
+    enabled: lunchBreak.enabled === true,
+    startMinutes,
+    endMinutes,
+    startAt,
+    endAt,
+    requireReturnToOffice: lunchBreak.requireReturnToOffice !== false,
+    departFromOfficeAtEnd: lunchBreak.departFromOfficeAtEnd !== false
+  };
+}
+
+function resolveBusinessHoursWindow(operationPolicy, now) {
+  const businessHours = operationPolicy?.businessHours ?? {};
+  const startMinutes = parseLocalClockMinutes(businessHours.startLocalTime, 8 * 60);
+  const endMinutes = parseLocalClockMinutes(businessHours.endLocalTime, 18 * 60);
+  const startAt = buildLocalTimeDate(now, startMinutes);
+  const endAt = buildLocalTimeDate(now, endMinutes);
+  if (endAt.getTime() <= startAt.getTime()) {
+    endAt.setDate(endAt.getDate() + 1);
+  }
+  return {
+    enabled: businessHours.enabled === true,
+    startMinutes,
+    endMinutes,
+    startAt,
+    endAt,
+    requireDepartFromOffice: businessHours.requireDepartFromOffice !== false,
+    requireReturnToOffice: businessHours.requireReturnToOffice !== false
+  };
+}
+
+function hasOperationPolicyConstraints(serviceProfile) {
+  const operationPolicy = serviceProfile?.operationPolicy ?? {};
+  return (
+    operationPolicy?.lunchBreak?.enabled === true ||
+    operationPolicy?.businessHours?.enabled === true
+  );
+}
+
+function resolveOperationPolicyPickupAt({
+  requestSummary,
+  requestForDispatch,
+  travelMinutes,
+  serviceProfile
+}) {
+  const plannedPickupAt = normalizeDateInput(requestSummary?.pickupEtaAt);
+  let policyPickupAt = plannedPickupAt;
+
+  const desiredPickupAt = normalizeDateInput(requestForDispatch?.desiredPickupAt);
+  if (desiredPickupAt) {
+    if (!policyPickupAt || desiredPickupAt.getTime() > policyPickupAt.getTime()) {
+      policyPickupAt = desiredPickupAt;
+    }
+  }
+
+  const desiredDropoffAt = normalizeDateInput(requestForDispatch?.desiredDropoffAt);
+  if (desiredDropoffAt) {
+    const rideMinutes = safeTravelMinutes(
+      requestForDispatch?.pickupPoint,
+      requestForDispatch?.dropoffPoint,
+      travelMinutes
+    );
+    const pickupServiceMinutes = normalizeNonNegative(
+      serviceProfile?.dispatchPolicy?.pickupServiceMinutes,
+      0
+    );
+    const dropoffServiceMinutes = normalizeNonNegative(
+      serviceProfile?.dispatchPolicy?.dropoffServiceMinutes,
+      0
+    );
+    const offsetMinutes = Math.max(
+      0,
+      rideMinutes + pickupServiceMinutes + dropoffServiceMinutes
+    );
+    const estimatedPickupAt = new Date(desiredDropoffAt.getTime() - offsetMinutes * 60 * 1000);
+    if (!policyPickupAt || estimatedPickupAt.getTime() > policyPickupAt.getTime()) {
+      policyPickupAt = estimatedPickupAt;
+    }
+  }
+
+  return policyPickupAt;
+}
+
+function buildOperationPolicyDiagnostics({
+  violation,
+  serviceProfile,
+  officePoint,
+  vehicle,
+  route,
+  now,
+  requestSummary,
+  requestForDispatch,
+  travelMinutes
+}) {
+  const operationPolicy = serviceProfile?.operationPolicy ?? {};
+  const lunchBreakWindow = resolveLunchBreakWindow(operationPolicy, now);
+  const businessHoursWindow = resolveBusinessHoursWindow(operationPolicy, now);
+
+  let completionAt = now;
+  let completionPoint = vehicle.currentLocation;
+  if (route.length) {
+    const timeline = buildRouteTimeline({
+      vehicle,
+      route,
+      now,
+      travelMinutes,
+      serviceProfile
+    });
+    const lastEntry = timeline.at(-1);
+    if (lastEntry) {
+      const lastArrival = normalizeDateInput(lastEntry.etaAt) ?? now;
+      const serviceMinutes = resolveTaskServiceMinutes(lastEntry, serviceProfile);
+      completionAt = new Date(lastArrival.getTime() + serviceMinutes * 60 * 1000);
+      completionPoint = lastEntry.point ?? completionPoint;
+    }
+  }
+
+  const officeArrivalAt = new Date(
+    completionAt.getTime() + safeTravelMinutes(completionPoint, officePoint, travelMinutes) * 60 * 1000
+  );
+  const pickupAt = resolveOperationPolicyPickupAt({
+    requestSummary,
+    requestForDispatch,
+    travelMinutes,
+    serviceProfile
+  });
+  const officeToPickupMinutes = safeTravelMinutes(
+    officePoint,
+    requestForDispatch.pickupPoint,
+    travelMinutes
+  );
+  const officeDepartureAt =
+    pickupAt
+      ? new Date(pickupAt.getTime() - officeToPickupMinutes * 60 * 1000)
+      : null;
+  const earliestPickupFromOfficeAt = new Date(
+    lunchBreakWindow.endAt.getTime() + officeToPickupMinutes * 60 * 1000
+  );
+
+  const details = {
+    code: "OFFICE_BREAK_POLICY",
+    type: violation.type,
+    message: violation.message,
+    officeArrivalAt: officeArrivalAt.toISOString(),
+    breakStartAt: lunchBreakWindow.startAt.toISOString(),
+    breakEndAt: lunchBreakWindow.endAt.toISOString(),
+    businessStartAt: businessHoursWindow.startAt.toISOString(),
+    businessEndAt: businessHoursWindow.endAt.toISOString(),
+    pickupAt: pickupAt?.toISOString() ?? null,
+    officeDepartureAt: officeDepartureAt?.toISOString() ?? null,
+    earliestPickupFromOfficeAt: earliestPickupFromOfficeAt.toISOString(),
+    officePoint
+  };
+
+  let countermeasure = "運行ポリシーに沿うよう、希望時刻か乗降地点を調整してください。";
+  if (violation.type === "RETURN_BEFORE_BREAK") {
+    countermeasure = `昼休憩開始(${formatLocalClock(lunchBreakWindow.startAt)})までに事務所へ戻れるよう、希望時刻か乗降地点を調整してください。`;
+  } else if (violation.type === "DEPART_AFTER_BREAK") {
+    countermeasure = `昼休憩終了(${formatLocalClock(lunchBreakWindow.endAt)})に事務所を出発しても乗車時刻に間に合いません。希望時刻か乗車地点を調整してください。`;
+  } else if (violation.type === "DEPART_BEFORE_BUSINESS_HOURS") {
+    countermeasure = `営業時間開始(${formatLocalClock(businessHoursWindow.startAt)})以降の事務所出発で間に合うよう、希望時刻か乗車地点を調整してください。`;
+  } else if (violation.type === "RETURN_AFTER_BUSINESS_HOURS") {
+    countermeasure = `営業時間終了(${formatLocalClock(businessHoursWindow.endAt)})までに事務所へ戻れるよう、希望時刻か降車地点を調整してください。`;
+  }
+
+  return {
+    summary: violation.message,
+    candidateCount: 1,
+    feasibleCount: 0,
+    rejectionCounts: {
+      OFFICE_BREAK_POLICY: 1
+    },
+    constraints: {
+      lunchBreakEnabled: lunchBreakWindow.enabled,
+      lunchBreakStartLocalTime: `${pad2(Math.floor(lunchBreakWindow.startMinutes / 60))}:${pad2(lunchBreakWindow.startMinutes % 60)}`,
+      lunchBreakEndLocalTime: `${pad2(Math.floor(lunchBreakWindow.endMinutes / 60))}:${pad2(lunchBreakWindow.endMinutes % 60)}`,
+      requireReturnToOffice: lunchBreakWindow.requireReturnToOffice,
+      departFromOfficeAtEnd: lunchBreakWindow.departFromOfficeAtEnd,
+      businessHoursEnabled: businessHoursWindow.enabled,
+      businessHoursStartLocalTime: `${pad2(Math.floor(businessHoursWindow.startMinutes / 60))}:${pad2(businessHoursWindow.startMinutes % 60)}`,
+      businessHoursEndLocalTime: `${pad2(Math.floor(businessHoursWindow.endMinutes / 60))}:${pad2(businessHoursWindow.endMinutes % 60)}`,
+      requireDepartFromOfficeInBusinessHours: businessHoursWindow.requireDepartFromOffice,
+      requireReturnToOfficeInBusinessHours: businessHoursWindow.requireReturnToOffice
+    },
+    observed: {
+      officeArrivalAt: officeArrivalAt.toISOString(),
+      breakStartAt: lunchBreakWindow.startAt.toISOString(),
+      breakEndAt: lunchBreakWindow.endAt.toISOString(),
+      businessStartAt: businessHoursWindow.startAt.toISOString(),
+      businessEndAt: businessHoursWindow.endAt.toISOString(),
+      pickupAt: pickupAt?.toISOString() ?? null,
+      officeDepartureAt: officeDepartureAt?.toISOString() ?? null,
+      earliestPickupFromOfficeAt: earliestPickupFromOfficeAt.toISOString()
+    },
+    countermeasureCandidates: [countermeasure],
+    breakdown: [
+      {
+        code: "OFFICE_BREAK_POLICY",
+        count: 1,
+        ratioPercent: 100
+      }
+    ],
+    details
+  };
+}
+
+function evaluateOperationPolicyForPlan({
+  serviceProfile,
+  vehicle,
+  route,
+  requestForDispatch,
+  requestSummary,
+  now,
+  travelMinutes
+}) {
+  const operationPolicy = serviceProfile?.operationPolicy ?? {};
+  const lunchBreakWindow = resolveLunchBreakWindow(operationPolicy, now);
+  const businessHoursWindow = resolveBusinessHoursWindow(operationPolicy, now);
+  if (!lunchBreakWindow.enabled && !businessHoursWindow.enabled) {
+    return null;
+  }
+
+  const officePoint = resolveOfficePointFromPolicy(serviceProfile, vehicle);
+  if (!officePoint) {
+    return null;
+  }
+
+  let completionAt = now;
+  let completionPoint = vehicle.currentLocation;
+  if (route.length) {
+    const timeline = buildRouteTimeline({
+      vehicle,
+      route,
+      now,
+      travelMinutes,
+      serviceProfile
+    });
+    const lastEntry = timeline.at(-1);
+    if (lastEntry) {
+      const lastArrival = normalizeDateInput(lastEntry.etaAt) ?? now;
+      const serviceMinutes = resolveTaskServiceMinutes(lastEntry, serviceProfile);
+      completionAt = new Date(lastArrival.getTime() + serviceMinutes * 60 * 1000);
+      completionPoint = lastEntry.point ?? completionPoint;
+    }
+  }
+
+  const officeArrivalAt = new Date(
+    completionAt.getTime() + safeTravelMinutes(completionPoint, officePoint, travelMinutes) * 60 * 1000
+  );
+  const pickupAt = resolveOperationPolicyPickupAt({
+    requestSummary,
+    requestForDispatch,
+    travelMinutes,
+    serviceProfile
+  });
+
+  if (businessHoursWindow.enabled) {
+    const officeToPickupMinutes = safeTravelMinutes(
+      officePoint,
+      requestForDispatch.pickupPoint,
+      travelMinutes
+    );
+    const officeDepartureAt =
+      pickupAt
+        ? new Date(pickupAt.getTime() - officeToPickupMinutes * 60 * 1000)
+        : null;
+
+    if (
+      businessHoursWindow.requireDepartFromOffice &&
+      officeDepartureAt &&
+      officeDepartureAt.getTime() < businessHoursWindow.startAt.getTime()
+    ) {
+      return {
+        type: "DEPART_BEFORE_BUSINESS_HOURS",
+        message: `営業時間開始(${formatLocalClock(businessHoursWindow.startAt)})より前に事務所を出発する必要があるため、予約を受け付けできません。`,
+        officePoint
+      };
+    }
+
+    if (
+      businessHoursWindow.requireReturnToOffice &&
+      officeArrivalAt.getTime() > businessHoursWindow.endAt.getTime()
+    ) {
+      return {
+        type: "RETURN_AFTER_BUSINESS_HOURS",
+        message: `営業時間終了(${formatLocalClock(businessHoursWindow.endAt)})までに事務所へ戻れないため、予約を受け付けできません。`,
+        officePoint
+      };
+    }
+  }
+
+  const isAfternoonPickup =
+    pickupAt && pickupAt.getTime() >= lunchBreakWindow.endAt.getTime();
+
+  if (
+    lunchBreakWindow.enabled &&
+    lunchBreakWindow.requireReturnToOffice &&
+    !isAfternoonPickup &&
+    officeArrivalAt.getTime() > lunchBreakWindow.startAt.getTime()
+  ) {
+    return {
+      type: "RETURN_BEFORE_BREAK",
+      message: `昼休憩開始(${formatLocalClock(lunchBreakWindow.startAt)})までに事務所へ戻れないため、予約を受け付けできません。`,
+      officePoint
+    };
+  }
+
+  if (
+    lunchBreakWindow.enabled &&
+    lunchBreakWindow.departFromOfficeAtEnd &&
+    pickupAt &&
+    pickupAt.getTime() >= lunchBreakWindow.endAt.getTime()
+  ) {
+    const officeToPickupMinutes = safeTravelMinutes(
+      officePoint,
+      requestForDispatch.pickupPoint,
+      travelMinutes
+    );
+    const earliestPickupFromOffice = new Date(
+      lunchBreakWindow.endAt.getTime() + officeToPickupMinutes * 60 * 1000
+    );
+    if (earliestPickupFromOffice.getTime() > pickupAt.getTime()) {
+      return {
+        type: "DEPART_AFTER_BREAK",
+        message: `昼休憩終了(${formatLocalClock(lunchBreakWindow.endAt)})に事務所を出発しても乗車時刻に間に合わないため、予約を受け付けできません。`,
+        officePoint
+      };
+    }
+  }
+
+  return null;
 }
 
 function buildRouteTimeline({
@@ -633,6 +1038,11 @@ function normalizeDateInput(value) {
   return date;
 }
 
+function resolveNowFromContext(context = {}) {
+  const resolved = normalizeDateInput(context?.now);
+  return resolved ?? new Date();
+}
+
 function compareDispatchOptions(left, right, desiredDropoffDate) {
   const leftPickupEta = Number(left.etaPickupMinutes);
   const rightPickupEta = Number(right.etaPickupMinutes);
@@ -663,6 +1073,24 @@ function compareDispatchOptions(left, right, desiredDropoffDate) {
     return leftScore - rightScore;
   }
   return left.vehicleId.localeCompare(right.vehicleId);
+}
+
+function comparePlanCandidates(left, right) {
+  const leftScore = Number(left?.score);
+  const rightScore = Number(right?.score);
+  if (Number.isFinite(leftScore) && Number.isFinite(rightScore) && leftScore !== rightScore) {
+    return leftScore - rightScore;
+  }
+
+  const leftPickup = Number(left?.etaPickupMinutes);
+  const rightPickup = Number(right?.etaPickupMinutes);
+  if (Number.isFinite(leftPickup) && Number.isFinite(rightPickup) && leftPickup !== rightPickup) {
+    return leftPickup - rightPickup;
+  }
+
+  const leftVehicleId = String(left?.vehicleId ?? "");
+  const rightVehicleId = String(right?.vehicleId ?? "");
+  return leftVehicleId.localeCompare(rightVehicleId);
 }
 
 async function evaluateDispatchPlan({
@@ -706,12 +1134,13 @@ async function evaluateDispatchPlan({
     context,
     speedKmh: resolveCruiseSpeedKmh(serviceProfile)
   });
-  const bestPlan = chooseBestPlan({
+  let bestPlan = chooseBestPlan({
     requestForDispatch,
     vehicles,
     serviceProfile,
     travelMinutes: travelEstimator.travelMinutes
   });
+  let vehicle = bestPlan ? vehicles.find((entry) => entry.id === bestPlan.vehicleId) : null;
 
   if (!bestPlan) {
     return {
@@ -727,7 +1156,6 @@ async function evaluateDispatchPlan({
     };
   }
 
-  const vehicle = vehicles.find((entry) => entry.id === bestPlan.vehicleId);
   if (!vehicle) {
     return {
       status: "REJECTED",
@@ -740,6 +1168,93 @@ async function evaluateDispatchPlan({
         travelMinutes: travelEstimator.travelMinutes
       })
     };
+  }
+
+  if (hasOperationPolicyConstraints(serviceProfile)) {
+    const timelineForInitialPlan = buildRouteTimeline({
+      vehicle,
+      route: bestPlan.route ?? [],
+      now,
+      travelMinutes: travelEstimator.travelMinutes,
+      serviceProfile
+    });
+    const initialSummary =
+      summarizeTimelineByRequest(timelineForInitialPlan).get(rideRequest.id) ?? {};
+    const initialViolation = evaluateOperationPolicyForPlan({
+      serviceProfile,
+      vehicle,
+      route: bestPlan.route ?? [],
+      requestForDispatch,
+      requestSummary: initialSummary,
+      now,
+      travelMinutes: travelEstimator.travelMinutes
+    });
+
+    if (initialViolation) {
+      let fallbackPlan = null;
+      let fallbackVehicle = null;
+
+      for (const candidateVehicle of vehicles) {
+        const candidatePlan = chooseBestPlan({
+          requestForDispatch,
+          vehicles: [candidateVehicle],
+          serviceProfile,
+          travelMinutes: travelEstimator.travelMinutes
+        });
+        if (!candidatePlan) {
+          continue;
+        }
+
+        const candidateTimeline = buildRouteTimeline({
+          vehicle: candidateVehicle,
+          route: candidatePlan.route ?? [],
+          now,
+          travelMinutes: travelEstimator.travelMinutes,
+          serviceProfile
+        });
+        const candidateSummary =
+          summarizeTimelineByRequest(candidateTimeline).get(rideRequest.id) ?? {};
+        const violation = evaluateOperationPolicyForPlan({
+          serviceProfile,
+          vehicle: candidateVehicle,
+          route: candidatePlan.route ?? [],
+          requestForDispatch,
+          requestSummary: candidateSummary,
+          now,
+          travelMinutes: travelEstimator.travelMinutes
+        });
+        if (violation) {
+          continue;
+        }
+
+        if (!fallbackPlan || comparePlanCandidates(candidatePlan, fallbackPlan) < 0) {
+          fallbackPlan = candidatePlan;
+          fallbackVehicle = candidateVehicle;
+        }
+      }
+
+      if (!fallbackPlan || !fallbackVehicle) {
+        return {
+          status: "REJECTED",
+          reason: "NO_FEASIBLE_VEHICLE",
+          resolvedLocations,
+          diagnostics: buildOperationPolicyDiagnostics({
+            violation: initialViolation,
+            serviceProfile,
+            officePoint: initialViolation.officePoint,
+            vehicle,
+            route: bestPlan.route ?? [],
+            now,
+            requestSummary: initialSummary,
+            requestForDispatch,
+            travelMinutes: travelEstimator.travelMinutes
+          })
+        };
+      }
+
+      bestPlan = fallbackPlan;
+      vehicle = fallbackVehicle;
+    }
   }
 
   const routeBefore = vehicle.route ?? [];
@@ -816,7 +1331,8 @@ export async function previewRideRequestDispatch({
     repository,
     rideRequest,
     serviceProfile,
-    context
+    context,
+    now: resolveNowFromContext(context)
   });
 
   if (evaluated.status === "REJECTED") {
@@ -847,7 +1363,7 @@ export async function listRideRequestDispatchOptions({
   optionLimit = 5,
   allowedVehicleIds = null
 }) {
-  const now = new Date();
+  const now = resolveNowFromContext(context);
   const stops = repository.listStops();
   const vehicles = filterVehiclesByAllowedIds(repository.listVehicles(), allowedVehicleIds);
   const requestLookup = new Map(
@@ -974,7 +1490,8 @@ export async function dispatchRideRequest({
     rideRequest,
     serviceProfile,
     allowedVehicleIds,
-    context
+    context,
+    now: resolveNowFromContext(context)
   });
 
   if (evaluated.status === "REJECTED") {

@@ -28,6 +28,8 @@ const API_BASE = (() => {
 const ROUTE_CACHE_MAX_ENTRIES = 400;
 const ROUTE_CACHE_RETRY_MS = 30 * 1000;
 const ROUTE_SEGMENT_METRICS_RETRY_MS = 30 * 1000;
+const VEHICLE_ROUTE_ON_PATH_TOLERANCE_METERS = 45;
+const ROUTE_POINT_SNAP_TOLERANCE_METERS = 2;
 
 const simulatorQuery = new URLSearchParams(window.location.search);
 if (simulatorQuery.has("simulator")) {
@@ -69,6 +71,20 @@ function parsePointText(text) {
     throw new Error("自由点は 'lat,lng' 形式で入力してください");
   }
   return { lat, lng };
+}
+
+function normalizeColorHex(value, fallback = null) {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+  const text = value.trim();
+  if (!text) {
+    return fallback;
+  }
+  if (!/^#([0-9a-fA-F]{6})$/.test(text)) {
+    throw new Error("カラーコードは #RRGGBB 形式で入力してください");
+  }
+  return text.toLowerCase();
 }
 
 function pad2(value) {
@@ -134,6 +150,72 @@ function pointKey(point) {
   return `${Number(point.lat).toFixed(6)},${Number(point.lng).toFixed(6)}`;
 }
 
+function toRadians(value) {
+  return (Number(value) * Math.PI) / 180;
+}
+
+function distanceMeters(from, to) {
+  if (!hasPoint(from) || !hasPoint(to)) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  const lat1 = toRadians(from.lat);
+  const lng1 = toRadians(from.lng);
+  const lat2 = toRadians(to.lat);
+  const lng2 = toRadians(to.lng);
+  const dLat = lat2 - lat1;
+  const dLng = lng2 - lng1;
+  const sinLat = Math.sin(dLat / 2);
+  const sinLng = Math.sin(dLng / 2);
+  const a = sinLat * sinLat + Math.cos(lat1) * Math.cos(lat2) * sinLng * sinLng;
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(Math.max(1 - a, 0)));
+  return 6371000 * c;
+}
+
+function projectPointOnSegmentMeters(point, start, end) {
+  if (!hasPoint(point) || !hasPoint(start) || !hasPoint(end)) {
+    return null;
+  }
+
+  const refLat = toRadians((Number(start.lat) + Number(end.lat) + Number(point.lat)) / 3);
+  const metersPerDegLat = 111320;
+  const metersPerDegLng = metersPerDegLat * Math.cos(refLat);
+  if (!Number.isFinite(metersPerDegLng) || Math.abs(metersPerDegLng) < 1e-6) {
+    return null;
+  }
+
+  const px = Number(point.lng) * metersPerDegLng;
+  const py = Number(point.lat) * metersPerDegLat;
+  const sx = Number(start.lng) * metersPerDegLng;
+  const sy = Number(start.lat) * metersPerDegLat;
+  const ex = Number(end.lng) * metersPerDegLng;
+  const ey = Number(end.lat) * metersPerDegLat;
+  const dx = ex - sx;
+  const dy = ey - sy;
+  const lengthSq = dx * dx + dy * dy;
+
+  if (lengthSq < 1e-6) {
+    return {
+      distanceMeters: Math.hypot(px - sx, py - sy),
+      projectedPoint: {
+        lat: Number(start.lat),
+        lng: Number(start.lng)
+      }
+    };
+  }
+
+  const clampedT = Math.max(0, Math.min(1, ((px - sx) * dx + (py - sy) * dy) / lengthSq));
+  const projectedX = sx + dx * clampedT;
+  const projectedY = sy + dy * clampedT;
+  return {
+    distanceMeters: Math.hypot(px - projectedX, py - projectedY),
+    projectedPoint: {
+      lat: projectedY / metersPerDegLat,
+      lng: projectedX / metersPerDegLng
+    }
+  };
+}
+
 function buildRouteSegmentKey(from, to) {
   return `${pointKey(from)}->${pointKey(to)}`;
 }
@@ -178,7 +260,8 @@ const PREVIEW_REJECTION_LABELS = {
   CAPACITY: "同時乗車人数の上限を超える",
   MAX_WAIT: "乗車までの待ち時間上限を超える",
   MAX_DETOUR: "既存予約への迂回遅延上限を超える",
-  MAX_ADDITIONAL_STOPS: "追加停留所数の上限を超える"
+  MAX_ADDITIONAL_STOPS: "追加停留所数の上限を超える",
+  OFFICE_BREAK_POLICY: "事務所・休憩ポリシーに合致しない"
 };
 
 const PREVIEW_REJECTION_ORDER = [
@@ -353,13 +436,13 @@ createApp({
     let nowTicker = null;
     let realtimeTicker = null;
     let leafletMap = null;
-    let syncingLocationForm = false;
     let hasInitialMapViewport = false;
     let routeRefreshTimer = null;
     const routeGeometryCache = new Map();
     const routeSegmentMetricsCache = reactive(new Map());
     const mapLayers = {
       stops: null,
+      office: null,
       vehicleRoutes: null,
       activeRoutes: null,
       selectedRoute: null,
@@ -394,11 +477,6 @@ createApp({
     const selectedCallOptionId = ref("");
     const callDesiredDropoffAt = ref(null);
 
-    const locationForm = ref({
-      vehicleId: "",
-      point: "32.9898,132.9298"
-    });
-    const locationFormDirty = ref(false);
     const locationTitleState = ref({
       pickup: { manual: false, pending: false, requestId: 0, pointKey: "" },
       dropoff: { manual: false, pending: false, requestId: 0, pointKey: "" }
@@ -413,17 +491,21 @@ createApp({
       pickupServiceMinutes: 0,
       dropoffServiceMinutes: 0,
       locationMode: "HYBRID",
-      fareModel: "HYBRID"
+      fareModel: "HYBRID",
+      officeName: "事務所",
+      businessHoursEnabled: false,
+      businessHoursStart: "08:00",
+      businessHoursEnd: "18:00",
+      idleReturnThresholdMinutes: 40,
+      lunchBreakEnabled: true,
+      lunchBreakStart: "11:00",
+      lunchBreakEnd: "12:00"
     });
+    const vehicleEditor = ref([]);
 
     const availableStops = computed(() => stops.value.map((stop) => ({
       title: `${stop.name} (${stop.id})`,
       value: stop.id
-    })));
-
-    const availableVehicles = computed(() => vehicles.value.map((vehicle) => ({
-      title: vehicle.id,
-      value: vehicle.id
     })));
 
     const locationInputOptions = LOCATION_INPUT_OPTIONS;
@@ -459,6 +541,14 @@ createApp({
       return index;
     });
 
+    const vehicleIndex = computed(() => {
+      const index = new Map();
+      vehicles.value.forEach((vehicle) => {
+        index.set(vehicle.id, vehicle);
+      });
+      return index;
+    });
+
     const kpi = computed(() => {
       const assigned = requests.value.filter((request) => request.status === "ASSIGNED").length;
       const pending = requests.value.filter((request) => request.status === "PENDING").length;
@@ -488,13 +578,22 @@ createApp({
     const currentDateLabel = computed(() => formatDateLabel(now.value));
     const currentClockLabel = computed(() => formatClock(now.value));
     const mapSelectionField = ref("");
+    const mapSelectionVehicleIndex = ref(null);
     const isMapPicking = computed(() => Boolean(mapSelectionField.value));
     const mapSelectionHint = computed(() => {
       if (!mapSelectionField.value) {
         return "";
       }
-      if (mapSelectionField.value === "vehicle") {
-        return "車両現在位置を地図で選択中: クリックで座標を設定";
+      if (mapSelectionField.value === "vehicleOffice") {
+        const index = Number(mapSelectionVehicleIndex.value);
+        const vehicle = Number.isInteger(index) ? vehicleEditor.value[index] : null;
+        const vehicleName =
+          typeof vehicle?.name === "string" && vehicle.name.trim()
+            ? vehicle.name.trim()
+            : Number.isInteger(index) && index >= 0
+              ? `車両${index + 1}`
+              : "車両";
+        return `${vehicleName} の事務所位置を地図で選択中: クリックで座標を設定`;
       }
       const isPickup = mapSelectionField.value === "pickup";
       const mode = isPickup ? form.value.pickupMode : form.value.dropoffMode;
@@ -902,6 +1001,17 @@ createApp({
           const etaMinutes = roundedEta(etaRaw);
           const etaDropoffMinutes = roundedEta(etaDropoffRaw);
           const vehicleId = request.assignment?.vehicleId ?? "-";
+          const vehicleMeta = vehicleIndex.value.get(vehicleId);
+          const vehicleName =
+            typeof vehicleMeta?.name === "string" && vehicleMeta.name.trim()
+              ? vehicleMeta.name.trim()
+              : "";
+          const vehicleLabel =
+            vehicleId === "-"
+              ? "-"
+              : vehicleName && vehicleName !== vehicleId
+                ? `${vehicleName} (${vehicleId})`
+                : vehicleId;
           const routeMetrics = requestRouteMetrics.value.get(request.id);
           const dropoffTravelDistanceKm = roundedDistanceKm(routeMetrics?.dropoffDistanceKm);
           const dropoffTravelMinutes = roundedEta(routeMetrics?.dropoffMinutes);
@@ -925,6 +1035,17 @@ createApp({
           }
           const nextTaskLabel =
             nextTaskType === "DROPOFF" ? "降車" : nextTaskType === "PICKUP" ? "乗車" : "停車";
+          const idleReturnThresholdRaw = Number(
+            serviceProfile.value?.operationPolicy?.idleReturnThresholdMinutes
+          );
+          const idleReturnThresholdMinutes =
+            Number.isFinite(idleReturnThresholdRaw) && idleReturnThresholdRaw >= 0
+              ? Math.round(idleReturnThresholdRaw)
+              : 40;
+          const shouldReturnOffice =
+            nextTaskType === "PICKUP" &&
+            Number.isFinite(nextTaskTravelMinutes) &&
+            nextTaskTravelMinutes >= idleReturnThresholdMinutes;
           const plannedPickup = etaMinutes !== null ? addMinutes(now.value, etaMinutes) : new Date(request.createdAt ?? now.value);
           const plannedDropoff = etaDropoffMinutes !== null
             ? addMinutes(now.value, etaDropoffMinutes)
@@ -946,6 +1067,7 @@ createApp({
             channel: request.channel,
             partySize: request.partySize ?? 1,
             vehicleId,
+            vehicleLabel,
             etaMinutes,
             etaDropoffMinutes,
             dropoffTravelDistanceKm,
@@ -959,6 +1081,8 @@ createApp({
             hasNextTask,
             nextTaskType,
             nextTaskLabel,
+            shouldReturnOffice,
+            idleReturnThresholdMinutes,
             displayTime: formatClock(plannedPickup),
             dropoffDisplayTime: formatClock(plannedDropoff),
             createdTime: formatTimeLabel(request.createdAt),
@@ -1201,19 +1325,36 @@ createApp({
         .map((task) => task.point)
         .filter(hasPoint)
     );
-    const selectedVehicle = computed(
-      () => vehicles.value.find((vehicle) => vehicle.id === locationForm.value.vehicleId) ?? null
+    const vehicleOfficeLocations = computed(() =>
+      vehicles.value
+        .map((vehicle) => {
+          const sourcePoint = hasPoint(vehicle?.officePoint)
+            ? vehicle.officePoint
+            : hasPoint(vehicle?.homeBase)
+              ? vehicle.homeBase
+              : null;
+          if (!sourcePoint) {
+            return null;
+          }
+          const vehicleName =
+            typeof vehicle?.name === "string" && vehicle.name.trim()
+              ? vehicle.name.trim()
+              : vehicle?.id ?? "車両";
+          return {
+            vehicle,
+            name: `${vehicleName} 事務所`,
+            point: {
+              lat: Number(sourcePoint.lat),
+              lng: Number(sourcePoint.lng)
+            }
+          };
+        })
+        .filter(Boolean)
     );
-    const selectedVehiclePointLabel = computed(() => {
-      const point = selectedVehicle.value?.currentLocation;
-      if (!hasPoint(point)) {
-        return "--";
-      }
-      return `${formatCoordinate(point.lat)},${formatCoordinate(point.lng)}`;
-    });
 
     const mapSourcePoints = computed(() => {
       const points = [];
+      vehicleOfficeLocations.value.forEach((office) => points.push(office.point));
       stops.value.forEach((stop) => {
         if (hasPoint(stop)) {
           points.push({ lat: stop.lat, lng: stop.lng });
@@ -1242,6 +1383,53 @@ createApp({
 
     function toPointText(lat, lng) {
       return `${Number(lat).toFixed(6)},${Number(lng).toFixed(6)}`;
+    }
+
+    function buildVehicleEditorItem(vehicle = {}) {
+      const id = typeof vehicle.id === "string" ? vehicle.id.trim() : "";
+      const name = typeof vehicle.name === "string" && vehicle.name.trim() ? vehicle.name.trim() : id;
+      const iconColor = (() => {
+        try {
+          return normalizeColorHex(vehicle.iconColor, "#0284c7");
+        } catch (_error) {
+          return "#0284c7";
+        }
+      })();
+      const officePoint = hasPoint(vehicle.officePoint)
+        ? vehicle.officePoint
+        : hasPoint(vehicle.homeBase)
+          ? vehicle.homeBase
+          : null;
+      return {
+        id,
+        name,
+        iconColor,
+        officePoint: officePoint ? toPointText(officePoint.lat, officePoint.lng) : "",
+        capacity: Number.isFinite(Number(vehicle.capacity)) ? Number(vehicle.capacity) : 4,
+        isExisting: Boolean(id)
+      };
+    }
+
+    function addVehicleEditorRow() {
+      vehicleEditor.value.push(
+        buildVehicleEditorItem({
+          id: "",
+          name: "",
+          iconColor: "#0284c7",
+          officePoint: "",
+          capacity: 4
+        })
+      );
+    }
+
+    function removeVehicleEditorRow(index) {
+      if (!Number.isInteger(index) || index < 0 || index >= vehicleEditor.value.length) {
+        return;
+      }
+      if (vehicleEditor.value[index]?.isExisting) {
+        return;
+      }
+      vehicleEditor.value.splice(index, 1);
     }
 
     function normalizeLocationTitle(value) {
@@ -1367,22 +1555,21 @@ createApp({
 
     function cancelMapSelection() {
       mapSelectionField.value = "";
+      mapSelectionVehicleIndex.value = null;
     }
 
     function applyMapSelection(field, point) {
-      if (field !== "pickup" && field !== "dropoff" && field !== "vehicle") {
+      if (field !== "pickup" && field !== "dropoff" && field !== "vehicleOffice") {
         return;
       }
 
-      if (field === "vehicle") {
-        const selectedPoint = { lat: Number(point.lat), lng: Number(point.lng) };
-        locationForm.value.point = toPointText(selectedPoint.lat, selectedPoint.lng);
-        locationFormDirty.value = true;
+      if (field === "vehicleOffice") {
+        const index = Number(mapSelectionVehicleIndex.value);
+        if (!Number.isInteger(index) || index < 0 || index >= vehicleEditor.value.length) {
+          throw new Error("車両事務所位置の選択対象が見つかりません。");
+        }
+        vehicleEditor.value[index].officePoint = toPointText(point.lat, point.lng);
         cancelMapSelection();
-        void updateVehicleLocationFromForm({
-          point: selectedPoint,
-          source: "MAP_PICKER"
-        });
         return;
       }
 
@@ -1423,19 +1610,34 @@ createApp({
       }
     }
 
-    function toggleMapSelection(field) {
-      if (field !== "pickup" && field !== "dropoff" && field !== "vehicle") {
+    function toggleMapSelection(field, vehicleIndex = null) {
+      if (field !== "pickup" && field !== "dropoff" && field !== "vehicleOffice") {
         return;
       }
       if (!ensureLeafletMap()) {
         return;
       }
-      if (mapSelectionField.value === field) {
+      const nextVehicleIndex = field === "vehicleOffice" ? Number(vehicleIndex) : null;
+      if (
+        field === "vehicleOffice" &&
+        (!Number.isInteger(nextVehicleIndex) ||
+          nextVehicleIndex < 0 ||
+          nextVehicleIndex >= vehicleEditor.value.length)
+      ) {
+        errorMessage.value = "対象の車両が見つかりません。";
+        return;
+      }
+      if (
+        mapSelectionField.value === field &&
+        (field !== "vehicleOffice" || mapSelectionVehicleIndex.value === nextVehicleIndex)
+      ) {
         cancelMapSelection();
         return;
       }
       errorMessage.value = "";
       mapSelectionField.value = field;
+      mapSelectionVehicleIndex.value =
+        field === "vehicleOffice" ? nextVehicleIndex : null;
     }
 
     function ensureLeafletMap() {
@@ -1462,6 +1664,7 @@ createApp({
         .addTo(leafletMap);
 
       mapLayers.stops = leaflet.layerGroup().addTo(leafletMap);
+      mapLayers.office = leaflet.layerGroup().addTo(leafletMap);
       mapLayers.vehicleRoutes = leaflet.layerGroup().addTo(leafletMap);
       mapLayers.activeRoutes = leaflet.layerGroup().addTo(leafletMap);
       mapLayers.selectedRoute = leaflet.layerGroup().addTo(leafletMap);
@@ -1501,6 +1704,11 @@ createApp({
         .join(";");
     }
 
+    function buildVehicleRouteCacheKey(vehicle) {
+      const routePoints = (vehicle?.route ?? []).map((task) => task?.point).filter(hasPoint);
+      return `vehicle:${vehicle?.id ?? ""}|${buildRouteCacheKey(routePoints)}`;
+    }
+
     function setRouteCacheEntry(key, value) {
       if (routeGeometryCache.has(key)) {
         routeGeometryCache.delete(key);
@@ -1512,6 +1720,71 @@ createApp({
           routeGeometryCache.delete(oldestKey);
         }
       }
+    }
+
+    function findNearestPolylineProjection(point, polyline) {
+      if (!hasPoint(point)) {
+        return null;
+      }
+      const normalized = normalizeRoutePoints(polyline);
+      if (normalized.length < 2) {
+        return null;
+      }
+
+      let nearest = null;
+      for (let index = 0; index < normalized.length - 1; index += 1) {
+        const start = normalized[index];
+        const end = normalized[index + 1];
+        const projection = projectPointOnSegmentMeters(point, start, end);
+        if (!projection) {
+          continue;
+        }
+        if (!nearest || projection.distanceMeters < nearest.distanceMeters) {
+          nearest = {
+            segmentIndex: index,
+            distanceMeters: projection.distanceMeters,
+            projectedPoint: projection.projectedPoint
+          };
+        }
+      }
+
+      return nearest;
+    }
+
+    function buildOnRoutePolyline(currentPoint, cachedPolyline) {
+      const projection = findNearestPolylineProjection(currentPoint, cachedPolyline);
+      if (!projection) {
+        return null;
+      }
+      if (projection.distanceMeters > VEHICLE_ROUTE_ON_PATH_TOLERANCE_METERS) {
+        return null;
+      }
+
+      const normalized = normalizeRoutePoints(cachedPolyline);
+      const result = [
+        {
+          lat: Number(currentPoint.lat),
+          lng: Number(currentPoint.lng)
+        }
+      ];
+      if (
+        hasPoint(projection.projectedPoint) &&
+        distanceMeters(currentPoint, projection.projectedPoint) > ROUTE_POINT_SNAP_TOLERANCE_METERS
+      ) {
+        result.push({
+          lat: Number(projection.projectedPoint.lat),
+          lng: Number(projection.projectedPoint.lng)
+        });
+      }
+      for (let index = projection.segmentIndex + 1; index < normalized.length; index += 1) {
+        result.push(normalized[index]);
+      }
+
+      const path = normalizeRoutePoints(result);
+      if (path.length > 1) {
+        return path;
+      }
+      return null;
     }
 
     const BUS_ICON_COLORS = [
@@ -1535,13 +1808,22 @@ createApp({
       return hash;
     }
 
-    function resolveVehicleColor(vehicleId) {
-      const index = Math.abs(hashVehicleColorSeed(vehicleId)) % BUS_ICON_COLORS.length;
+    function resolveVehicleColor(vehicle) {
+      try {
+        const configured = normalizeColorHex(vehicle?.iconColor);
+        if (configured) {
+          return configured;
+        }
+      } catch (_error) {
+        // Fallback to deterministic hashed color.
+      }
+      const seed = typeof vehicle?.id === "string" ? vehicle.id : "veh";
+      const index = Math.abs(hashVehicleColorSeed(seed)) % BUS_ICON_COLORS.length;
       return BUS_ICON_COLORS[index];
     }
 
-    function buildVehicleBusIcon({ leaflet, vehicleId, isSelected = false }) {
-      const color = resolveVehicleColor(vehicleId);
+    function buildVehicleBusIcon({ leaflet, vehicle, isSelected = false }) {
+      const color = resolveVehicleColor(vehicle);
       const size = isSelected ? 32 : 28;
       const borderColor = isSelected ? "#0f172a" : "#ffffff";
 
@@ -1613,19 +1895,35 @@ createApp({
       }
     }
 
-    function drawRoutePolyline({ leaflet, layer, points, style }) {
+    function drawRoutePolyline({
+      leaflet,
+      layer,
+      points,
+      style,
+      cacheKey = "",
+      keepCurrentPointOnCachedRoute = false
+    }) {
       const normalized = normalizeRoutePoints(points);
       if (normalized.length < 2) {
         return;
       }
 
-      const cacheKey = buildRouteCacheKey(normalized);
-      const cached = routeGeometryCache.get(cacheKey);
+      const resolvedCacheKey = cacheKey || buildRouteCacheKey(normalized);
+      const cached = routeGeometryCache.get(resolvedCacheKey);
       let drawPoints = normalized;
       if (cached?.status === "ready" && Array.isArray(cached.polyline) && cached.polyline.length > 1) {
-        drawPoints = cached.polyline;
+        if (keepCurrentPointOnCachedRoute) {
+          const reused = buildOnRoutePolyline(normalized[0], cached.polyline);
+          if (reused) {
+            drawPoints = reused;
+          } else {
+            void requestRouteGeometry(resolvedCacheKey, normalized);
+          }
+        } else {
+          drawPoints = cached.polyline;
+        }
       } else {
-        void requestRouteGeometry(cacheKey, normalized);
+        void requestRouteGeometry(resolvedCacheKey, normalized);
       }
 
       leaflet
@@ -1684,31 +1982,50 @@ createApp({
           .addTo(mapLayers.stops);
       });
 
+      vehicleOfficeLocations.value.forEach((office) => {
+        const officeColor = resolveVehicleColor(office.vehicle);
+        leaflet
+          .circleMarker(toLeafletLatLng(office.point), {
+            radius: 7,
+            color: "#0f172a",
+            weight: 2,
+            fillColor: officeColor,
+            fillOpacity: 0.85
+          })
+          .bindTooltip(office.name, {
+            direction: "top",
+            offset: [0, -8]
+          })
+          .bindPopup(
+            `<strong>${office.name}</strong><br>ID: ${office.vehicle.id}<br>座標: ${formatCoordinate(office.point.lat)}, ${formatCoordinate(office.point.lng)}`
+          )
+          .addTo(mapLayers.office);
+      });
+
       vehicles.value.forEach((vehicle) => {
         if (!hasPoint(vehicle.currentLocation)) {
           return;
         }
 
-        const isSelectedVehicle = vehicle.id === locationForm.value.vehicleId;
-        const tooltipText = `${vehicle.id} 現在地 ${formatTimeLabel(vehicle.lastLocationAt)}`;
-        const vehicleColor = resolveVehicleColor(vehicle.id);
+        const vehicleName =
+          typeof vehicle.name === "string" && vehicle.name.trim() ? vehicle.name.trim() : vehicle.id;
+        const tooltipText = `${vehicleName} 現在地 ${formatTimeLabel(vehicle.lastLocationAt)}`;
+        const vehicleColor = resolveVehicleColor(vehicle);
 
         const vehicleMarker = leaflet
           .marker(toLeafletLatLng(vehicle.currentLocation), {
             icon: buildVehicleBusIcon({
               leaflet,
-              vehicleId: vehicle.id,
-              isSelected: isSelectedVehicle
+              vehicle
             }),
-            zIndexOffset: isSelectedVehicle ? 1200 : 500
+            zIndexOffset: 500
           })
           .bindTooltip(tooltipText, {
             direction: "right",
-            offset: [8, 0],
-            permanent: isSelectedVehicle
+            offset: [8, 0]
           })
           .bindPopup(
-            `<strong>${vehicle.id}</strong><br>現在地: ${formatCoordinate(vehicle.currentLocation.lat)}, ${formatCoordinate(vehicle.currentLocation.lng)}<br>最終更新: ${vehicle.lastLocationAt ?? "-"}`
+            `<strong>${vehicleName}</strong><br>ID: ${vehicle.id}<br>現在地: ${formatCoordinate(vehicle.currentLocation.lat)}, ${formatCoordinate(vehicle.currentLocation.lng)}<br>最終更新: ${vehicle.lastLocationAt ?? "-"}`
           );
         vehicleMarker.addTo(mapLayers.vehicles);
 
@@ -1718,10 +2035,12 @@ createApp({
             leaflet,
             layer: mapLayers.vehicleRoutes,
             points: routeLatLngs,
+            cacheKey: buildVehicleRouteCacheKey(vehicle),
+            keepCurrentPointOnCachedRoute: true,
             style: {
               color: vehicleColor,
               weight: 3,
-              opacity: isSelectedVehicle ? 0.5 : 0.38,
+              opacity: 0.38,
               dashArray: "8 8"
             }
           });
@@ -1859,29 +2178,6 @@ createApp({
       }
     }
 
-    function syncLocationFormWithVehicles() {
-      syncingLocationForm = true;
-      if (!vehicles.value.length) {
-        locationForm.value.vehicleId = "";
-        locationFormDirty.value = false;
-        syncingLocationForm = false;
-        return;
-      }
-
-      const selectedVehicleEntry = vehicles.value.find(
-        (vehicle) => vehicle.id === locationForm.value.vehicleId
-      );
-      const targetVehicle = selectedVehicleEntry ?? vehicles.value[0];
-      locationForm.value.vehicleId = targetVehicle.id;
-      if (!locationFormDirty.value && hasPoint(targetVehicle.currentLocation)) {
-        locationForm.value.point = toPointText(
-          targetVehicle.currentLocation.lat,
-          targetVehicle.currentLocation.lng
-        );
-      }
-      syncingLocationForm = false;
-    }
-
     async function refreshAll() {
       loading.value = true;
       errorMessage.value = "";
@@ -1903,7 +2199,6 @@ createApp({
         callQueue.value = callRes.data ?? [];
         farePolicies.value = fareRes.data ?? [];
         vehicles.value = vehicleRes.data ?? [];
-        syncLocationFormWithVehicles();
 
         const activeId = profileRes.activeServiceProfileId;
         const activeProfile = (profileRes.data ?? []).find((profile) => profile.id === activeId) ?? profileRes.data?.[0] ?? null;
@@ -1920,9 +2215,18 @@ createApp({
             pickupServiceMinutes: activeProfile.dispatchPolicy?.pickupServiceMinutes ?? 0,
             dropoffServiceMinutes: activeProfile.dispatchPolicy?.dropoffServiceMinutes ?? 0,
             locationMode: activeProfile.locationPolicy?.mode ?? "HYBRID",
-            fareModel: farePolicy?.model ?? "HYBRID"
+            fareModel: farePolicy?.model ?? "HYBRID",
+            officeName: activeProfile.operationPolicy?.office?.name ?? "事務所",
+            businessHoursEnabled: activeProfile.operationPolicy?.businessHours?.enabled === true,
+            businessHoursStart: activeProfile.operationPolicy?.businessHours?.startLocalTime ?? "08:00",
+            businessHoursEnd: activeProfile.operationPolicy?.businessHours?.endLocalTime ?? "18:00",
+            idleReturnThresholdMinutes: activeProfile.operationPolicy?.idleReturnThresholdMinutes ?? 40,
+            lunchBreakEnabled: activeProfile.operationPolicy?.lunchBreak?.enabled !== false,
+            lunchBreakStart: activeProfile.operationPolicy?.lunchBreak?.startLocalTime ?? "11:00",
+            lunchBreakEnd: activeProfile.operationPolicy?.lunchBreak?.endLocalTime ?? "12:00"
           };
         }
+        vehicleEditor.value = vehicles.value.map((vehicle) => buildVehicleEditorItem(vehicle));
 
         if (stops.value.length && !form.value.pickupStopId) {
           form.value.pickupStopId = stops.value[0].id;
@@ -1956,7 +2260,6 @@ createApp({
         ]);
         vehicles.value = vehicleRes.data ?? [];
         requests.value = requestRes.data ?? [];
-        syncLocationFormWithVehicles();
         refreshLeafletMap();
       } catch (_error) {
         // Ignore transient polling errors and keep previous values.
@@ -1978,6 +2281,7 @@ createApp({
     function buildDispatchPayload() {
       const passengerName = form.value.passengerName.trim();
       const passengerPhone = form.value.passengerPhone.trim();
+      const desiredDropoffAt = buildDesiredDropoffAtFromClock(form.value.desiredTime, now.value);
       return {
         pickup: buildLocation(
           form.value.pickupMode,
@@ -1998,7 +2302,8 @@ createApp({
                 ...(passengerName ? { name: passengerName } : {}),
                 ...(passengerPhone ? { phoneNumber: passengerPhone } : {})
               }
-            : null
+            : null,
+        desiredDropoffAt
       };
     }
 
@@ -2101,34 +2406,6 @@ createApp({
           reason: "OPERATOR_RESET"
         });
         resetRequestsDialogOpen.value = false;
-        clearDispatchPreview();
-        await refreshAll();
-      } catch (error) {
-        errorMessage.value = error.message;
-      } finally {
-        loading.value = false;
-      }
-    }
-
-    async function updateVehicleLocationFromForm({ point: directPoint = null, source = "DISPATCHER_WEB" } = {}) {
-      if (!locationForm.value.vehicleId) {
-        errorMessage.value = "車両を選択してください。";
-        return;
-      }
-
-      errorMessage.value = "";
-      loading.value = true;
-      try {
-        const point = directPoint ?? parsePointText(locationForm.value.point);
-        locationForm.value.point = toPointText(point.lat, point.lng);
-        await apiPost(
-          `/api/vehicles/${encodeURIComponent(locationForm.value.vehicleId)}/location`,
-          {
-            point,
-            source
-          }
-        );
-        locationFormDirty.value = false;
         clearDispatchPreview();
         await refreshAll();
       } catch (error) {
@@ -2245,6 +2522,11 @@ createApp({
         const cruiseSpeedKmh = Number(profileEditor.value.cruiseSpeedKmh);
         const pickupServiceMinutes = Number(profileEditor.value.pickupServiceMinutes);
         const dropoffServiceMinutes = Number(profileEditor.value.dropoffServiceMinutes);
+        const idleReturnThresholdMinutes = Number(profileEditor.value.idleReturnThresholdMinutes);
+        const officeName =
+          typeof profileEditor.value.officeName === "string" && profileEditor.value.officeName.trim()
+            ? profileEditor.value.officeName.trim()
+            : "事務所";
         const nextProfile = {
           ...serviceProfile.value,
           reservationPolicy: {
@@ -2278,6 +2560,34 @@ createApp({
             ...serviceProfile.value.locationPolicy,
             mode: profileEditor.value.locationMode
           },
+          operationPolicy: {
+            ...(serviceProfile.value.operationPolicy ?? {}),
+            office: {
+              ...(serviceProfile.value.operationPolicy?.office ?? {}),
+              name: officeName,
+              point: null
+            },
+            businessHours: {
+              ...(serviceProfile.value.operationPolicy?.businessHours ?? {}),
+              enabled: profileEditor.value.businessHoursEnabled === true,
+              startLocalTime: profileEditor.value.businessHoursStart ?? "08:00",
+              endLocalTime: profileEditor.value.businessHoursEnd ?? "18:00",
+              requireDepartFromOffice: true,
+              requireReturnToOffice: true
+            },
+            idleReturnThresholdMinutes:
+              Number.isFinite(idleReturnThresholdMinutes) && idleReturnThresholdMinutes >= 0
+                ? idleReturnThresholdMinutes
+                : 40,
+            lunchBreak: {
+              ...(serviceProfile.value.operationPolicy?.lunchBreak ?? {}),
+              enabled: profileEditor.value.lunchBreakEnabled === true,
+              startLocalTime: profileEditor.value.lunchBreakStart ?? "11:00",
+              endLocalTime: profileEditor.value.lunchBreakEnd ?? "12:00",
+              requireReturnToOffice: true,
+              departFromOfficeAtEnd: true
+            }
+          },
           farePolicy: {
             ...(serviceProfile.value.farePolicy ?? {}),
             model: profileEditor.value.fareModel
@@ -2293,6 +2603,44 @@ createApp({
             model: profileEditor.value.fareModel
           });
         }
+
+        const existingVehicleIds = new Set(
+          vehicles.value
+            .map((vehicle) => (typeof vehicle.id === "string" ? vehicle.id.trim() : ""))
+            .filter(Boolean)
+        );
+        for (const vehicleEntry of vehicleEditor.value) {
+          const id = typeof vehicleEntry.id === "string" ? vehicleEntry.id.trim() : "";
+          const name = typeof vehicleEntry.name === "string" ? vehicleEntry.name.trim() : "";
+          if (!id && !name) {
+            continue;
+          }
+          if (!name) {
+            throw new Error("車両名は必須です。");
+          }
+          const capacity = Number(vehicleEntry.capacity);
+          const normalizedColor = normalizeColorHex(vehicleEntry.iconColor, "#0284c7");
+          const officePointText =
+            typeof vehicleEntry.officePoint === "string"
+              ? vehicleEntry.officePoint.trim()
+              : "";
+          const officePoint = officePointText ? parsePointText(officePointText) : null;
+          const payload = {
+            id: id || undefined,
+            name,
+            iconColor: normalizedColor ?? "#0284c7",
+            capacity: Number.isFinite(capacity) && capacity > 0 ? Math.trunc(capacity) : 4,
+            officePoint,
+            serviceProfileId: nextProfile.id
+          };
+
+          if (id && existingVehicleIds.has(id)) {
+            await apiPost(`/api/vehicles/${encodeURIComponent(id)}`, payload);
+          } else {
+            await apiPost("/api/vehicles", payload);
+          }
+        }
+
         await refreshAll();
         settingsOpen.value = false;
       } catch (error) {
@@ -2324,34 +2672,6 @@ createApp({
         refreshLeafletMap();
       },
       { deep: true }
-    );
-
-    watch(
-      () => locationForm.value.point,
-      () => {
-        if (!syncingLocationForm) {
-          locationFormDirty.value = true;
-        }
-      }
-    );
-
-    watch(
-      () => locationForm.value.vehicleId,
-      (vehicleId) => {
-        if (!vehicleId) {
-          return;
-        }
-        const vehicle = vehicles.value.find((entry) => entry.id === vehicleId);
-        if (vehicle && hasPoint(vehicle.currentLocation)) {
-          syncingLocationForm = true;
-          locationForm.value.point = toPointText(
-            vehicle.currentLocation.lat,
-            vehicle.currentLocation.lng
-          );
-          syncingLocationForm = false;
-          locationFormDirty.value = false;
-        }
-      }
     );
 
     watch(
@@ -2434,8 +2754,6 @@ createApp({
       callRideOptions,
       selectedCallOptionId,
       callDesiredDropoffAt,
-      locationForm,
-      locationFormDirty,
       locationTitleState,
       vehicles,
       requests,
@@ -2453,11 +2771,8 @@ createApp({
       previewRejectBreakdown,
       previewRejectConstraintSummary,
       previewRejectCountermeasures,
-      selectedVehicle,
-      selectedVehiclePointLabel,
       callQueue,
       availableStops,
-      availableVehicles,
       locationInputOptions,
       locationPolicyOptions,
       fareModelOptions,
@@ -2467,9 +2782,11 @@ createApp({
       locationModeDescription,
       fareModelDescription,
       mapSelectionField,
+      mapSelectionVehicleIndex,
       isMapPicking,
       mapSelectionHint,
       profileEditor,
+      vehicleEditor,
       kpi,
       currentDateLabel,
       currentClockLabel,
@@ -2493,7 +2810,6 @@ createApp({
       openResetRequestsDialog,
       closeResetRequestsDialog,
       resetRideRequests,
-      updateVehicleLocationFromForm,
       formatTimeLabel,
       formatSignedMinutes,
       previewReasonLabel,
@@ -2501,6 +2817,8 @@ createApp({
       simulateInboundCall,
       fetchPhoneRideOptions,
       createPhoneRide,
+      addVehicleEditorRow,
+      removeVehicleEditorRow,
       saveProfile
     };
   },
@@ -2553,6 +2871,167 @@ createApp({
           class="mb-1"
         />
         <div class="rq-setting-help">{{ fareModelDescription }}</div>
+      </div>
+      <div class="rq-setting-section mb-4">
+        <div class="rq-setting-label mb-2">事務所・休憩</div>
+        <v-text-field
+          label="事務所名"
+          v-model="profileEditor.officeName"
+          density="compact"
+          variant="outlined"
+          hide-details
+          class="mb-2"
+        />
+        <div class="rq-inline-help mb-1">
+          事務所座標は下の「車両設定」ごとに管理します。
+        </div>
+        <v-switch
+          v-model="profileEditor.businessHoursEnabled"
+          color="primary"
+          hide-details
+          inset
+          label="営業時間制約を有効化（事務所出発時刻・帰着時刻で判定）"
+          class="mb-2"
+        />
+        <div class="rq-form-row">
+          <v-text-field
+            label="営業時間 開始"
+            type="time"
+            v-model="profileEditor.businessHoursStart"
+            density="compact"
+            variant="outlined"
+            hide-details
+            style="flex:1"
+          />
+          <v-text-field
+            label="営業時間 終了"
+            type="time"
+            v-model="profileEditor.businessHoursEnd"
+            density="compact"
+            variant="outlined"
+            hide-details
+            style="flex:1"
+          />
+        </div>
+        <v-switch
+          v-model="profileEditor.lunchBreakEnabled"
+          color="primary"
+          hide-details
+          inset
+          label="昼休憩制約を有効化（11時まで戻れない/12時発で間に合わない予約を拒否）"
+          class="mb-2"
+        />
+        <div class="rq-form-row">
+          <v-text-field
+            label="休憩開始"
+            type="time"
+            v-model="profileEditor.lunchBreakStart"
+            density="compact"
+            variant="outlined"
+            hide-details
+            style="flex:1"
+          />
+          <v-text-field
+            label="休憩終了"
+            type="time"
+            v-model="profileEditor.lunchBreakEnd"
+            density="compact"
+            variant="outlined"
+            hide-details
+            style="flex:1"
+          />
+        </div>
+        <v-text-field
+          label="事務所へ戻る目安"
+          type="number"
+          v-model="profileEditor.idleReturnThresholdMinutes"
+          suffix="分"
+          density="compact"
+          variant="outlined"
+          hide-details
+          class="mt-2"
+        />
+      </div>
+      <div class="rq-setting-section mb-4">
+        <div class="d-flex align-center justify-space-between mb-2">
+          <div class="rq-setting-label mb-0">車両設定</div>
+          <v-btn size="x-small" variant="tonal" color="primary" prepend-icon="mdi-plus" @click="addVehicleEditorRow">
+            車両追加
+          </v-btn>
+        </div>
+        <div v-for="(vehicle, index) in vehicleEditor" :key="'vehicle-editor-' + index" class="rq-setting-vehicle-card mb-2">
+          <v-text-field
+            label="車両ID（新規時のみ任意）"
+            v-model="vehicle.id"
+            density="compact"
+            variant="outlined"
+            hide-details
+            :disabled="vehicle.isExisting"
+            class="mb-2"
+          />
+          <v-text-field
+            label="車両名"
+            v-model="vehicle.name"
+            density="compact"
+            variant="outlined"
+            hide-details
+            class="mb-2"
+          />
+          <v-text-field
+            label="アイコン色 (#RRGGBB)"
+            v-model="vehicle.iconColor"
+            density="compact"
+            variant="outlined"
+            hide-details
+            class="mb-2"
+          />
+          <v-text-field
+            label="事務所座標 (lat,lng)"
+            v-model="vehicle.officePoint"
+            density="compact"
+            variant="outlined"
+            hide-details
+            placeholder="例: 32.990200,132.929500"
+            class="mb-1"
+          />
+          <div class="rq-map-pick-row mb-2">
+            <v-btn
+              variant="tonal"
+              color="primary"
+              size="x-small"
+              density="comfortable"
+              prepend-icon="mdi-crosshairs-gps"
+              class="rq-map-pick-btn"
+              :class="{ 'is-active': mapSelectionField === 'vehicleOffice' && mapSelectionVehicleIndex === index }"
+              @click="toggleMapSelection('vehicleOffice', index)"
+            >
+              {{ mapSelectionField === 'vehicleOffice' && mapSelectionVehicleIndex === index ? '地図選択を解除' : '地図で事務所位置を選択' }}
+            </v-btn>
+          </div>
+          <div class="rq-form-row align-center">
+            <v-text-field
+              label="定員"
+              type="number"
+              min="1"
+              v-model="vehicle.capacity"
+              density="compact"
+              variant="outlined"
+              hide-details
+              style="flex:1"
+            />
+            <v-btn
+              variant="text"
+              color="error"
+              size="small"
+              icon="mdi-delete-outline"
+              :disabled="vehicle.isExisting"
+              @click="removeVehicleEditorRow(index)"
+            />
+          </div>
+        </div>
+        <div class="rq-setting-help">
+          既存車両は更新、新規行は追加されます。既存車両の削除は現在未対応です。
+        </div>
       </div>
       <v-btn color="primary" block prepend-icon="mdi-content-save" @click="saveProfile">保存</v-btn>
     </div>
@@ -2988,58 +3467,6 @@ createApp({
           </div>
         </div>
 
-        <div class="rq-form-section rq-vehicle-location-panel">
-          <div class="rq-form-label">
-            <v-icon size="14" color="#0284c7">mdi-bus-marker</v-icon>車載端末: バス現在位置
-          </div>
-          <v-select
-            :items="availableVehicles"
-            v-model="locationForm.vehicleId"
-            density="compact"
-            variant="outlined"
-            hide-details
-            placeholder="車両を選択"
-            class="mb-1"
-          />
-          <div class="rq-map-pick-row mb-1">
-            <v-btn
-              variant="tonal"
-              color="info"
-              size="x-small"
-              density="comfortable"
-              prepend-icon="mdi-crosshairs-gps"
-              class="rq-map-pick-btn"
-              :class="{ 'is-active': mapSelectionField === 'vehicle' }"
-              @click="toggleMapSelection('vehicle')"
-            >
-              {{ mapSelectionField === 'vehicle' ? '地図選択を解除' : '地図で現在地を指定' }}
-            </v-btn>
-          </div>
-          <v-text-field
-            v-model="locationForm.point"
-            density="compact"
-            variant="outlined"
-            hide-details
-            placeholder="lat,lng"
-            class="mb-2"
-          />
-          <div v-if="locationFormDirty" class="rq-inline-help mb-1">
-            地図または入力値は未送信です。送信すると地図上の現在地が更新されます。
-          </div>
-          <v-btn
-            color="info"
-            block
-            prepend-icon="mdi-radar"
-            :loading="loading"
-            size="small"
-            density="comfortable"
-            class="rq-action-btn"
-            @click="updateVehicleLocationFromForm"
-          >
-            位置情報を送信して再最適化
-          </v-btn>
-        </div>
-
         <v-btn color="primary" block prepend-icon="mdi-calculator-variant-outline" :loading="loading" size="small" density="comfortable" @click="previewDispatchRequest" class="rq-submit-btn rq-action-btn">
           最適経路を試算
         </v-btn>
@@ -3163,10 +3590,6 @@ createApp({
         <v-icon size="12" color="#b45309">mdi-bus-clock</v-icon>
         試算: {{ previewSimulation.vehicleId }} / 乗車 {{ previewPickupClock }} / 降車 {{ previewDropoffClock }}
       </div>
-      <div v-if="selectedVehicle && selectedVehicle.currentLocation" class="rq-map-vehicle-chip">
-        <v-icon size="12" color="#0369a1">mdi-bus-marker</v-icon>
-        {{ selectedVehicle.id }} 現在地 {{ selectedVehiclePointLabel }}
-      </div>
     </div>
 
     <!-- 右パネル: 予約リスト -->
@@ -3227,7 +3650,7 @@ createApp({
           </div>
           <div class="rq-req-meta">
             <span class="rq-party-size"><v-icon size="14">mdi-account-multiple</v-icon><strong>{{ row.partySize }}</strong>人乗車</span>
-            <span><v-icon size="11">mdi-bus</v-icon> {{ row.vehicleId }}</span>
+            <span><v-icon size="11">mdi-bus</v-icon> {{ row.vehicleLabel }}</span>
             <span v-if="row.etaMinutes !== null"><v-icon size="11">mdi-clock-outline</v-icon> 乗車 {{ row.etaMinutes }}分後</span>
             <span v-if="row.etaDropoffMinutes !== null"><v-icon size="11">mdi-flag-checkered</v-icon> 降車 {{ row.etaDropoffMinutes }}分後</span>
           </div>
@@ -3242,6 +3665,10 @@ createApp({
                 次の{{ row.nextTaskLabel }}まで 距離 {{ row.nextTaskTravelDistanceLabel ?? "算出中" }} / 時間 {{ row.nextTaskTravelMinutesLabel ?? "算出中" }}
               </template>
               <template v-else>次の乗降予定なし</template>
+            </span>
+            <span v-if="row.shouldReturnOffice" class="rq-req-metric">
+              <v-icon size="12" color="#0369a1">mdi-office-building-marker-outline</v-icon>
+              次の乗車まで {{ row.idleReturnThresholdMinutes }}分以上のため、事務所待機を推奨
             </span>
           </div>
         </button>

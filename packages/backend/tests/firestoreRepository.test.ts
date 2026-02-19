@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import { FirestoreRepository } from "../src/repository/firestoreRepository.ts";
 import { FakeFirestore } from "./helpers/fakeFirestore.ts";
+import { createDefaultServiceProfile } from "../../shared/src/defaults.ts";
 
 test("FirestoreRepository loads tenant data and persists updates", async () => {
   const firestore = new FakeFirestore({
@@ -65,4 +66,84 @@ test("FirestoreRepository loads tenant data and persists updates", async () => {
   assert.equal(firestore.get("tenants/tenant_x/users/user_001")?.name, "Alice");
   assert.equal(firestore.get("tenants/tenant_x/rideRequests/req_000008")?.tenantId, "tenant_x");
   assert.equal(firestore.get("tenants/tenant_x/__meta/counters")?.counter, 8);
+});
+
+test("FirestoreRepository persists operation settings and vehicle display fields", async () => {
+  const firestore = new FakeFirestore();
+  const repository = await FirestoreRepository.create({
+    firestore,
+    tenantId: "tenant_y"
+  });
+
+  const profile = createDefaultServiceProfile({
+    id: "weekday_ops_v1",
+    operationPolicy: {
+      office: {
+        name: "本社",
+        point: { lat: 33.01, lng: 132.91 }
+      },
+      businessHours: {
+        enabled: true,
+        startLocalTime: "08:00",
+        endLocalTime: "18:00",
+        requireDepartFromOffice: true,
+        requireReturnToOffice: true
+      },
+      idleReturnThresholdMinutes: 40,
+      lunchBreak: {
+        enabled: true,
+        startLocalTime: "11:00",
+        endLocalTime: "12:00",
+        requireReturnToOffice: true,
+        departFromOfficeAtEnd: true
+      }
+    }
+  });
+  repository.setServiceProfile(profile);
+  repository.addVehicle({
+    id: "veh_settings_1",
+    name: "本庁号",
+    iconColor: "#0ea5e9",
+    status: "ACTIVE",
+    capacity: 4,
+    onboardCount: 0,
+    officePoint: { lat: 33.02, lng: 132.92 },
+    currentLocation: { lat: 33.01, lng: 132.91 },
+    route: []
+  });
+
+  await repository.flush();
+
+  assert.equal(
+    firestore.get("tenants/tenant_y/serviceProfiles/weekday_ops_v1")?.operationPolicy?.office?.name,
+    "本社"
+  );
+  assert.deepEqual(
+    firestore.get("tenants/tenant_y/serviceProfiles/weekday_ops_v1")?.operationPolicy?.office?.point,
+    { lat: 33.01, lng: 132.91 }
+  );
+  assert.equal(
+    firestore.get("tenants/tenant_y/serviceProfiles/weekday_ops_v1")?.operationPolicy?.businessHours?.enabled,
+    true
+  );
+  assert.equal(
+    firestore.get("tenants/tenant_y/serviceProfiles/weekday_ops_v1")?.operationPolicy?.businessHours?.startLocalTime,
+    "08:00"
+  );
+  assert.equal(
+    firestore.get("tenants/tenant_y/serviceProfiles/weekday_ops_v1")?.operationPolicy?.businessHours?.endLocalTime,
+    "18:00"
+  );
+  assert.equal(
+    firestore.get("tenants/tenant_y/vehicles/veh_settings_1")?.name,
+    "本庁号"
+  );
+  assert.equal(
+    firestore.get("tenants/tenant_y/vehicles/veh_settings_1")?.iconColor,
+    "#0ea5e9"
+  );
+  assert.deepEqual(
+    firestore.get("tenants/tenant_y/vehicles/veh_settings_1")?.officePoint,
+    { lat: 33.02, lng: 132.92 }
+  );
 });

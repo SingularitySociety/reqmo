@@ -38,6 +38,28 @@ function resolvePhoneRequestType({ requestType, desiredDropoffAt }) {
   return desiredDropoffAt ? "ARRIVE_BY" : "ASAP";
 }
 
+function resolveRequestTimeWindow({
+  requestType = null,
+  desiredDropoffAt = null,
+  desiredPickupAt = null
+}) {
+  const normalizedDesiredDropoffAt = normalizeDesiredDropoffAt(
+    desiredDropoffAt ?? desiredPickupAt ?? null
+  );
+  const hasRequestedType = typeof requestType === "string" && requestType.trim().length > 0;
+  if (!normalizedDesiredDropoffAt && !hasRequestedType) {
+    return null;
+  }
+  return {
+    requestType: resolvePhoneRequestType({
+      requestType,
+      desiredDropoffAt: normalizedDesiredDropoffAt
+    }),
+    scheduledAt: null,
+    desiredDropoffAt: normalizedDesiredDropoffAt
+  };
+}
+
 function normalizePreferredVehicleId(value) {
   if (typeof value !== "string") {
     return null;
@@ -76,6 +98,56 @@ function normalizeInteger(value, fallback = 0) {
   return Math.trunc(numeric);
 }
 
+function normalizeNonNegativeInteger(value, fallback = 0) {
+  const normalized = normalizeInteger(value, fallback);
+  return normalized >= 0 ? normalized : fallback;
+}
+
+function normalizePositiveInteger(value, fallback = 1) {
+  const normalized = normalizeInteger(value, fallback);
+  return normalized > 0 ? normalized : fallback;
+}
+
+function normalizeColorHex(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const text = value.trim();
+  if (!text) {
+    return null;
+  }
+  if (!/^#([0-9a-fA-F]{6})$/.test(text)) {
+    throw new Error("iconColor must be #RRGGBB format");
+  }
+  return text.toLowerCase();
+}
+
+function normalizePoint(value, fieldName = "point") {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const lat = Number(value.lat);
+  const lng = Number(value.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    throw new Error(`${fieldName} must include finite lat/lng`);
+  }
+  return {
+    lat,
+    lng
+  };
+}
+
+function normalizeVehicleStatus(value, fallback = "ACTIVE") {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+  const status = value.trim().toUpperCase();
+  if (!status) {
+    return fallback;
+  }
+  return status;
+}
+
 export async function previewRideRequest({
   repository,
   tenantId,
@@ -86,12 +158,20 @@ export async function previewRideRequest({
   passenger = null,
   channel = CHANNELS.PASSENGER_APP,
   serviceProfileId,
+  requestType = null,
+  desiredDropoffAt = null,
+  desiredPickupAt = null,
   context = {}
 }) {
   const serviceProfile = repository.getServiceProfile(serviceProfileId);
   if (!serviceProfile) {
     throw new Error("No active service profile configured");
   }
+  const timeWindow = resolveRequestTimeWindow({
+    requestType,
+    desiredDropoffAt,
+    desiredPickupAt
+  });
 
   return previewRideRequestDispatch({
     repository,
@@ -109,7 +189,8 @@ export async function previewRideRequest({
         primaryAlgorithm: serviceProfile.dispatchPolicy.algorithmPrimary,
         fallbackAlgorithm: serviceProfile.dispatchPolicy.algorithmFallback,
         serviceProfileId: serviceProfile.id
-      }
+      },
+      ...(timeWindow ? { timeWindow } : {})
     },
     serviceProfile,
     context
@@ -126,12 +207,20 @@ export async function createRideRequest({
   passenger = null,
   channel = CHANNELS.PASSENGER_APP,
   serviceProfileId,
+  requestType = null,
+  desiredDropoffAt = null,
+  desiredPickupAt = null,
   context = {}
 }) {
   const serviceProfile = repository.getServiceProfile(serviceProfileId);
   if (!serviceProfile) {
     throw new Error("No active service profile configured");
   }
+  const timeWindow = resolveRequestTimeWindow({
+    requestType,
+    desiredDropoffAt,
+    desiredPickupAt
+  });
 
   const request = repository.createRideRequest({
     tenantId,
@@ -147,7 +236,8 @@ export async function createRideRequest({
       primaryAlgorithm: serviceProfile.dispatchPolicy.algorithmPrimary,
       fallbackAlgorithm: serviceProfile.dispatchPolicy.algorithmFallback,
       serviceProfileId: serviceProfile.id
-    }
+    },
+    ...(timeWindow ? { timeWindow } : {})
   });
 
   return dispatchRideRequest({ repository, rideRequest: request, serviceProfile, context });
@@ -570,6 +660,141 @@ export function resolveCaller({ repository, serviceProfileId, callerRaw }) {
     telephonyPolicy: serviceProfile.telephonyPolicy,
     callerRaw
   });
+}
+
+export function createVehicle({
+  repository,
+  vehicle = {},
+  fallbackLocation = null
+}) {
+  const requestedId = typeof vehicle.id === "string" ? vehicle.id.trim() : "";
+  const id = requestedId || repository.nextId("veh");
+  const existing = repository.listVehicles().find((entry) => entry.id === id);
+  if (existing) {
+    throw new Error(`Vehicle already exists: ${id}`);
+  }
+
+  const resolvedCurrentLocation =
+    normalizePoint(vehicle.currentLocation ?? fallbackLocation, "currentLocation") ??
+    null;
+  if (!resolvedCurrentLocation) {
+    throw new Error("currentLocation is required when creating vehicle");
+  }
+  const resolvedOfficePoint =
+    normalizePoint(vehicle.officePoint ?? vehicle.homeBase, "officePoint") ??
+    null;
+
+  const nameRaw = typeof vehicle.name === "string" ? vehicle.name.trim() : "";
+  const iconColor = normalizeColorHex(vehicle.iconColor);
+  const routeInput = Array.isArray(vehicle.route) ? vehicle.route : [];
+  const route = routeInput
+    .map((task, index) => {
+      if (!task || typeof task !== "object") {
+        throw new Error(`route[${index}] must be an object`);
+      }
+      const point = normalizePoint(task.point, `route[${index}].point`);
+      if (!point) {
+        throw new Error(`route[${index}].point is required`);
+      }
+      return {
+        type: typeof task.type === "string" ? task.type : "PICKUP",
+        requestId:
+          typeof task.requestId === "string" && task.requestId.trim()
+            ? task.requestId.trim()
+            : null,
+        point,
+        loadChange: normalizeInteger(task.loadChange, 0)
+      };
+    });
+
+  return repository.addVehicle({
+    id,
+    name: nameRaw || id,
+    status: normalizeVehicleStatus(vehicle.status, "ACTIVE"),
+    capacity: normalizePositiveInteger(vehicle.capacity, 4),
+    onboardCount: normalizeNonNegativeInteger(vehicle.onboardCount, 0),
+    currentLocation: resolvedCurrentLocation,
+    iconColor,
+    route,
+    ...(resolvedOfficePoint
+      ? {
+          officePoint: resolvedOfficePoint,
+          homeBase: resolvedOfficePoint
+        }
+      : {})
+  });
+}
+
+export function updateVehicleConfig({
+  repository,
+  vehicleId,
+  updates = {}
+}) {
+  const normalizedVehicleId = typeof vehicleId === "string" ? vehicleId.trim() : "";
+  if (!normalizedVehicleId) {
+    throw new Error("vehicleId is required");
+  }
+
+  const current = repository.listVehicles().find((entry) => entry.id === normalizedVehicleId);
+  if (!current) {
+    throw new Error("Vehicle not found");
+  }
+
+  const next = {};
+  if (updates.name !== undefined) {
+    const nextName = typeof updates.name === "string" ? updates.name.trim() : "";
+    if (!nextName) {
+      throw new Error("name must be a non-empty string");
+    }
+    next.name = nextName;
+  }
+  if (updates.iconColor !== undefined) {
+    next.iconColor = normalizeColorHex(updates.iconColor);
+  }
+  if (updates.status !== undefined) {
+    next.status = normalizeVehicleStatus(updates.status, current.status ?? "ACTIVE");
+  }
+  if (updates.capacity !== undefined) {
+    next.capacity = normalizePositiveInteger(updates.capacity, current.capacity ?? 4);
+  }
+  if (updates.onboardCount !== undefined) {
+    next.onboardCount = normalizeNonNegativeInteger(updates.onboardCount, current.onboardCount ?? 0);
+  }
+
+  if (updates.currentLocation !== undefined) {
+    const resolvedLocation = normalizePoint(
+      updates.currentLocation,
+      "currentLocation"
+    );
+    if (resolvedLocation) {
+      next.currentLocation = resolvedLocation;
+    }
+  }
+
+  if (updates.officePoint !== undefined || updates.homeBase !== undefined) {
+    const officeInput =
+      updates.officePoint !== undefined ? updates.officePoint : updates.homeBase;
+    if (officeInput === null) {
+      next.officePoint = null;
+      next.homeBase = null;
+    } else {
+      const officePoint = normalizePoint(
+        officeInput,
+        updates.officePoint !== undefined ? "officePoint" : "homeBase"
+      );
+      if (!officePoint) {
+        throw new Error("officePoint/homeBase must include finite lat/lng");
+      }
+      next.officePoint = officePoint;
+      next.homeBase = officePoint;
+    }
+  }
+
+  const updated = repository.updateVehicle(normalizedVehicleId, next);
+  if (!updated) {
+    throw new Error("Vehicle not found");
+  }
+  return updated;
 }
 
 export function upsertServiceProfile({ repository, profile }) {

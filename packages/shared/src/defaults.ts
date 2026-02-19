@@ -3,6 +3,27 @@ import { LOCATION_MODES } from "./constants.ts";
 export function createDefaultServiceProfile(overrides = {}) {
   return {
     id: "weekday_default_v1",
+    operationPolicy: {
+      office: {
+        name: "事務所",
+        point: null
+      },
+      businessHours: {
+        enabled: false,
+        startLocalTime: "08:00",
+        endLocalTime: "18:00",
+        requireDepartFromOffice: true,
+        requireReturnToOffice: true
+      },
+      idleReturnThresholdMinutes: 40,
+      lunchBreak: {
+        enabled: true,
+        startLocalTime: "11:00",
+        endLocalTime: "12:00",
+        requireReturnToOffice: true,
+        departFromOfficeAtEnd: true
+      }
+    },
     locationPolicy: {
       mode: LOCATION_MODES.HYBRID,
       freePointEnabled: true,

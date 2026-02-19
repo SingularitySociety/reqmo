@@ -656,3 +656,366 @@ test("dispatch prefers dropoff-first plan when dropoffPriority is enabled", asyn
   assert.ok(pickupNewWithPriority >= 0);
   assert.equal(dropoffR1WithPriority < pickupNewWithPriority, true);
 });
+
+test("dispatch rejects request when vehicle cannot return to office before lunch break", async () => {
+  const repository = new InMemoryRepository();
+  const baseProfile = createDefaultServiceProfile();
+  const profile = createDefaultServiceProfile({
+    id: "office_break_return_guard",
+    dispatchPolicy: {
+      ...baseProfile.dispatchPolicy,
+      maxWaitMinutes: 240
+    },
+    operationPolicy: {
+      office: {
+        name: "本社",
+        point: { lat: 33.0, lng: 132.9 }
+      },
+      idleReturnThresholdMinutes: 40,
+      lunchBreak: {
+        enabled: true,
+        startLocalTime: "11:00",
+        endLocalTime: "12:00",
+        requireReturnToOffice: true,
+        departFromOfficeAtEnd: true
+      }
+    }
+  });
+  upsertServiceProfile({ repository, profile });
+
+  repository.addVehicle({
+    id: "veh_1",
+    status: "ACTIVE",
+    capacity: 4,
+    onboardCount: 0,
+    currentLocation: { lat: 33.1, lng: 132.9 },
+    route: []
+  });
+
+  const preview = await previewRideRequest({
+    repository,
+    serviceProfileId: profile.id,
+    tenantId: "tenant_default",
+    requesterId: "user_break_guard",
+    pickup: {
+      mode: "FREE_POINT",
+      point: { lat: 33.1, lng: 132.9 }
+    },
+    dropoff: {
+      mode: "FREE_POINT",
+      point: { lat: 33.2, lng: 132.9 }
+    },
+    partySize: 1,
+    context: {
+      now: "2026-02-01T10:50:00+09:00"
+    }
+  });
+
+  assert.equal(preview.status, "REJECTED");
+  assert.equal(preview.reason, "NO_FEASIBLE_VEHICLE");
+  assert.equal(preview.diagnostics?.rejectionCounts?.OFFICE_BREAK_POLICY, 1);
+  assert.equal(preview.diagnostics?.details?.type, "RETURN_BEFORE_BREAK");
+});
+
+test("dispatch does not require pre-break office return for afternoon reservation", async () => {
+  const repository = new InMemoryRepository();
+  const baseProfile = createDefaultServiceProfile();
+  const profile = createDefaultServiceProfile({
+    id: "office_break_afternoon_reservation",
+    dispatchPolicy: {
+      ...baseProfile.dispatchPolicy,
+      maxWaitMinutes: 240
+    },
+    operationPolicy: {
+      office: {
+        name: "本社",
+        point: { lat: 33.0, lng: 132.9 }
+      },
+      idleReturnThresholdMinutes: 40,
+      lunchBreak: {
+        enabled: true,
+        startLocalTime: "11:00",
+        endLocalTime: "12:00",
+        requireReturnToOffice: true,
+        departFromOfficeAtEnd: true
+      }
+    }
+  });
+  upsertServiceProfile({ repository, profile });
+
+  repository.addVehicle({
+    id: "veh_1",
+    status: "ACTIVE",
+    capacity: 4,
+    onboardCount: 0,
+    currentLocation: { lat: 33.1, lng: 132.9 },
+    route: []
+  });
+
+  const preview = await previewRideRequest({
+    repository,
+    serviceProfileId: profile.id,
+    tenantId: "tenant_default",
+    requesterId: "user_break_afternoon",
+    pickup: {
+      mode: "FREE_POINT",
+      point: { lat: 33.1, lng: 132.9 }
+    },
+    dropoff: {
+      mode: "FREE_POINT",
+      point: { lat: 33.11, lng: 132.9 }
+    },
+    partySize: 1,
+    desiredDropoffAt: "2026-02-01T13:20:00+09:00",
+    context: {
+      now: "2026-02-01T10:50:00+09:00"
+    }
+  });
+
+  assert.equal(preview.status, "ASSIGNABLE");
+  assert.equal(preview.diagnostics?.details?.type === "RETURN_BEFORE_BREAK", false);
+});
+
+test("dispatch rejects request when 12:00 office departure cannot reach pickup in time", async () => {
+  const repository = new InMemoryRepository();
+  const baseProfile = createDefaultServiceProfile();
+  const profile = createDefaultServiceProfile({
+    id: "office_break_departure_guard",
+    dispatchPolicy: {
+      ...baseProfile.dispatchPolicy,
+      maxWaitMinutes: 240
+    },
+    operationPolicy: {
+      office: {
+        name: "本社",
+        point: { lat: 33.0, lng: 132.9 }
+      },
+      idleReturnThresholdMinutes: 40,
+      lunchBreak: {
+        enabled: true,
+        startLocalTime: "11:00",
+        endLocalTime: "12:00",
+        requireReturnToOffice: false,
+        departFromOfficeAtEnd: true
+      }
+    }
+  });
+  upsertServiceProfile({ repository, profile });
+
+  repository.addVehicle({
+    id: "veh_1",
+    status: "ACTIVE",
+    capacity: 4,
+    onboardCount: 0,
+    currentLocation: { lat: 33.0, lng: 132.9 },
+    route: []
+  });
+
+  const preview = await previewRideRequest({
+    repository,
+    serviceProfileId: profile.id,
+    tenantId: "tenant_default",
+    requesterId: "user_departure_guard",
+    pickup: {
+      mode: "FREE_POINT",
+      point: { lat: 33.05, lng: 132.9 }
+    },
+    dropoff: {
+      mode: "FREE_POINT",
+      point: { lat: 33.051, lng: 132.901 }
+    },
+    partySize: 1,
+    context: {
+      now: "2026-02-01T11:59:00+09:00"
+    }
+  });
+
+  assert.equal(preview.status, "REJECTED");
+  assert.equal(preview.reason, "NO_FEASIBLE_VEHICLE");
+  assert.equal(preview.diagnostics?.rejectionCounts?.OFFICE_BREAK_POLICY, 1);
+  assert.equal(preview.diagnostics?.details?.type, "DEPART_AFTER_BREAK");
+});
+
+test("dispatch lunch-break checks prioritize vehicle office point over shared office point", async () => {
+  const repository = new InMemoryRepository();
+  const baseProfile = createDefaultServiceProfile();
+  const profile = createDefaultServiceProfile({
+    id: "vehicle_office_priority_profile",
+    dispatchPolicy: {
+      ...baseProfile.dispatchPolicy,
+      maxWaitMinutes: 240
+    },
+    operationPolicy: {
+      office: {
+        name: "共通本社",
+        point: { lat: 33.05, lng: 132.9 }
+      },
+      idleReturnThresholdMinutes: 40,
+      lunchBreak: {
+        enabled: true,
+        startLocalTime: "11:00",
+        endLocalTime: "12:00",
+        requireReturnToOffice: true,
+        departFromOfficeAtEnd: true
+      }
+    }
+  });
+  upsertServiceProfile({ repository, profile });
+
+  repository.addVehicle({
+    id: "veh_1",
+    status: "ACTIVE",
+    capacity: 4,
+    onboardCount: 0,
+    currentLocation: { lat: 33.0, lng: 132.9 },
+    officePoint: { lat: 33.005, lng: 132.9 },
+    route: []
+  });
+
+  const preview = await previewRideRequest({
+    repository,
+    serviceProfileId: profile.id,
+    tenantId: "tenant_default",
+    requesterId: "user_vehicle_office_priority",
+    pickup: {
+      mode: "FREE_POINT",
+      point: { lat: 33.0, lng: 132.9 }
+    },
+    dropoff: {
+      mode: "FREE_POINT",
+      point: { lat: 33.005, lng: 132.9 }
+    },
+    partySize: 1,
+    context: {
+      now: "2026-02-01T10:50:00+09:00"
+    }
+  });
+
+  assert.equal(preview.status, "ASSIGNABLE");
+});
+
+test("dispatch rejects request when office departure would be before business hours", async () => {
+  const repository = new InMemoryRepository();
+  const baseProfile = createDefaultServiceProfile();
+  const profile = createDefaultServiceProfile({
+    id: "business_hours_departure_guard",
+    dispatchPolicy: {
+      ...baseProfile.dispatchPolicy,
+      maxWaitMinutes: 240
+    },
+    operationPolicy: {
+      office: {
+        name: "本社",
+        point: { lat: 33.0, lng: 132.9 }
+      },
+      businessHours: {
+        enabled: true,
+        startLocalTime: "08:00",
+        endLocalTime: "18:00",
+        requireDepartFromOffice: true,
+        requireReturnToOffice: true
+      },
+      lunchBreak: {
+        enabled: false
+      }
+    }
+  });
+  upsertServiceProfile({ repository, profile });
+
+  repository.addVehicle({
+    id: "veh_1",
+    status: "ACTIVE",
+    capacity: 4,
+    onboardCount: 0,
+    currentLocation: { lat: 33.0, lng: 132.9 },
+    officePoint: { lat: 33.0, lng: 132.9 },
+    route: []
+  });
+
+  const preview = await previewRideRequest({
+    repository,
+    serviceProfileId: profile.id,
+    tenantId: "tenant_default",
+    requesterId: "user_business_departure_guard",
+    pickup: {
+      mode: "FREE_POINT",
+      point: { lat: 33.04, lng: 132.9 }
+    },
+    dropoff: {
+      mode: "FREE_POINT",
+      point: { lat: 33.041, lng: 132.901 }
+    },
+    partySize: 1,
+    context: {
+      now: "2026-02-01T07:50:00+09:00"
+    }
+  });
+
+  assert.equal(preview.status, "REJECTED");
+  assert.equal(preview.reason, "NO_FEASIBLE_VEHICLE");
+  assert.equal(preview.diagnostics?.rejectionCounts?.OFFICE_BREAK_POLICY, 1);
+  assert.equal(preview.diagnostics?.details?.type, "DEPART_BEFORE_BUSINESS_HOURS");
+});
+
+test("dispatch rejects request when office return would exceed business hours", async () => {
+  const repository = new InMemoryRepository();
+  const baseProfile = createDefaultServiceProfile();
+  const profile = createDefaultServiceProfile({
+    id: "business_hours_return_guard",
+    dispatchPolicy: {
+      ...baseProfile.dispatchPolicy,
+      maxWaitMinutes: 240
+    },
+    operationPolicy: {
+      office: {
+        name: "本社",
+        point: { lat: 33.0, lng: 132.9 }
+      },
+      businessHours: {
+        enabled: true,
+        startLocalTime: "08:00",
+        endLocalTime: "18:00",
+        requireDepartFromOffice: true,
+        requireReturnToOffice: true
+      },
+      lunchBreak: {
+        enabled: false
+      }
+    }
+  });
+  upsertServiceProfile({ repository, profile });
+
+  repository.addVehicle({
+    id: "veh_1",
+    status: "ACTIVE",
+    capacity: 4,
+    onboardCount: 0,
+    currentLocation: { lat: 33.0, lng: 132.9 },
+    officePoint: { lat: 33.0, lng: 132.9 },
+    route: []
+  });
+
+  const preview = await previewRideRequest({
+    repository,
+    serviceProfileId: profile.id,
+    tenantId: "tenant_default",
+    requesterId: "user_business_return_guard",
+    pickup: {
+      mode: "FREE_POINT",
+      point: { lat: 33.0, lng: 132.9 }
+    },
+    dropoff: {
+      mode: "FREE_POINT",
+      point: { lat: 33.05, lng: 132.9 }
+    },
+    partySize: 1,
+    context: {
+      now: "2026-02-01T17:45:00+09:00"
+    }
+  });
+
+  assert.equal(preview.status, "REJECTED");
+  assert.equal(preview.reason, "NO_FEASIBLE_VEHICLE");
+  assert.equal(preview.diagnostics?.rejectionCounts?.OFFICE_BREAK_POLICY, 1);
+  assert.equal(preview.diagnostics?.details?.type, "RETURN_AFTER_BUSINESS_HOURS");
+});

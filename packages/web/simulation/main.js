@@ -12,6 +12,7 @@ const API_BASE = (() => {
 const ROUTE_CACHE_MAX_ENTRIES = 300;
 const ROUTE_CACHE_RETRY_MS = 30 * 1000;
 const ROUTE_DEVIATION_RECALC_METERS = 45;
+const OFFICE_RETURN_ARRIVAL_METERS = 20;
 const routeGeometryCache = new Map();
 const BUS_ICON_COLORS = [
   "#0284c7",
@@ -49,6 +50,34 @@ function normalizeTaskType(value) {
 
 function hasPoint(point) {
   return Boolean(point) && Number.isFinite(Number(point.lat)) && Number.isFinite(Number(point.lng));
+}
+
+function toPointText(lat, lng) {
+  return `${Number(lat).toFixed(6)},${Number(lng).toFixed(6)}`;
+}
+
+function parsePointText(text) {
+  const [latRaw, lngRaw] = `${text}`.split(",").map((part) => part.trim());
+  const lat = Number(latRaw);
+  const lng = Number(lngRaw);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    throw new Error("現在地は 'lat,lng' 形式で入力してください");
+  }
+  return { lat, lng };
+}
+
+function normalizeColorHex(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const text = value.trim();
+  if (!text) {
+    return null;
+  }
+  if (!/^#([0-9a-fA-F]{6})$/.test(text)) {
+    return null;
+  }
+  return text.toLowerCase();
 }
 
 function normalizeRoutePoints(points) {
@@ -93,14 +122,19 @@ function hashText(value) {
   return hash;
 }
 
-function colorForVehicle(vehicleId) {
-  const index = Math.abs(hashText(vehicleId)) % BUS_ICON_COLORS.length;
+function colorForVehicle(vehicle) {
+  const configured = normalizeColorHex(vehicle?.iconColor);
+  if (configured) {
+    return configured;
+  }
+  const seed = typeof vehicle?.id === "string" ? vehicle.id : vehicle;
+  const index = Math.abs(hashText(seed)) % BUS_ICON_COLORS.length;
   return BUS_ICON_COLORS[index];
 }
 
-function createBusIcon(vehicleId, emphasized = false) {
+function createBusIcon(vehicle, emphasized = false) {
   const size = emphasized ? 34 : 30;
-  const color = colorForVehicle(vehicleId);
+  const color = colorForVehicle(vehicle);
   const borderColor = emphasized ? "#0f172a" : "#ffffff";
 
   return L.divIcon({
@@ -383,7 +417,12 @@ const app = createApp({
       vehicles: [],
       stopsById: {},
       requestsById: {},
+      officePoint: null,
+      officeName: "事務所",
       selectedVehicleId: "",
+      manualLocationPoint: "",
+      manualLocationMapPick: false,
+      manualLocationUpdating: false,
       averageSpeedKmh: 25,
       speedVariationKmh: 10,
       perPassengerServiceSeconds: 60,
@@ -410,6 +449,7 @@ const app = createApp({
       map: null,
       busMarker: null,
       targetMarker: null,
+      officeMarker: null,
       traveledLine: null,
       routeLine: null,
       traveledTrack: [],
@@ -514,10 +554,14 @@ const app = createApp({
     },
 
     distanceToNextLabel() {
-      if (!this.nextTask || !hasPoint(this.nextTask.point)) {
+      const origin = hasPoint(this.currentPosition)
+        ? this.currentPosition
+        : this.selectedVehicle?.currentLocation;
+      const targetTask = this.resolveNavigationTask(origin);
+      if (!targetTask || !hasPoint(targetTask.point)) {
         return "-";
       }
-      const signature = this.buildTaskSignature(this.nextTask);
+      const signature = this.buildTaskSignature(targetTask);
       if (
         this.activeRouteSegment &&
         this.activeRouteSegment.signature === signature
@@ -529,13 +573,7 @@ const app = createApp({
         const meters = Math.round(remainingKm * 1000);
         return `${meters.toLocaleString("ja-JP")}m`;
       }
-      const origin = hasPoint(this.currentPosition)
-        ? this.currentPosition
-        : this.selectedVehicle?.currentLocation;
-      if (!hasPoint(origin)) {
-        return "-";
-      }
-      const meters = Math.round(distanceKm(origin, this.nextTask.point) * 1000);
+      const meters = Math.round(distanceKm(origin, targetTask.point) * 1000);
       return `${meters.toLocaleString("ja-JP")}m`;
     }
   },
@@ -543,12 +581,110 @@ const app = createApp({
   watch: {
     selectedVehicleId() {
       this.syncSelectedVehicleState({ preservePosition: false });
+      this.syncManualLocationInput({ force: true });
+      this.manualLocationMapPick = false;
       this.syncMap();
     }
   },
 
   methods: {
     formatTimestamp,
+
+    syncManualLocationInput({ force = false } = {}) {
+      const vehiclePoint = this.selectedVehicle?.currentLocation;
+      if (!hasPoint(vehiclePoint)) {
+        if (force || !this.selectedVehicleId) {
+          this.manualLocationPoint = "";
+        }
+        return;
+      }
+
+      if (force || !this.manualLocationUpdating) {
+        this.manualLocationPoint = toPointText(vehiclePoint.lat, vehiclePoint.lng);
+      }
+    },
+
+    toggleManualLocationMapPick() {
+      if (!this.selectedVehicleId) {
+        this.errorMessage = "先に車両を選択してください";
+        return;
+      }
+      if (!this.map) {
+        return;
+      }
+      this.manualLocationMapPick = !this.manualLocationMapPick;
+      this.errorMessage = "";
+      if (this.manualLocationMapPick) {
+        this.infoMessage = "地図をクリックすると現在地を即時送信します";
+      }
+    },
+
+    async onMapClick(event) {
+      if (!this.manualLocationMapPick || !event?.latlng) {
+        return;
+      }
+      const point = {
+        lat: Number(event.latlng.lat),
+        lng: Number(event.latlng.lng)
+      };
+      if (!hasPoint(point)) {
+        return;
+      }
+      this.manualLocationPoint = toPointText(point.lat, point.lng);
+      this.manualLocationMapPick = false;
+      await this.applyManualLocationUpdate({
+        point,
+        source: "SIMULATION_WEB_MAP_PICK"
+      });
+    },
+
+    async applyManualLocationUpdate({
+      point: directPoint = null,
+      source = "SIMULATION_WEB_MANUAL"
+    } = {}) {
+      if (!this.selectedVehicleId) {
+        this.errorMessage = "先に車両を選択してください";
+        return;
+      }
+
+      let point;
+      try {
+        point = hasPoint(directPoint) ? directPoint : parsePointText(this.manualLocationPoint);
+      } catch (error) {
+        this.errorMessage = error instanceof Error ? error.message : "現在地の形式が不正です";
+        return;
+      }
+
+      this.manualLocationUpdating = true;
+      this.errorMessage = "";
+      try {
+        await apiPost(`/api/vehicles/${encodeURIComponent(this.selectedVehicleId)}/location`, {
+          point,
+          source,
+          capturedAt: new Date().toISOString()
+        });
+        this.manualLocationPoint = toPointText(point.lat, point.lng);
+        this.manualLocationMapPick = false;
+        this.currentPosition = {
+          lat: Number(point.lat),
+          lng: Number(point.lng)
+        };
+        this.appendTrackPoint(this.currentPosition);
+        this.activeRouteSegment = null;
+        this.pendingStopEvent = null;
+        await this.refreshState({ preservePosition: true });
+        this.shouldFitBounds = true;
+        this.syncMap();
+        this.infoMessage =
+          source === "SIMULATION_WEB_MAP_PICK"
+            ? "地図で指定した現在地を送信して再最適化しました"
+            : "位置情報を送信して再最適化しました";
+      } catch (error) {
+        this.errorMessage = error instanceof Error ? error.message : "位置更新に失敗しました";
+      } finally {
+        this.manualLocationUpdating = false;
+      }
+    },
 
     resetSimulationStats() {
       this.totalDistanceKm = 0;
@@ -596,12 +732,15 @@ const app = createApp({
       }
 
       this.syncSelectedVehicleState({ preservePosition });
+      this.syncManualLocationInput();
     },
 
     syncSelectedVehicleState({ preservePosition = true } = {}) {
       const vehicle = this.selectedVehicle;
       if (!vehicle) {
         this.currentPosition = null;
+        this.officePoint = null;
+        this.officeName = "事務所";
         this.traveledTrack = [];
         this.activeRouteSegment = null;
         this.pendingStopEvent = null;
@@ -614,6 +753,11 @@ const app = createApp({
       const telemetry = vehicle.telemetry ?? {};
       this.totalBoarded = Math.max(0, Math.trunc(toNumber(telemetry.totalBoarded, 0)));
       this.totalAlighted = Math.max(0, Math.trunc(toNumber(telemetry.totalAlighted, 0)));
+      const officePoint = this.resolveVehicleOfficePoint(vehicle);
+      this.officePoint = officePoint;
+      const vehicleName =
+        typeof vehicle?.name === "string" && vehicle.name.trim() ? vehicle.name.trim() : "";
+      this.officeName = vehicleName ? `${vehicleName} 事務所` : "事務所";
 
       if (!preservePosition || !hasPoint(this.currentPosition)) {
         this.currentPosition = hasPoint(vehicle.currentLocation)
@@ -627,6 +771,21 @@ const app = createApp({
         this.resetSimulationStats();
         this.resetTraveledTrack(this.currentPosition);
       }
+    },
+
+    resolveVehicleOfficePoint(vehicle) {
+      const point = hasPoint(vehicle?.officePoint)
+        ? vehicle.officePoint
+        : hasPoint(vehicle?.homeBase)
+          ? vehicle.homeBase
+          : null;
+      if (!hasPoint(point)) {
+        return null;
+      }
+      return {
+        lat: Number(point.lat),
+        lng: Number(point.lng)
+      };
     },
 
     resetTraveledTrack(point) {
@@ -718,11 +877,58 @@ const app = createApp({
       return "停留所不明";
     },
 
+    resolveOfficePoint() {
+      if (!hasPoint(this.officePoint)) {
+        return null;
+      }
+      return {
+        lat: Number(this.officePoint.lat),
+        lng: Number(this.officePoint.lng)
+      };
+    },
+
+    buildOfficeReturnTask(origin = null) {
+      if (this.routeTasks.length > 0) {
+        return null;
+      }
+      const officePoint = this.resolveOfficePoint();
+      if (!officePoint) {
+        return null;
+      }
+
+      const currentPoint = hasPoint(origin)
+        ? origin
+        : hasPoint(this.currentPosition)
+          ? this.currentPosition
+          : this.selectedVehicle?.currentLocation;
+      if (!hasPoint(currentPoint)) {
+        return null;
+      }
+
+      const distanceMeters = distanceKm(currentPoint, officePoint) * 1000;
+      if (!Number.isFinite(distanceMeters) || distanceMeters <= OFFICE_RETURN_ARRIVAL_METERS) {
+        return null;
+      }
+
+      return {
+        type: "OFFICE_RETURN",
+        requestId: "__office_return__",
+        point: officePoint,
+        loadChange: 0,
+        officeReturn: true
+      };
+    },
+
+    resolveNavigationTask(origin = null) {
+      return this.nextTask ?? this.buildOfficeReturnTask(origin);
+    },
+
     buildTaskSignature(task) {
       if (!task || !hasPoint(task.point)) {
         return "";
       }
-      return `${task.requestId ?? ""}:${normalizeTaskType(task.type)}:${routePointKey(task.point)}`;
+      const taskType = task.officeReturn ? "OFFICE_RETURN" : normalizeTaskType(task.type);
+      return `${task.requestId ?? ""}:${taskType}:${routePointKey(task.point)}`;
     },
 
     pickSpeedKmh() {
@@ -828,6 +1034,7 @@ const app = createApp({
       }
       this.errorMessage = "";
       this.infoMessage = "シミュレーション実行中";
+      this.manualLocationMapPick = false;
       this.running = true;
       this.shouldFitBounds = true;
       this.scheduleTimer();
@@ -919,12 +1126,20 @@ const app = createApp({
 
         const currentSpeed = this.pickSpeedKmh();
         this.currentSpeedKmh = currentSpeed;
+        const navigationTask = this.resolveNavigationTask(this.currentPosition);
 
-        if (!nextTask || !hasPoint(nextTask.point)) {
+        if (!navigationTask || !hasPoint(navigationTask.point)) {
           this.activeRouteSegment = null;
           this.pendingStopEvent = null;
           await this.sendLocation(this.currentPosition, currentSpeed);
-          this.infoMessage = "ルート待機中: 現在地を送信しました";
+          const officePoint = this.resolveOfficePoint();
+          const isOfficeIdle =
+            !nextTask &&
+            hasPoint(officePoint) &&
+            distanceKm(this.currentPosition, officePoint) * 1000 <= OFFICE_RETURN_ARRIVAL_METERS;
+          this.infoMessage = isOfficeIdle
+            ? `${this.officeName}で待機中: 現在地を送信しました`
+            : "ルート待機中: 現在地を送信しました";
           this.syncMap();
           return;
         }
@@ -936,7 +1151,7 @@ const app = createApp({
         };
         const segment = await this.ensureActiveRouteSegment({
           origin: this.currentPosition,
-          task: nextTask
+          task: navigationTask
         });
         if (!segment) {
           throw new Error("移動経路を解決できませんでした");
@@ -962,8 +1177,8 @@ const app = createApp({
 
         if (arrived) {
           const snappedPoint = {
-            lat: Number(nextTask.point.lat),
-            lng: Number(nextTask.point.lng)
+            lat: Number(navigationTask.point.lat),
+            lng: Number(navigationTask.point.lng)
           };
           this.totalDistanceKm += Math.max(0, distanceKm(this.currentPosition, snappedPoint));
           this.currentPosition = {
@@ -971,29 +1186,39 @@ const app = createApp({
             lng: snappedPoint.lng
           };
           this.appendTrackPoint(this.currentPosition);
-          const passengerCount = Math.abs(Math.trunc(toNumber(nextTask.loadChange, 0)));
-          const serviceSeconds = this.resolvePassengerServiceSeconds(passengerCount);
-          if (serviceSeconds > 0) {
+          if (navigationTask.officeReturn) {
             this.currentSpeedKmh = 0;
             await this.sendLocation(this.currentPosition, 0);
-            this.pendingStopEvent = {
-              signature: nextTaskSignature,
-              taskType: normalizeTaskType(nextTask.type),
-              passengerCount,
-              totalSeconds: serviceSeconds,
-              remainingSeconds: serviceSeconds
-            };
-            this.infoMessage = `停留中... 乗降処理 ${passengerCount}人 / ${serviceSeconds}秒`;
-          } else {
-            await this.sendLocation(this.currentPosition, currentSpeed);
-            await this.sendPassengerEvent(nextTask);
             this.activeRouteSegment = null;
-            await this.refreshState({ preservePosition: true });
-            this.infoMessage = "停留ポイントに到達して乗降イベントを送信しました";
+            this.pendingStopEvent = null;
+            this.infoMessage = `${this.officeName}に到着しました`;
+          } else {
+            const passengerCount = Math.abs(Math.trunc(toNumber(nextTask.loadChange, 0)));
+            const serviceSeconds = this.resolvePassengerServiceSeconds(passengerCount);
+            if (serviceSeconds > 0) {
+              this.currentSpeedKmh = 0;
+              await this.sendLocation(this.currentPosition, 0);
+              this.pendingStopEvent = {
+                signature: nextTaskSignature,
+                taskType: normalizeTaskType(nextTask.type),
+                passengerCount,
+                totalSeconds: serviceSeconds,
+                remainingSeconds: serviceSeconds
+              };
+              this.infoMessage = `停留中... 乗降処理 ${passengerCount}人 / ${serviceSeconds}秒`;
+            } else {
+              await this.sendLocation(this.currentPosition, currentSpeed);
+              await this.sendPassengerEvent(nextTask);
+              this.activeRouteSegment = null;
+              await this.refreshState({ preservePosition: true });
+              this.infoMessage = "停留ポイントに到達して乗降イベントを送信しました";
+            }
           }
         } else {
           await this.sendLocation(moved, currentSpeed);
-          this.infoMessage = "GPSを送信しながら移動中";
+          this.infoMessage = navigationTask.officeReturn
+            ? `${this.officeName}へ回送中`
+            : "GPSを送信しながら移動中";
         }
 
         this.syncMap();
@@ -1066,6 +1291,19 @@ const app = createApp({
         };
         if (!points.length || routePointKey(points.at(-1)) !== routePointKey(point)) {
           points.push(point);
+        }
+      }
+
+      if (!this.routeTasks.length) {
+        const officeTask = this.buildOfficeReturnTask(origin);
+        if (officeTask && hasPoint(officeTask.point)) {
+          const officePoint = {
+            lat: Number(officeTask.point.lat),
+            lng: Number(officeTask.point.lng)
+          };
+          if (!points.length || routePointKey(points.at(-1)) !== routePointKey(officePoint)) {
+            points.push(officePoint);
+          }
         }
       }
       return points;
@@ -1217,6 +1455,7 @@ const app = createApp({
         opacity: 0.9
       }).addTo(this.map);
 
+      this.map.on("click", this.onMapClick);
       this.syncMap();
     },
 
@@ -1231,8 +1470,8 @@ const app = createApp({
 
       if (hasPoint(origin)) {
         const latLng = this.toLeafletLatLng(origin);
-        const vehicleIdForColor = this.selectedVehicle?.id ?? this.selectedVehicleId ?? "veh";
-        const busIcon = createBusIcon(vehicleIdForColor, true);
+        const vehicleForColor = this.selectedVehicle ?? { id: this.selectedVehicleId ?? "veh" };
+        const busIcon = createBusIcon(vehicleForColor, true);
         if (!this.busMarker) {
           this.busMarker = L.marker(latLng, {
             icon: busIcon,
@@ -1244,19 +1483,47 @@ const app = createApp({
         }
       }
 
-      const targetTask = this.routeTasks[0] ?? null;
+      const officePoint = this.resolveOfficePoint();
+      if (officePoint) {
+        const officeLatLng = this.toLeafletLatLng(officePoint);
+        if (!this.officeMarker) {
+          this.officeMarker = L.circleMarker(officeLatLng, {
+            radius: 6,
+            color: "#166534",
+            weight: 2,
+            fillColor: "#22c55e",
+            fillOpacity: 0.55
+          }).addTo(this.map);
+        } else {
+          this.officeMarker.setLatLng(officeLatLng);
+        }
+        this.officeMarker.bindTooltip(this.officeName, {
+          direction: "top",
+          offset: [0, -4]
+        });
+      } else if (this.officeMarker) {
+        this.map.removeLayer(this.officeMarker);
+        this.officeMarker = null;
+      }
+
+      const targetTask = this.resolveNavigationTask(origin);
       if (targetTask && hasPoint(targetTask.point)) {
         const latLng = this.toLeafletLatLng(targetTask.point);
+        const isOfficeReturn = Boolean(targetTask.officeReturn);
         if (!this.targetMarker) {
           this.targetMarker = L.circleMarker(latLng, {
             radius: 8,
-            color: "#0f172a",
+            color: isOfficeReturn ? "#166534" : "#0f172a",
             weight: 2,
-            fillColor: "#38bdf8",
+            fillColor: isOfficeReturn ? "#22c55e" : "#38bdf8",
             fillOpacity: 0.9
           }).addTo(this.map);
         } else {
           this.targetMarker.setLatLng(latLng);
+          this.targetMarker.setStyle({
+            color: isOfficeReturn ? "#166534" : "#0f172a",
+            fillColor: isOfficeReturn ? "#22c55e" : "#38bdf8"
+          });
         }
       } else if (this.targetMarker) {
         this.map.removeLayer(this.targetMarker);
@@ -1269,11 +1536,11 @@ const app = createApp({
       }
 
       if (this.routeLine) {
-        const nextTask = this.routeTasks[0] ?? null;
-        const nextTaskSignature = this.buildTaskSignature(nextTask);
+        const navigationTask = this.resolveNavigationTask(origin);
+        const navigationTaskSignature = this.buildTaskSignature(navigationTask);
         const hasStableSegment =
-          Boolean(nextTaskSignature) &&
-          this.activeRouteSegment?.signature === nextTaskSignature &&
+          Boolean(navigationTaskSignature) &&
+          this.activeRouteSegment?.signature === navigationTaskSignature &&
           Array.isArray(this.activeRouteSegment?.progress?.polyline) &&
           this.activeRouteSegment.progress.polyline.length > 1;
 
@@ -1336,6 +1603,11 @@ const app = createApp({
 
   beforeUnmount() {
     this.clearTimer();
+    if (this.map) {
+      this.map.off("click", this.onMapClick);
+      this.map.remove();
+      this.map = null;
+    }
   }
 });
 

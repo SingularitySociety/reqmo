@@ -29,7 +29,7 @@
           <select v-model="selectedVehicleId" :disabled="loading || running || tickBusy">
             <option disabled value="">車両を選択</option>
             <option v-for="vehicle in vehicles" :key="vehicle.id" :value="vehicle.id">
-              {{ vehicle.id }} (route: {{ (vehicle.route ?? []).length }})
+              {{ vehicle.name || vehicle.id }} (route: {{ (vehicle.route ?? []).length }})
             </option>
           </select>
         </label>
@@ -66,6 +66,31 @@
           <button type="button" class="warn" @click="pauseSimulation" :disabled="!running">
             一時停止
           </button>
+        </div>
+      </section>
+
+      <section class="sim-manual-location">
+        <div class="sim-manual-location__header">
+          <h2>車載端末: バス現在位置</h2>
+          <span>対象車両: {{ selectedVehicleId || "-" }}</span>
+        </div>
+        <div class="sim-manual-location__controls">
+          <button
+            type="button"
+            class="sim-manual-location__map-pick"
+            :class="{ 'is-active': manualLocationMapPick }"
+            :disabled="!selectedVehicleId || loading || tickBusy || running || manualLocationUpdating"
+            @click="toggleManualLocationMapPick"
+          >
+            {{ manualLocationMapPick ? "地図選択を解除" : "地図で現在地を指定" }}
+          </button>
+          <input
+            v-model="manualLocationPoint"
+            type="text"
+            placeholder="lat,lng"
+            :disabled="!selectedVehicleId || loading || tickBusy || running || manualLocationUpdating"
+            readonly
+          />
         </div>
       </section>
 

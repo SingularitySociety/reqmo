@@ -8,6 +8,7 @@ import { loadConfiguredSeedData } from "../seed/configSeedLoader.ts";
 import {
   cancelRideRequest,
   createRideRequest,
+  createVehicle,
   listPhoneRideOptions,
   previewRideRequest,
   createPhoneRideRequest,
@@ -17,6 +18,7 @@ import {
   ingestCall,
   linkPhoneIdentity,
   updateVehicleLocation,
+  updateVehicleConfig,
   upsertFarePolicy,
   upsertServiceProfile,
   upsertTelephonyConfig
@@ -75,6 +77,30 @@ async function flushRepository(repository) {
   if (typeof repository.flush === "function") {
     await repository.flush();
   }
+}
+
+function normalizePointInput(input) {
+  if (!input) {
+    return null;
+  }
+  if (typeof input === "object" && input.lat !== undefined && input.lng !== undefined) {
+    const lat = Number(input.lat);
+    const lng = Number(input.lng);
+    if (Number.isFinite(lat) && Number.isFinite(lng)) {
+      return { lat, lng };
+    }
+    return null;
+  }
+  if (typeof input === "string") {
+    const [latRaw, lngRaw] = input.split(",").map((part) => part.trim());
+    const lat = Number(latRaw);
+    const lng = Number(lngRaw);
+    if (Number.isFinite(lat) && Number.isFinite(lng)) {
+      return { lat, lng };
+    }
+    return null;
+  }
+  return null;
 }
 
 export function seedDemoData(repository) {
@@ -170,21 +196,7 @@ function toRideInput(body) {
   }
 
   function parsePoint(value) {
-    if (!value) {
-      return null;
-    }
-    if (typeof value === "object" && value.lat !== undefined && value.lng !== undefined) {
-      return { lat: Number(value.lat), lng: Number(value.lng) };
-    }
-    if (typeof value === "string") {
-      const [latRaw, lngRaw] = value.split(",").map((part) => part.trim());
-      const lat = Number(latRaw);
-      const lng = Number(lngRaw);
-      if (Number.isFinite(lat) && Number.isFinite(lng)) {
-        return { lat, lng };
-      }
-    }
-    return null;
+    return normalizePointInput(value);
   }
 
   function normalizeLocation(input) {
@@ -279,6 +291,26 @@ export function createReqmoServer({
         });
       }
 
+      if (req.method === "POST" && pathname === "/api/vehicles") {
+        const body = await parseJsonBody(req);
+        const firstStop = repository.listStops()[0];
+        const fallbackLocation =
+          normalizePointInput(body.currentLocation ?? body.officePoint ?? body.homeBase) ??
+          (firstStop ? { lat: firstStop.lat, lng: firstStop.lng } : null);
+
+        const result = createVehicle({
+          repository,
+          vehicle: body,
+          fallbackLocation
+        });
+        await flushRepository(repository);
+
+        return jsonResponse(res, 200, {
+          status: "CREATED",
+          vehicle: result
+        });
+      }
+
       if (req.method === "GET" && pathname === "/api/stops") {
         return jsonResponse(res, 200, {
           data: repository.listStops()
@@ -342,6 +374,8 @@ export function createReqmoServer({
           partySize: body.partySize ?? 1,
           passenger: normalizePassenger(body.passenger),
           channel: body.channel,
+          requestType: body.requestType ?? null,
+          desiredDropoffAt: body.desiredDropoffAt ?? body.desiredPickupAt ?? null,
           context: requestContext
         });
         await flushRepository(repository);
@@ -362,6 +396,8 @@ export function createReqmoServer({
           partySize: body.partySize ?? 1,
           passenger: normalizePassenger(body.passenger),
           channel: body.channel,
+          requestType: body.requestType ?? null,
+          desiredDropoffAt: body.desiredDropoffAt ?? body.desiredPickupAt ?? null,
           context: requestContext
         });
 
@@ -391,6 +427,22 @@ export function createReqmoServer({
       }
 
       const vehicleLocationPathMatch = pathname.match(/^\/api\/vehicles\/([^/]+)\/location$/);
+      const vehicleUpdatePathMatch = pathname.match(/^\/api\/vehicles\/([^/]+)$/);
+      if (req.method === "POST" && vehicleUpdatePathMatch) {
+        const body = await parseJsonBody(req);
+        const vehicleId = decodeURIComponent(vehicleUpdatePathMatch[1]);
+        const updated = updateVehicleConfig({
+          repository,
+          vehicleId,
+          updates: body
+        });
+        await flushRepository(repository);
+        return jsonResponse(res, 200, {
+          status: "UPDATED",
+          vehicle: updated
+        });
+      }
+
       if (req.method === "POST" && vehicleLocationPathMatch) {
         const body = await parseJsonBody(req);
         const vehicleId = decodeURIComponent(vehicleLocationPathMatch[1]);

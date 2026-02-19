@@ -86,6 +86,28 @@ test("api accepts JSON payload from pre-parsed req.body", async () => {
   assert.equal(Object.hasOwn(parsed, "error"), false);
 });
 
+test("api ride-request endpoints preserve desired time window fields", async () => {
+  const { server, repository } = createReqmoServer();
+  const desiredDropoffAt = "2026-02-01T04:20:00.000Z";
+  const response = await invokeServer({
+    server,
+    method: "POST",
+    url: "/api/ride-requests",
+    body: {
+      pickup: { mode: "FIXED_STOP", stopId: "stop_a" },
+      dropoff: { mode: "FIXED_STOP", stopId: "stop_b" },
+      partySize: 1,
+      desiredDropoffAt
+    }
+  });
+
+  assert.equal(response.statusCode, 200);
+  const requests = repository.listRideRequests();
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].timeWindow?.desiredDropoffAt, desiredDropoffAt);
+  assert.equal(requests[0].timeWindow?.requestType, "ARRIVE_BY");
+});
+
 test("api can reset ride requests and clear vehicle routes", async () => {
   const repository = new InMemoryRepository({
     stops: [{ id: "shimanto_stop_1", name: "Shimanto Stop", lat: 32.99, lng: 132.93 }],
@@ -272,4 +294,80 @@ test("vehicle passenger-event API updates onboard and request completion", async
   assert.equal(dropoffPayload.vehicle.telemetry.totalAlighted, 2);
   assert.equal(dropoffPayload.rideRequest.status, "COMPLETED");
   assert.equal(typeof dropoffPayload.rideRequest.assignment.actualDropoffAt, "string");
+});
+
+test("vehicle settings API can create and update vehicles", async () => {
+  const repository = new InMemoryRepository({
+    stops: [{ id: "stop_1", name: "Stop 1", lat: 32.99, lng: 132.93 }]
+  });
+  const { server } = createReqmoServer({ repository });
+
+  const createResponse = await invokeServer({
+    server,
+    method: "POST",
+    url: "/api/vehicles",
+    body: {
+      id: "veh_cfg_1",
+      name: "1号車",
+      iconColor: "#10b981",
+      currentLocation: { lat: 32.99, lng: 132.93 },
+      capacity: 6
+    }
+  });
+  assert.equal(createResponse.statusCode, 200);
+  const createPayload = JSON.parse(createResponse.payload);
+  assert.equal(createPayload.status, "CREATED");
+  assert.equal(createPayload.vehicle.id, "veh_cfg_1");
+  assert.equal(createPayload.vehicle.name, "1号車");
+  assert.equal(createPayload.vehicle.iconColor, "#10b981");
+  assert.equal(createPayload.vehicle.capacity, 6);
+
+  const updateResponse = await invokeServer({
+    server,
+    method: "POST",
+    url: "/api/vehicles/veh_cfg_1",
+    body: {
+      name: "1号車(更新)",
+      iconColor: "#f97316",
+      officePoint: { lat: 32.991, lng: 132.931 }
+    }
+  });
+  assert.equal(updateResponse.statusCode, 200);
+  const updatePayload = JSON.parse(updateResponse.payload);
+  assert.equal(updatePayload.status, "UPDATED");
+  assert.equal(updatePayload.vehicle.id, "veh_cfg_1");
+  assert.equal(updatePayload.vehicle.name, "1号車(更新)");
+  assert.equal(updatePayload.vehicle.iconColor, "#f97316");
+  assert.deepEqual(updatePayload.vehicle.officePoint, { lat: 32.991, lng: 132.931 });
+  assert.deepEqual(updatePayload.vehicle.homeBase, { lat: 32.991, lng: 132.931 });
+});
+
+test("vehicle create API uses vehicle office point as fallback location", async () => {
+  const profile = createDefaultServiceProfile({
+    id: "office_profile"
+  });
+  const repository = new InMemoryRepository({
+    serviceProfiles: [profile]
+  });
+  const { server } = createReqmoServer({
+    repository,
+    serviceProfileId: profile.id
+  });
+
+  const response = await invokeServer({
+    server,
+    method: "POST",
+    url: "/api/vehicles",
+    body: {
+      name: "新規車両",
+      officePoint: { lat: 33.01, lng: 132.91 },
+      serviceProfileId: profile.id
+    }
+  });
+
+  assert.equal(response.statusCode, 200);
+  const payload = JSON.parse(response.payload);
+  assert.equal(payload.status, "CREATED");
+  assert.deepEqual(payload.vehicle.officePoint, { lat: 33.01, lng: 132.91 });
+  assert.deepEqual(payload.vehicle.currentLocation, { lat: 33.01, lng: 132.91 });
 });

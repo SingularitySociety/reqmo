@@ -330,20 +330,13 @@ html, body, #app {
 .rq-submit-btn {
   margin-top: 4px;
   flex-shrink: 0;
+  flex: 0 0 auto !important;
 }
 
 .rq-action-btn {
   min-height: 34px !important;
   font-size: 0.78rem !important;
   font-weight: 700 !important;
-}
-
-.rq-vehicle-location-panel {
-  border: 1px solid rgba(2, 132, 199, 0.2);
-  border-radius: 10px;
-  background: rgba(240, 249, 255, 0.72);
-  padding: 8px;
-  margin-top: 4px;
 }
 
 .rq-call-options-panel {
@@ -852,26 +845,6 @@ html, body, #app {
   pointer-events: none;
 }
 
-.rq-map-vehicle-chip {
-  position: absolute;
-  top: 78px;
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  background: rgba(239, 246, 255, 0.96);
-  border: 1px solid rgba(2, 132, 199, 0.2);
-  border-radius: 999px;
-  padding: 5px 12px;
-  font-size: 0.71rem;
-  font-weight: 700;
-  color: #0c4a6e;
-  z-index: 500;
-  white-space: nowrap;
-  pointer-events: none;
-}
-
 /* ===== パネルヘッダー ===== */
 .rq-panel-header {
   display: flex;
@@ -1203,6 +1176,13 @@ html, body, #app {
   font-size: 0.7rem;
   color: rgba(30, 41, 59, 0.72);
   line-height: 1.45;
+}
+
+.rq-setting-vehicle-card {
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 8px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.78);
 }
 
 /* ===== Vuetifyスタイル上書き ===== */

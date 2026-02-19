@@ -72,6 +72,68 @@ body {
   padding: 14px;
 }
 
+.sim-manual-location {
+  background: var(--sim-surface);
+  border: 1px solid var(--sim-border);
+  border-radius: 14px;
+  padding: 12px 14px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sim-manual-location__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.sim-manual-location__header h2 {
+  margin: 0;
+  font-size: 0.98rem;
+}
+
+.sim-manual-location__header span {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--sim-muted);
+}
+
+.sim-manual-location__controls {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.sim-manual-location__controls input,
+.sim-manual-location__map-pick {
+  border: 1px solid var(--sim-border);
+  border-radius: 10px;
+  min-height: 38px;
+  padding: 0 10px;
+  font-size: 0.92rem;
+  color: var(--sim-text);
+  background: #fff;
+}
+
+.sim-manual-location__map-pick {
+  cursor: pointer;
+  background: rgba(14, 116, 144, 0.08);
+  color: #0e7490;
+  font-weight: 700;
+}
+
+.sim-manual-location__map-pick.is-active {
+  background: rgba(185, 28, 28, 0.1);
+  color: #b91c1c;
+}
+
+.sim-manual-location__map-pick:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
 .sim-controls label {
   display: flex;
   flex-direction: column;
@@ -243,6 +305,10 @@ body {
   }
 
   .sim-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .sim-manual-location__controls {
     grid-template-columns: 1fr;
   }
 
