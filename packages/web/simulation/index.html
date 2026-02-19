@@ -110,6 +110,31 @@
 
         <section class="sim-stats-panel">
           <h2>乗降状況</h2>
+          <article class="sim-operation-panel">
+            <div class="sim-operation-panel__head">
+              <h3>運行ステップ</h3>
+              <span>{{ selectedVehicle?.name || selectedVehicleId || "-" }}</span>
+            </div>
+            <div v-if="operationSteps.length" class="sim-operation-list">
+              <div v-for="step in operationSteps" :key="step.key" class="sim-operation-step">
+                <div class="sim-operation-step__top">
+                  <span class="sim-operation-step__seq">{{ step.sequence }}</span>
+                  <span class="sim-operation-step__kind" :class="'is-' + step.kindKey">{{ step.kindLabel }}</span>
+                  <span class="sim-operation-step__count">{{ step.passengerCountLabel }}</span>
+                  <span class="sim-operation-step__arrival">着 {{ step.arrivalLabel }}</span>
+                </div>
+                <div class="sim-operation-step__location">{{ step.locationLabel }}</div>
+                <div class="sim-operation-step__request">{{ step.requestLabel }}</div>
+                <div class="sim-operation-step__meta">
+                  <span>移動 {{ step.moveDistanceLabel }} / {{ step.moveMinutesLabel }}</span>
+                  <span>待 {{ step.waitLabel }}</span>
+                  <span>車内 {{ step.onboardAfterLabel }}</span>
+                </div>
+              </div>
+            </div>
+            <p v-else class="sim-operation-empty">運行ステップなし</p>
+          </article>
+
           <div class="sim-kpi-grid">
             <article>
               <h3>現在の乗車人数</h3>

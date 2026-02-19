@@ -356,6 +356,34 @@ function formatDurationLabel(totalSeconds) {
   return `${seconds}秒`;
 }
 
+function formatClockLabel(value) {
+  if (value === null || value === undefined) {
+    return "--:--";
+  }
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "--:--";
+  }
+  return `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+}
+
+function formatDistanceKmLabel(distanceKm) {
+  if (!Number.isFinite(distanceKm) || distanceKm < 0) {
+    return "-";
+  }
+  if (distanceKm < 1) {
+    return `${Math.round(distanceKm * 1000)}m`;
+  }
+  return `${distanceKm.toFixed(distanceKm >= 10 ? 1 : 2)}km`;
+}
+
+function formatMinutesShortLabel(minutes) {
+  if (!Number.isFinite(minutes) || minutes < 0) {
+    return "-";
+  }
+  return `${Math.max(0, Math.round(minutes))}分`;
+}
+
 function parseTimestampMs(value) {
   if (!value) {
     return null;
@@ -575,6 +603,129 @@ const app = createApp({
       }
       const meters = Math.round(distanceKm(origin, targetTask.point) * 1000);
       return `${meters.toLocaleString("ja-JP")}m`;
+    },
+
+    operationSteps() {
+      const vehicle = this.selectedVehicle;
+      if (!vehicle) {
+        return [];
+      }
+
+      const origin = hasPoint(this.currentPosition)
+        ? this.currentPosition
+        : vehicle.currentLocation;
+      const route = Array.isArray(this.routeTasks) ? this.routeTasks : [];
+      const fallbackOfficeTask = route.length ? null : this.buildOfficeReturnTask(origin);
+      const sourceTasks = route.length
+        ? route
+        : fallbackOfficeTask
+          ? [fallbackOfficeTask]
+          : [];
+
+      if (!sourceTasks.length) {
+        return [];
+      }
+
+      const speedKmh = clamp(toNumber(this.averageSpeedKmh, 25), 1, 120);
+      const perPassengerSeconds = clamp(toNumber(this.perPassengerServiceSeconds, 60), 0, 120);
+
+      const rawSteps = [];
+      let previousPoint = hasPoint(origin) ? origin : null;
+      let onboard = Math.max(0, Math.trunc(toNumber(vehicle.onboardCount, 0)));
+
+      for (let index = 0; index < sourceTasks.length; index += 1) {
+        const task = sourceTasks[index];
+        const isOfficeReturn = Boolean(task?.officeReturn);
+        const taskType = isOfficeReturn ? "OFFICE_RETURN" : normalizeTaskType(task?.type);
+        if (!taskType || !hasPoint(task?.point)) {
+          continue;
+        }
+
+        const request = task.requestId ? this.requestsById[task.requestId] : null;
+        const passengerCount = isOfficeReturn
+          ? 0
+          : Math.max(0, Math.abs(Math.trunc(toNumber(task.loadChange, 0))));
+        const loadDelta = isOfficeReturn ? 0 : Math.trunc(toNumber(task.loadChange, 0));
+        onboard += loadDelta;
+
+        const segmentDistanceKm =
+          hasPoint(previousPoint) && hasPoint(task.point)
+            ? Math.max(0, distanceKm(previousPoint, task.point))
+            : null;
+        const segmentMinutes =
+          Number.isFinite(segmentDistanceKm) ? (segmentDistanceKm / speedKmh) * 60 : null;
+
+        const plannedAt = isOfficeReturn ? null : this.resolveTaskPlannedAt(task);
+        const plannedMs = parseTimestampMs(plannedAt);
+        let arrivalMs = plannedMs;
+        if (arrivalMs === null && !isOfficeReturn) {
+          const etaRaw = Number(
+            taskType === "PICKUP"
+              ? request?.assignment?.etaPickupMinutes
+              : request?.assignment?.etaDropoffMinutes
+          );
+          if (Number.isFinite(etaRaw)) {
+            arrivalMs = Date.now() + Math.max(0, etaRaw) * 60 * 1000;
+          }
+        }
+
+        const requestLabel = (() => {
+          if (isOfficeReturn) {
+            return `${this.officeName}へ回送`;
+          }
+          if (!task?.requestId) {
+            return "予約なし";
+          }
+          const passengerName =
+            typeof request?.passenger?.name === "string" ? request.passenger.name.trim() : "";
+          const passengerPhone =
+            typeof request?.passenger?.phoneNumber === "string"
+              ? request.passenger.phoneNumber.trim()
+              : typeof request?.passenger?.phone === "string"
+                ? request.passenger.phone.trim()
+                : "";
+          if (passengerName && passengerPhone) {
+            return `${passengerName} / ${passengerPhone}`;
+          }
+          return passengerPhone || passengerName || task.requestId;
+        })();
+
+        rawSteps.push({
+          key: `${task.requestId ?? "task"}-${taskType}-${index}`,
+          sequence: index + 1,
+          kindKey: isOfficeReturn ? "office" : taskType === "PICKUP" ? "pickup" : "dropoff",
+          kindLabel: isOfficeReturn ? "回送" : taskType === "PICKUP" ? "乗" : "降",
+          passengerCountLabel: isOfficeReturn ? "-" : `${passengerCount}人`,
+          locationLabel: isOfficeReturn ? this.officeName : this.resolveTaskLocation(task),
+          requestLabel,
+          arrivalMs,
+          arrivalLabel: arrivalMs === null ? "--:--" : formatClockLabel(arrivalMs),
+          moveDistanceLabel: formatDistanceKmLabel(segmentDistanceKm),
+          moveMinutesLabel: formatMinutesShortLabel(segmentMinutes),
+          onboardAfterLabel: `${Math.max(0, onboard)}人`,
+          serviceMinutesEstimate: isOfficeReturn ? 0 : (perPassengerSeconds * passengerCount) / 60
+        });
+
+        previousPoint = task.point;
+      }
+
+      return rawSteps.map((step, index) => {
+        const nextStep = rawSteps[index + 1] ?? null;
+        let waitLabel = "-";
+        if (Number.isFinite(step.arrivalMs) && Number.isFinite(nextStep?.arrivalMs)) {
+          const waitMinutes = Math.max(
+            0,
+            Math.round(
+              (nextStep.arrivalMs - step.arrivalMs) / (60 * 1000) - step.serviceMinutesEstimate
+            )
+          );
+          waitLabel = `${waitMinutes}分`;
+        }
+        return {
+          ...step,
+          waitLabel
+        };
+      });
     }
   },
 

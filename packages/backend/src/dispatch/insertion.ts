@@ -52,10 +52,6 @@ function evaluateRouteSafety({ vehicle, route, partySize, maxOnboardPerVehicle }
     }
   }
 
-  if ((vehicle.onboardCount ?? 0) + partySize > cappedCapacity) {
-    return { ok: false, reason: "CAPACITY" };
-  }
-
   return { ok: true };
 }
 
@@ -113,10 +109,40 @@ function existingTaskDelayMinutes({
   return Math.max(0, maxDelay);
 }
 
+function requestRideMinutes({
+  startPoint,
+  route,
+  requestId,
+  travelMinutes,
+  serviceProfile
+}) {
+  let current = startPoint;
+  let elapsed = 0;
+  let pickupElapsed = null;
+
+  for (const task of route) {
+    elapsed += travelMinutes(current, task.point);
+    current = task.point;
+
+    if (task.requestId === requestId) {
+      if (task.type === "PICKUP" && pickupElapsed === null) {
+        pickupElapsed = elapsed;
+      } else if (task.type === "DROPOFF" && pickupElapsed !== null) {
+        return Math.max(0, elapsed - pickupElapsed);
+      }
+    }
+
+    elapsed += taskServiceMinutes(task, serviceProfile);
+  }
+
+  return 0;
+}
+
 function insertionCost({
   etaPickupMinutes,
   detourMinutes,
   deadheadMinutes,
+  newRideDetourMinutes = 0,
   consecutivePickupPairs = 0,
   serviceProfile
 }) {
@@ -124,13 +150,16 @@ function insertionCost({
   const pickupDelayWeight = normalizeNonNegative(weights.pickupDelay, 0.4);
   const detourWeight = normalizeNonNegative(weights.detour, 0.25);
   const deadheadWeight = normalizeNonNegative(weights.deadhead, 0.2);
+  const rideDetourWeight = normalizeNonNegative(weights.rideTimeDetour, 0.1);
   const latenessWeight = normalizeNonNegative(weights.lateness, 0.15);
-  const dropoffPriorityWeight = normalizeNonNegative(weights.dropoffPriority, 1);
+  const dropoffPriorityWeight = normalizeNonNegative(weights.dropoffPriority, 0);
+  const normalizedNewRideDetourMinutes = normalizeNonNegative(newRideDetourMinutes, 0);
   const normalizedConsecutivePickupPairs = normalizeNonNegative(consecutivePickupPairs, 0);
   return (
     pickupDelayWeight * etaPickupMinutes +
     detourWeight * detourMinutes +
     deadheadWeight * deadheadMinutes +
+    rideDetourWeight * normalizedNewRideDetourMinutes +
     latenessWeight * Math.max(0, etaPickupMinutes - serviceProfile.dispatchPolicy.maxWaitMinutes) +
     dropoffPriorityWeight * normalizedConsecutivePickupPairs
   );
@@ -343,11 +372,21 @@ export function findBestInsertionPlan({ vehicle, request, serviceProfile, travel
       }
 
       const deadheadMinutes = travelMinutes(vehicle.currentLocation, request.pickupPoint);
+      const newRideMinutes = requestRideMinutes({
+        startPoint: vehicle.currentLocation,
+        route: candidateRoute,
+        requestId: request.id,
+        travelMinutes,
+        serviceProfile
+      });
+      const directRideMinutes = travelMinutes(request.pickupPoint, request.dropoffPoint);
+      const newRideDetourMinutes = Math.max(0, newRideMinutes - directRideMinutes);
       const consecutivePickupPairs = countConsecutivePickupPairs(candidateRoute);
       const score = insertionCost({
         etaPickupMinutes,
         detourMinutes,
         deadheadMinutes,
+        newRideDetourMinutes,
         consecutivePickupPairs,
         serviceProfile
       });

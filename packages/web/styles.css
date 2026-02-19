@@ -12,7 +12,8 @@
   --rq-border: rgba(30, 41, 59, 0.1);
   --rq-bg: #eef2f7;
   --rq-topbar-h: 52px;
-  --rq-panel-w: 300px;
+  --rq-panel-left-w: 292px;
+  --rq-panel-right-w: 364px;
   --rq-shadow: 0 2px 12px rgba(15, 23, 42, 0.08);
 }
 
@@ -203,7 +204,7 @@ html, body, #app {
 /* ===== ワークスペース (3カラム) ===== */
 .rq-workspace {
   display: grid;
-  grid-template-columns: var(--rq-panel-w) 1fr var(--rq-panel-w);
+  grid-template-columns: var(--rq-panel-left-w) minmax(0, 1fr) var(--rq-panel-right-w);
   flex: 1;
   min-height: 0;
   overflow: hidden;
@@ -900,6 +901,130 @@ html, body, #app {
   font-weight: 700;
 }
 
+/* ===== 右パネル: 運行ステップ ===== */
+.rq-driver-plan-panel {
+  border-bottom: 1px solid var(--rq-border);
+  background: linear-gradient(180deg, rgba(240, 253, 250, 0.58), rgba(255, 255, 255, 0.86));
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.rq-driver-plan-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.rq-driver-plan-title {
+  font-size: 0.72rem;
+  font-weight: 800;
+  color: var(--rq-ink);
+  letter-spacing: 0.04em;
+}
+
+.rq-driver-plan-vehicle {
+  font-size: 0.66rem;
+  font-weight: 700;
+  color: #0f766e;
+  max-width: 65%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rq-driver-plan-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 236px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.rq-driver-plan-item {
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.9);
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rq-driver-plan-row {
+  display: grid;
+  grid-template-columns: 22px 38px 1fr;
+  align-items: center;
+  gap: 6px;
+}
+
+.rq-driver-plan-kind {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 18px;
+  border-radius: 6px;
+  font-size: 0.63rem;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+  border: 1px solid transparent;
+}
+
+.rq-driver-plan-kind.is-pickup {
+  color: #166534;
+  background: rgba(34, 197, 94, 0.14);
+  border-color: rgba(22, 163, 74, 0.3);
+}
+
+.rq-driver-plan-kind.is-dropoff {
+  color: #9a3412;
+  background: rgba(251, 146, 60, 0.16);
+  border-color: rgba(234, 88, 12, 0.3);
+}
+
+.rq-driver-plan-count {
+  font-size: 0.67rem;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+.rq-driver-plan-location {
+  font-size: 0.74rem;
+  font-weight: 800;
+  color: #0f172a;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rq-driver-plan-subrow {
+  font-size: 0.64rem;
+  color: #475569;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rq-driver-plan-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  font-size: 0.63rem;
+  color: #334155;
+  font-weight: 700;
+}
+
+.rq-driver-plan-empty {
+  padding: 6px 2px 2px;
+}
+
 /* ===== 予約リスト ===== */
 .rq-request-list {
   flex: 1;
@@ -1232,7 +1357,8 @@ html, body, #app {
 /* ===== レスポンシブ ===== */
 @media (max-width: 900px) {
   :root {
-    --rq-panel-w: 260px;
+    --rq-panel-left-w: 252px;
+    --rq-panel-right-w: 310px;
   }
 }
 

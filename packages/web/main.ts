@@ -110,6 +110,18 @@ function formatTimeLabel(value) {
   return formatClock(date);
 }
 
+function parseTimeValueMs(value) {
+  if (!value) {
+    return null;
+  }
+  const date = new Date(value);
+  const timestampMs = date.getTime();
+  if (Number.isNaN(timestampMs)) {
+    return null;
+  }
+  return timestampMs;
+}
+
 function buildDesiredDropoffAtFromClock(clockText, baseNow = new Date()) {
   const [hourRaw, minuteRaw] = `${clockText}`.split(":");
   const hour = Number(hourRaw);
@@ -549,6 +561,14 @@ createApp({
       return index;
     });
 
+    const requestIndex = computed(() => {
+      const index = new Map();
+      requests.value.forEach((request) => {
+        index.set(request.id, request);
+      });
+      return index;
+    });
+
     const kpi = computed(() => {
       const assigned = requests.value.filter((request) => request.status === "ASSIGNED").length;
       const pending = requests.value.filter((request) => request.status === "PENDING").length;
@@ -639,6 +659,80 @@ createApp({
         return "自由地点";
       }
       return "地点";
+    }
+
+    function resolveVehicleTaskRequest(task) {
+      if (!task?.requestId) {
+        return null;
+      }
+      return requestIndex.value.get(task.requestId) ?? null;
+    }
+
+    function resolveVehicleTaskPlannedAt(task, request = null) {
+      const taskType = normalizeRouteTaskType(task?.type);
+      if (!taskType) {
+        return null;
+      }
+      const targetRequest = request ?? resolveVehicleTaskRequest(task);
+      if (!targetRequest) {
+        return null;
+      }
+      const assignment = targetRequest.assignment ?? {};
+      const plannedAt =
+        taskType === "PICKUP" ? assignment?.plannedPickupAt : assignment?.plannedDropoffAt;
+      if (typeof plannedAt !== "string") {
+        return null;
+      }
+      return parseTimeValueMs(plannedAt) === null ? null : plannedAt;
+    }
+
+    function resolveVehicleTaskEtaMinutes(task, request = null) {
+      const taskType = normalizeRouteTaskType(task?.type);
+      if (!taskType) {
+        return null;
+      }
+      const targetRequest = request ?? resolveVehicleTaskRequest(task);
+      if (!targetRequest) {
+        return null;
+      }
+      const assignment = targetRequest.assignment ?? {};
+      const etaRaw = Number(
+        taskType === "PICKUP" ? assignment?.etaPickupMinutes : assignment?.etaDropoffMinutes
+      );
+      if (!Number.isFinite(etaRaw)) {
+        return null;
+      }
+      return Math.max(0, etaRaw);
+    }
+
+    function resolveVehicleTaskLocationLabel(task, request = null) {
+      const taskType = normalizeRouteTaskType(task?.type);
+      const targetRequest = request ?? resolveVehicleTaskRequest(task);
+      if (targetRequest && taskType) {
+        return resolveLocationLabel(taskType === "PICKUP" ? targetRequest.pickup : targetRequest.dropoff);
+      }
+      if (hasPoint(task?.point)) {
+        return `${formatCoordinate(task.point.lat)},${formatCoordinate(task.point.lng)}`;
+      }
+      return "地点";
+    }
+
+    function resolveVehicleTaskRequestLabel(task, request = null) {
+      const targetRequest = request ?? resolveVehicleTaskRequest(task);
+      const passengerName =
+        typeof targetRequest?.passenger?.name === "string"
+          ? targetRequest.passenger.name.trim()
+          : "";
+      const passengerPhone =
+        typeof targetRequest?.passenger?.phoneNumber === "string"
+          ? targetRequest.passenger.phoneNumber.trim()
+          : typeof targetRequest?.passenger?.phone === "string"
+            ? targetRequest.passenger.phone.trim()
+            : "";
+      if (passengerName && passengerPhone) {
+        return `${passengerName} / ${passengerPhone}`;
+      }
+      return passengerPhone || passengerName || task?.requestId || "-";
     }
 
     function getRouteSegmentMetricsFromCache(from, to) {
@@ -1100,6 +1194,132 @@ createApp({
 
     const selectedRequest = computed(() =>
       requestRows.value.find((request) => request.id === selectedRequestId.value) ?? requestRows.value[0] ?? null
+    );
+
+    const selectedVehicleRoutePlan = computed(() => {
+      const selectedVehicleId =
+        typeof selectedRequest.value?.vehicleId === "string"
+          ? selectedRequest.value.vehicleId.trim()
+          : "";
+      const fallbackVehicle =
+        vehicles.value.find((vehicle) => Array.isArray(vehicle?.route) && vehicle.route.length > 0) ??
+        null;
+      const vehicle =
+        selectedVehicleId && selectedVehicleId !== "-"
+          ? vehicleIndex.value.get(selectedVehicleId) ?? fallbackVehicle
+          : fallbackVehicle;
+
+      if (!vehicle) {
+        return {
+          vehicleLabel: "-",
+          steps: []
+        };
+      }
+
+      const vehicleName =
+        typeof vehicle?.name === "string" && vehicle.name.trim() ? vehicle.name.trim() : "";
+      const vehicleLabel =
+        vehicleName && vehicleName !== vehicle.id ? `${vehicleName} (${vehicle.id})` : vehicle.id;
+
+      const route = Array.isArray(vehicle.route) ? vehicle.route : [];
+      if (!route.length || !hasPoint(vehicle.currentLocation)) {
+        return {
+          vehicleLabel,
+          steps: []
+        };
+      }
+
+      const steps = [];
+      let previousPoint = vehicle.currentLocation;
+      let onboard = Number.isFinite(Number(vehicle.onboardCount))
+        ? Math.round(Number(vehicle.onboardCount))
+        : 0;
+
+      for (let index = 0; index < route.length; index += 1) {
+        const task = route[index];
+        const taskType = normalizeRouteTaskType(task?.type);
+        if (!taskType || !hasPoint(task?.point)) {
+          continue;
+        }
+
+        const request = resolveVehicleTaskRequest(task);
+        const locationLabel = resolveVehicleTaskLocationLabel(task, request);
+        const requestLabel = resolveVehicleTaskRequestLabel(task, request);
+        const loadDelta = Number.isFinite(Number(task?.loadChange)) ? Number(task.loadChange) : 0;
+        const passengerCount = Math.max(0, Math.abs(Math.trunc(loadDelta)));
+        onboard += loadDelta;
+
+        let moveDistanceLabel = "-";
+        let moveMinutesLabel = "-";
+        if (hasPoint(previousPoint)) {
+          const segmentMetrics = getRouteSegmentMetricsFromCache(previousPoint, task.point);
+          if (segmentMetrics) {
+            moveDistanceLabel = formatDistanceLabel(segmentMetrics.distanceKm) ?? "-";
+            moveMinutesLabel = formatMinutesLabel(segmentMetrics.durationMinutes) ?? "-";
+          } else {
+            void requestRouteSegmentMetrics(previousPoint, task.point);
+            moveDistanceLabel = "算出中";
+            moveMinutesLabel = "算出中";
+          }
+        }
+
+        const plannedAt = resolveVehicleTaskPlannedAt(task, request);
+        const etaMinutes = plannedAt ? null : resolveVehicleTaskEtaMinutes(task, request);
+        const arrivalMs =
+          parseTimeValueMs(plannedAt) ??
+          (Number.isFinite(etaMinutes) ? now.value.getTime() + etaMinutes * 60 * 1000 : null);
+
+        const nextTask =
+          route
+            .slice(index + 1)
+            .find((candidate) => normalizeRouteTaskType(candidate?.type) && hasPoint(candidate?.point)) ??
+          null;
+        const nextRequest = nextTask ? resolveVehicleTaskRequest(nextTask) : null;
+        const nextPlannedAt = nextTask ? resolveVehicleTaskPlannedAt(nextTask, nextRequest) : null;
+        const nextEtaMinutes =
+          nextTask && !nextPlannedAt ? resolveVehicleTaskEtaMinutes(nextTask, nextRequest) : null;
+        const nextArrivalMs =
+          parseTimeValueMs(nextPlannedAt) ??
+          (Number.isFinite(nextEtaMinutes)
+            ? now.value.getTime() + nextEtaMinutes * 60 * 1000
+            : null);
+
+        let waitLabel = "-";
+        if (Number.isFinite(arrivalMs) && Number.isFinite(nextArrivalMs)) {
+          const serviceMinutes = resolveRouteTaskServiceMinutes(taskType);
+          const rawWaitMinutes = (nextArrivalMs - arrivalMs) / (60 * 1000) - serviceMinutes;
+          waitLabel = `${Math.max(0, Math.round(rawWaitMinutes))}分`;
+        }
+
+        steps.push({
+          key: `${task.requestId ?? "task"}-${taskType}-${index}`,
+          sequence: index + 1,
+          typeLabel: taskType === "PICKUP" ? "乗" : "降",
+          typeBadgeClass: taskType === "PICKUP" ? "is-pickup" : "is-dropoff",
+          passengerCount,
+          locationLabel,
+          requestLabel,
+          moveDistanceLabel,
+          moveMinutesLabel,
+          arrivalLabel: arrivalMs === null ? "--:--" : formatClock(new Date(arrivalMs)),
+          waitLabel,
+          onboardAfter: Math.max(0, onboard)
+        });
+
+        previousPoint = task.point;
+      }
+
+      return {
+        vehicleLabel,
+        steps
+      };
+    });
+
+    const selectedVehicleRouteVehicleLabel = computed(
+      () => selectedVehicleRoutePlan.value.vehicleLabel
+    );
+    const selectedVehicleRouteSteps = computed(
+      () => selectedVehicleRoutePlan.value.steps
     );
 
     watch(
@@ -2793,6 +3013,8 @@ createApp({
       requestRows,
       selectedRequestId,
       selectedRequest,
+      selectedVehicleRouteVehicleLabel,
+      selectedVehicleRouteSteps,
       statusLabel,
       selectRequest,
       canCancelRequest,
@@ -3608,6 +3830,30 @@ createApp({
         >
           リセット
         </v-btn>
+      </div>
+
+      <div class="rq-driver-plan-panel">
+        <div class="rq-driver-plan-header">
+          <div class="rq-driver-plan-title">運行ステップ</div>
+          <div class="rq-driver-plan-vehicle">{{ selectedVehicleRouteVehicleLabel }}</div>
+        </div>
+        <div v-if="selectedVehicleRouteSteps.length" class="rq-driver-plan-list">
+          <div v-for="step in selectedVehicleRouteSteps" :key="step.key" class="rq-driver-plan-item">
+            <div class="rq-driver-plan-row">
+              <span class="rq-driver-plan-kind" :class="step.typeBadgeClass">{{ step.typeLabel }}</span>
+              <span class="rq-driver-plan-count">{{ step.passengerCount }}人</span>
+              <span class="rq-driver-plan-location">{{ step.locationLabel }}</span>
+            </div>
+            <div class="rq-driver-plan-subrow">{{ step.requestLabel }}</div>
+            <div class="rq-driver-plan-meta">
+              <span>着 {{ step.arrivalLabel }}</span>
+              <span>待 {{ step.waitLabel }}</span>
+              <span>移動 {{ step.moveDistanceLabel }} / {{ step.moveMinutesLabel }}</span>
+              <span>車内 {{ step.onboardAfter }}人</span>
+            </div>
+          </div>
+        </div>
+        <div v-else class="rq-inline-help rq-driver-plan-empty">対象車両の運行手順はありません。</div>
       </div>
 
       <div class="rq-request-list" v-if="requestRows.length">

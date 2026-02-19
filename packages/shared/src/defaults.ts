@@ -60,8 +60,9 @@ export function createDefaultServiceProfile(overrides = {}) {
         pickupDelay: 0.4,
         detour: 0.25,
         deadhead: 0.2,
+        rideTimeDetour: 0.1,
         lateness: 0.15,
-        dropoffPriority: 1
+        dropoffPriority: 0
       }
     },
     farePolicy: {

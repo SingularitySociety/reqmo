@@ -229,6 +229,52 @@ test("dispatch rejects when pooling cap exceeded", async () => {
   assert.equal(result.rideRequest.status, "REJECTED");
 });
 
+test("dispatch accepts when vehicle is full now but can drop off before new pickup", async () => {
+  const repository = new InMemoryRepository();
+  repository.addVehicle({
+    id: "veh_1",
+    status: "ACTIVE",
+    capacity: 4,
+    onboardCount: 4,
+    currentLocation: { lat: 33.0, lng: 132.9 },
+    route: [
+      {
+        type: "DROPOFF",
+        requestId: "req_existing_dropoff_only",
+        point: { lat: 33.0003, lng: 132.9003 },
+        loadChange: -4
+      }
+    ]
+  });
+
+  const preview = await previewRideRequest({
+    repository,
+    tenantId: "tenant_default",
+    requesterId: "user_capacity_after_dropoff",
+    pickup: { mode: "FREE_POINT", point: { lat: 33.0004, lng: 132.9004 } },
+    dropoff: { mode: "FREE_POINT", point: { lat: 33.0012, lng: 132.9012 } },
+    partySize: 1
+  });
+
+  assert.equal(preview.status, "ASSIGNABLE");
+
+  const existingDropoffIndex = preview.simulation.routeAfter.findIndex(
+    (task) => task.requestId === "req_existing_dropoff_only" && task.type === "DROPOFF"
+  );
+  const newPickupIndex = preview.simulation.routeAfter.findIndex(
+    (task) => task.requestLabel === "新規予約" && task.type === "PICKUP"
+  );
+  assert.ok(existingDropoffIndex >= 0);
+  assert.ok(newPickupIndex >= 0);
+  assert.equal(existingDropoffIndex < newPickupIndex, true);
+
+  let onboard = 4;
+  preview.simulation.routeAfter.forEach((task) => {
+    onboard += task.loadChange ?? 0;
+    assert.equal(onboard >= 0 && onboard <= 4, true);
+  });
+});
+
 test("preview simulation returns route and impact without persisting request", async () => {
   const repository = seedRepository();
   const first = await createRideRequest({
@@ -655,6 +701,72 @@ test("dispatch prefers dropoff-first plan when dropoffPriority is enabled", asyn
   assert.ok(dropoffR1WithPriority >= 0);
   assert.ok(pickupNewWithPriority >= 0);
   assert.equal(dropoffR1WithPriority < pickupNewWithPriority, true);
+});
+
+test("dispatch interleaves overlapping requests without completing the newer request first", async () => {
+  const repository = new InMemoryRepository();
+  repository.addVehicle({
+    id: "veh_1",
+    status: "ACTIVE",
+    capacity: 4,
+    onboardCount: 0,
+    currentLocation: { lat: 33.01, lng: 132.9 },
+    route: []
+  });
+
+  const first = await createRideRequest({
+    repository,
+    tenantId: "tenant_default",
+    requesterId: "user_existing_corridor",
+    pickup: {
+      mode: "FREE_POINT",
+      point: { lat: 33.011604013315605, lng: 132.90239775606 }
+    },
+    dropoff: {
+      mode: "FREE_POINT",
+      point: { lat: 32.98615132547738, lng: 132.9185428086945 }
+    },
+    partySize: 1
+  });
+  assert.equal(first.status, "ASSIGNED");
+
+  const preview = await previewRideRequest({
+    repository,
+    tenantId: "tenant_default",
+    requesterId: "user_new_corridor",
+    pickup: {
+      mode: "FREE_POINT",
+      point: { lat: 33.000542261145355, lng: 132.90294134334644 }
+    },
+    dropoff: {
+      mode: "FREE_POINT",
+      point: { lat: 32.999845587959555, lng: 132.90546891401067 }
+    },
+    partySize: 1
+  });
+
+  assert.equal(preview.status, "ASSIGNABLE");
+
+  const existingPickupIndex = preview.simulation.routeAfter.findIndex(
+    (task) => task.requestId === first.rideRequest.id && task.type === "PICKUP"
+  );
+  const existingDropoffIndex = preview.simulation.routeAfter.findIndex(
+    (task) => task.requestId === first.rideRequest.id && task.type === "DROPOFF"
+  );
+  const newPickupIndex = preview.simulation.routeAfter.findIndex(
+    (task) => task.requestLabel === "新規予約" && task.type === "PICKUP"
+  );
+  const newDropoffIndex = preview.simulation.routeAfter.findIndex(
+    (task) => task.requestLabel === "新規予約" && task.type === "DROPOFF"
+  );
+
+  assert.ok(existingPickupIndex >= 0);
+  assert.ok(existingDropoffIndex >= 0);
+  assert.ok(newPickupIndex >= 0);
+  assert.ok(newDropoffIndex >= 0);
+  assert.equal(existingPickupIndex < newPickupIndex, true);
+  assert.equal(newPickupIndex < newDropoffIndex, true);
+  assert.equal(newDropoffIndex < existingDropoffIndex, true);
 });
 
 test("dispatch rejects request when vehicle cannot return to office before lunch break", async () => {
