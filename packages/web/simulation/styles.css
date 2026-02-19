@@ -267,6 +267,24 @@ body {
   text-overflow: ellipsis;
 }
 
+.sim-operation-status {
+  margin: 0 0 8px;
+  padding: 6px 8px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  border-radius: 8px;
+  background: rgba(248, 250, 252, 0.95);
+  color: #334155;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+
+.sim-operation-status.is-office-return {
+  border-color: rgba(3, 105, 161, 0.3);
+  background: rgba(14, 165, 233, 0.14);
+  color: #0369a1;
+}
+
 .sim-operation-list {
   display: flex;
   flex-direction: column;

@@ -30,6 +30,7 @@ const ROUTE_CACHE_RETRY_MS = 30 * 1000;
 const ROUTE_SEGMENT_METRICS_RETRY_MS = 30 * 1000;
 const VEHICLE_ROUTE_ON_PATH_TOLERANCE_METERS = 45;
 const ROUTE_POINT_SNAP_TOLERANCE_METERS = 2;
+const OFFICE_RETURN_ARRIVAL_METERS = 20;
 
 const simulatorQuery = new URLSearchParams(window.location.search);
 if (simulatorQuery.has("simulator")) {
@@ -148,6 +149,36 @@ function addMinutes(baseDate, minutes) {
 
 function hasPoint(point) {
   return Boolean(point) && Number.isFinite(point.lat) && Number.isFinite(point.lng);
+}
+
+function resolveOfficeName(profile) {
+  const officeName = profile?.operationPolicy?.office?.name;
+  if (typeof officeName === "string" && officeName.trim()) {
+    return officeName.trim();
+  }
+  return "事務所";
+}
+
+function resolveVehicleOfficePoint(vehicle, profile = null) {
+  if (hasPoint(vehicle?.officePoint)) {
+    return {
+      lat: Number(vehicle.officePoint.lat),
+      lng: Number(vehicle.officePoint.lng)
+    };
+  }
+  if (hasPoint(vehicle?.homeBase)) {
+    return {
+      lat: Number(vehicle.homeBase.lat),
+      lng: Number(vehicle.homeBase.lng)
+    };
+  }
+  if (hasPoint(profile?.operationPolicy?.office?.point)) {
+    return {
+      lat: Number(profile.operationPolicy.office.point.lat),
+      lng: Number(profile.operationPolicy.office.point.lng)
+    };
+  }
+  return null;
 }
 
 function roundedEta(value) {
@@ -1203,6 +1234,8 @@ createApp({
           : "";
       const fallbackVehicle =
         vehicles.value.find((vehicle) => Array.isArray(vehicle?.route) && vehicle.route.length > 0) ??
+        vehicles.value.find((vehicle) => String(vehicle?.status ?? "").trim().toUpperCase() === "ACTIVE") ??
+        vehicles.value[0] ??
         null;
       const vehicle =
         selectedVehicleId && selectedVehicleId !== "-"
@@ -1212,7 +1245,8 @@ createApp({
       if (!vehicle) {
         return {
           vehicleLabel: "-",
-          steps: []
+          steps: [],
+          emptyLabel: "対象車両なし"
         };
       }
 
@@ -1220,12 +1254,31 @@ createApp({
         typeof vehicle?.name === "string" && vehicle.name.trim() ? vehicle.name.trim() : "";
       const vehicleLabel =
         vehicleName && vehicleName !== vehicle.id ? `${vehicleName} (${vehicle.id})` : vehicle.id;
+      const officeName = resolveOfficeName(serviceProfile.value);
+      const officePoint = resolveVehicleOfficePoint(vehicle, serviceProfile.value);
+      const currentPoint = hasPoint(vehicle.currentLocation)
+        ? {
+            lat: Number(vehicle.currentLocation.lat),
+            lng: Number(vehicle.currentLocation.lng)
+          }
+        : null;
+      let emptyLabel = "乗降予定なし";
+      if (currentPoint && officePoint) {
+        const officeDistanceMeters = distanceMeters(currentPoint, officePoint);
+        if (Number.isFinite(officeDistanceMeters)) {
+          emptyLabel =
+            officeDistanceMeters > OFFICE_RETURN_ARRIVAL_METERS
+              ? `乗降予定なし（${officeName}帰還中）`
+              : `乗降予定なし（${officeName}待機中）`;
+        }
+      }
 
       const route = Array.isArray(vehicle.route) ? vehicle.route : [];
       if (!route.length || !hasPoint(vehicle.currentLocation)) {
         return {
           vehicleLabel,
-          steps: []
+          steps: [],
+          emptyLabel
         };
       }
 
@@ -1311,7 +1364,8 @@ createApp({
 
       return {
         vehicleLabel,
-        steps
+        steps,
+        emptyLabel: "乗降予定なし"
       };
     });
 
@@ -1320,6 +1374,9 @@ createApp({
     );
     const selectedVehicleRouteSteps = computed(
       () => selectedVehicleRoutePlan.value.steps
+    );
+    const selectedVehicleRouteEmptyLabel = computed(
+      () => selectedVehicleRoutePlan.value.emptyLabel ?? "乗降予定なし"
     );
 
     watch(
@@ -3015,6 +3072,7 @@ createApp({
       selectedRequest,
       selectedVehicleRouteVehicleLabel,
       selectedVehicleRouteSteps,
+      selectedVehicleRouteEmptyLabel,
       statusLabel,
       selectRequest,
       canCancelRequest,
@@ -3853,7 +3911,7 @@ createApp({
             </div>
           </div>
         </div>
-        <div v-else class="rq-inline-help rq-driver-plan-empty">対象車両の運行手順はありません。</div>
+        <div v-else class="rq-inline-help rq-driver-plan-empty">{{ selectedVehicleRouteEmptyLabel }}</div>
       </div>
 
       <div class="rq-request-list" v-if="requestRows.length">

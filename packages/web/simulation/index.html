@@ -115,6 +115,13 @@
               <h3>運行ステップ</h3>
               <span>{{ selectedVehicle?.name || selectedVehicleId || "-" }}</span>
             </div>
+            <p
+              v-if="operationRideStatusLabel"
+              class="sim-operation-status"
+              :class="{ 'is-office-return': officeReturnInProgress }"
+            >
+              {{ operationRideStatusLabel }}
+            </p>
             <div v-if="operationSteps.length" class="sim-operation-list">
               <div v-for="step in operationSteps" :key="step.key" class="sim-operation-step">
                 <div class="sim-operation-step__top">
@@ -175,12 +182,12 @@
           <div class="sim-next-grid">
             <article>
               <h3>次回の乗車予定地</h3>
-              <p>{{ nextPickupSummary?.location ?? "なし" }}</p>
+              <p>{{ nextPickupSummary?.location ?? "予定なし" }}</p>
               <small>予定人数: {{ nextPickupSummary?.count ?? 0 }}人</small>
             </article>
             <article>
               <h3>次回の下車予定地</h3>
-              <p>{{ nextDropoffSummary?.location ?? "なし" }}</p>
+              <p>{{ nextDropoffSummary?.location ?? "予定なし" }}</p>
               <small>予定人数: {{ nextDropoffSummary?.count ?? 0 }}人</small>
             </article>
           </div>

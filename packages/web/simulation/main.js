@@ -581,6 +581,48 @@ const app = createApp({
       return this.describeTask(task);
     },
 
+    hasRideTasks() {
+      return this.routeTasks.some((entry) => Boolean(normalizeTaskType(entry?.type)));
+    },
+
+    officeReturnTask() {
+      const origin = hasPoint(this.currentPosition)
+        ? this.currentPosition
+        : this.selectedVehicle?.currentLocation;
+      return this.buildOfficeReturnTask(origin);
+    },
+
+    officeReturnInProgress() {
+      return Boolean(this.officeReturnTask);
+    },
+
+    officeWaiting() {
+      if (this.hasRideTasks) {
+        return false;
+      }
+      const officePoint = this.resolveOfficePoint();
+      const origin = hasPoint(this.currentPosition)
+        ? this.currentPosition
+        : this.selectedVehicle?.currentLocation;
+      if (!hasPoint(officePoint) || !hasPoint(origin)) {
+        return false;
+      }
+      return distanceKm(origin, officePoint) * 1000 <= OFFICE_RETURN_ARRIVAL_METERS;
+    },
+
+    operationRideStatusLabel() {
+      if (this.hasRideTasks) {
+        return "";
+      }
+      if (this.officeReturnInProgress) {
+        return "乗降予定なし（事務所帰還中）";
+      }
+      if (this.officeWaiting) {
+        return "乗降予定なし（事務所待機中）";
+      }
+      return "乗降予定なし";
+    },
+
     distanceToNextLabel() {
       const origin = hasPoint(this.currentPosition)
         ? this.currentPosition
