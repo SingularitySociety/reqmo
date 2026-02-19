@@ -200,6 +200,62 @@ test("preview simulation uses free-point titles in timeline labels", async () =>
   assert.equal(dropoffTask.locationLabel, "文化センター近く");
 });
 
+test("arrive-by preview allows pickup ETA beyond maxWait when desired dropoff is in the future", async () => {
+  const repository = new InMemoryRepository();
+  repository.addVehicle({
+    id: "veh_future",
+    status: "ACTIVE",
+    capacity: 4,
+    onboardCount: 0,
+    currentLocation: { lat: 33.0, lng: 132.9 },
+    route: []
+  });
+
+  const preview = await previewRideRequest({
+    repository,
+    tenantId: "tenant_default",
+    requesterId: "user_future_arrive_by",
+    pickup: { mode: "FREE_POINT", point: { lat: 33.09, lng: 132.99 } },
+    dropoff: { mode: "FREE_POINT", point: { lat: 33.1, lng: 133.0 } },
+    partySize: 1,
+    desiredDropoffAt: "2026-02-01T13:00:00+09:00",
+    context: {
+      now: "2026-02-01T10:00:00+09:00"
+    }
+  });
+
+  assert.equal(preview.status, "ASSIGNABLE");
+  assert.equal(Number.isFinite(Number(preview.simulation?.etaPickupMinutes)), true);
+  assert.equal(Number(preview.simulation?.etaPickupMinutes) > 15, true);
+});
+
+test("preview returns suggested dropoff time when planned dropoff exceeds desired time", async () => {
+  const repository = seedRepository();
+  const desiredDropoffAt = "2026-02-01T10:01:00+09:00";
+
+  const preview = await previewRideRequest({
+    repository,
+    tenantId: "tenant_default",
+    requesterId: "user_desired_dropoff_suggestion",
+    pickup: { mode: "FIXED_STOP", stopId: "stop_a" },
+    dropoff: { mode: "FIXED_STOP", stopId: "stop_b" },
+    partySize: 1,
+    desiredDropoffAt,
+    context: {
+      now: "2026-02-01T10:00:00+09:00"
+    }
+  });
+
+  assert.equal(preview.status, "ASSIGNABLE");
+  assert.equal(typeof preview.simulation?.plannedDropoffAt, "string");
+  assert.equal(preview.simulation?.desiredDropoffSuggestion?.requestedDropoffAt, new Date(desiredDropoffAt).toISOString());
+  assert.equal(
+    preview.simulation?.desiredDropoffSuggestion?.suggestedDropoffAt,
+    preview.simulation?.plannedDropoffAt
+  );
+  assert.equal(Number(preview.simulation?.desiredDropoffSuggestion?.exceededByMinutes) > 0, true);
+});
+
 test("dispatch rejects when pooling cap exceeded", async () => {
   const repository = seedRepository();
   const strictProfile = createDefaultServiceProfile({

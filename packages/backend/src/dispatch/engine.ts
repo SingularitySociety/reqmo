@@ -18,18 +18,26 @@ function selectFallbackAlgorithm(serviceProfile) {
   return serviceProfile.dispatchPolicy.algorithmFallback ?? "GREEDY";
 }
 
-function buildDispatchRequest(rideRequest, resolvedLocations) {
+function buildDispatchRequest(rideRequest, resolvedLocations, now = new Date()) {
   const desiredPickupAt = normalizeDateInput(
     rideRequest?.timeWindow?.desiredPickupAt ?? rideRequest?.timeWindow?.scheduledAt
   );
   const desiredDropoffAt = normalizeDateInput(rideRequest?.timeWindow?.desiredDropoffAt);
+  const requestType =
+    typeof rideRequest?.timeWindow?.requestType === "string"
+      ? rideRequest.timeWindow.requestType.trim().toUpperCase()
+      : desiredDropoffAt
+        ? "ARRIVE_BY"
+        : "ASAP";
   return {
     id: rideRequest.id,
     partySize: rideRequest.partySize ?? 1,
     pickupPoint: resolvedLocations.pickup.resolvedPoint,
     dropoffPoint: resolvedLocations.dropoff.resolvedPoint,
+    requestType,
     desiredPickupAt: desiredPickupAt?.toISOString() ?? null,
-    desiredDropoffAt: desiredDropoffAt?.toISOString() ?? null
+    desiredDropoffAt: desiredDropoffAt?.toISOString() ?? null,
+    evaluationNowAt: now.toISOString()
   };
 }
 
@@ -539,6 +547,31 @@ function summarizeTimelineByRequest(timeline) {
   }
 
   return index;
+}
+
+function buildDesiredDropoffSuggestion({
+  requestForDispatch,
+  requestSummary
+}) {
+  const desiredDropoffAt = normalizeDateInput(requestForDispatch?.desiredDropoffAt);
+  const plannedDropoffAt = normalizeDateInput(requestSummary?.dropoffEtaAt);
+  if (!desiredDropoffAt || !plannedDropoffAt) {
+    return null;
+  }
+
+  const exceededByMinutes = roundMinutes(
+    (plannedDropoffAt.getTime() - desiredDropoffAt.getTime()) / (60 * 1000)
+  );
+  if (!Number.isFinite(exceededByMinutes) || exceededByMinutes <= 0) {
+    return null;
+  }
+
+  return {
+    requestedDropoffAt: desiredDropoffAt.toISOString(),
+    suggestedDropoffAt: plannedDropoffAt.toISOString(),
+    exceededByMinutes,
+    message: `希望降車時刻を約${Math.round(exceededByMinutes)}分超過します。${formatLocalClock(plannedDropoffAt)}頃の降車であれば受付可能です。`
+  };
 }
 
 function resolveLocationLabel(location, stopIndex) {
@@ -1116,7 +1149,7 @@ async function evaluateDispatchPlan({
     context
   });
 
-  const requestForDispatch = buildDispatchRequest(rideRequest, resolvedLocations);
+  const requestForDispatch = buildDispatchRequest(rideRequest, resolvedLocations, now);
   if (!vehicles.length) {
     return {
       status: "REJECTED",
@@ -1275,6 +1308,10 @@ async function evaluateDispatchPlan({
   const beforeSummary = summarizeTimelineByRequest(timelineBefore);
   const afterSummary = summarizeTimelineByRequest(timelineAfter);
   const requestSummary = afterSummary.get(rideRequest.id) ?? {};
+  const desiredDropoffSuggestion = buildDesiredDropoffSuggestion({
+    requestForDispatch,
+    requestSummary
+  });
 
   const decoratedBefore = decorateTimeline({
     timeline: timelineBefore,
@@ -1313,6 +1350,7 @@ async function evaluateDispatchPlan({
       etaDropoffMinutes: requestSummary.dropoffEtaMinutes ?? null,
       plannedPickupAt: requestSummary.pickupEtaAt ?? null,
       plannedDropoffAt: requestSummary.dropoffEtaAt ?? null,
+      desiredDropoffSuggestion,
       routeBeforeTravelMinutes: timelineBefore.at(-1)?.etaMinutes ?? 0,
       routeAfterTravelMinutes: timelineAfter.at(-1)?.etaMinutes ?? 0,
       routeBefore: decoratedBefore,
@@ -1378,7 +1416,7 @@ export async function listRideRequestDispatchOptions({
     context
   });
 
-  const requestForDispatch = buildDispatchRequest(rideRequest, resolvedLocations);
+  const requestForDispatch = buildDispatchRequest(rideRequest, resolvedLocations, now);
   if (!vehicles.length) {
     return {
       status: "REJECTED",

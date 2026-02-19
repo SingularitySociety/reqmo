@@ -1425,6 +1425,38 @@ createApp({
     const previewDropoffClock = computed(
       () => formatTimeLabel(previewSimulation.value?.plannedDropoffAt)
     );
+    const previewDropoffSuggestion = computed(() => {
+      const suggestion = previewSimulation.value?.desiredDropoffSuggestion;
+      if (!suggestion || typeof suggestion !== "object") {
+        return null;
+      }
+      const suggestedDropoffAt =
+        typeof suggestion.suggestedDropoffAt === "string" && suggestion.suggestedDropoffAt
+          ? suggestion.suggestedDropoffAt
+          : null;
+      if (!suggestedDropoffAt) {
+        return null;
+      }
+      const requestedDropoffAt =
+        typeof suggestion.requestedDropoffAt === "string" && suggestion.requestedDropoffAt
+          ? suggestion.requestedDropoffAt
+          : null;
+      const exceededByMinutesRaw = Number(suggestion.exceededByMinutes);
+      const exceededByMinutes =
+        Number.isFinite(exceededByMinutesRaw) && exceededByMinutesRaw > 0
+          ? Math.round(exceededByMinutesRaw)
+          : null;
+      const message =
+        typeof suggestion.message === "string" && suggestion.message.trim()
+          ? suggestion.message.trim()
+          : "";
+      return {
+        requestedDropoffAt,
+        suggestedDropoffAt,
+        exceededByMinutes,
+        message
+      };
+    });
     const previewRejectDiagnostics = computed(() =>
       dispatchPreview.value?.status === "REJECTED" ? dispatchPreview.value?.diagnostics ?? null : null
     );
@@ -2624,7 +2656,11 @@ createApp({
 
       loading.value = true;
       try {
-        await apiPost("/api/ride-requests", previewPayload.value);
+        const payload = { ...previewPayload.value };
+        if (previewDropoffSuggestion.value?.suggestedDropoffAt) {
+          payload.desiredDropoffAt = previewDropoffSuggestion.value.suggestedDropoffAt;
+        }
+        await apiPost("/api/ride-requests", payload);
         clearDispatchPreview();
         await refreshAll();
       } catch (error) {
@@ -3043,6 +3079,7 @@ createApp({
       previewStatusLabel,
       previewPickupClock,
       previewDropoffClock,
+      previewDropoffSuggestion,
       previewRejectDiagnostics,
       previewRejectSummary,
       previewRejectBreakdown,
@@ -3422,6 +3459,17 @@ createApp({
               <span class="rq-preview-kpi-label">降車予定</span>
               <span class="rq-preview-kpi-value">{{ previewDropoffClock }}</span>
             </div>
+          </div>
+
+          <div v-if="previewDropoffSuggestion" class="rq-preview-alert mt-2">
+            <template v-if="previewDropoffSuggestion.message">
+              {{ previewDropoffSuggestion.message }}
+            </template>
+            <template v-else>
+              希望降車 {{ formatTimeLabel(previewDropoffSuggestion.requestedDropoffAt) }} に対して、
+              最短の受付可能時刻は {{ formatTimeLabel(previewDropoffSuggestion.suggestedDropoffAt) }} です。
+            </template>
+            OK で提案時刻に自動調整して登録します。
           </div>
 
           <div class="rq-preview-dialog-grid">

@@ -12,6 +12,17 @@ function normalizeNonNegative(value, fallback = 0) {
   return numeric;
 }
 
+function normalizeDateInput(value) {
+  if (!value) {
+    return null;
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+  return date;
+}
+
 function taskServiceMinutes(task, serviceProfile) {
   const dispatchPolicy = serviceProfile?.dispatchPolicy ?? {};
   const pickupServiceMinutes = normalizeNonNegative(dispatchPolicy.pickupServiceMinutes, 0);
@@ -24,6 +35,66 @@ function taskServiceMinutes(task, serviceProfile) {
     return dropoffServiceMinutes;
   }
   return 0;
+}
+
+function resolveRequestEvaluationNow(request) {
+  return normalizeDateInput(request?.evaluationNowAt) ?? new Date();
+}
+
+function resolveArriveByPickupEtaMinutes({
+  request,
+  serviceProfile,
+  travelMinutes = defaultTravelMinutes
+}) {
+  const requestType = typeof request?.requestType === "string"
+    ? request.requestType.trim().toUpperCase()
+    : "";
+  if (requestType !== "ARRIVE_BY" && !request?.desiredPickupAt && !request?.desiredDropoffAt) {
+    return null;
+  }
+
+  const now = resolveRequestEvaluationNow(request);
+  const desiredPickupAt = normalizeDateInput(request?.desiredPickupAt);
+  if (desiredPickupAt) {
+    return Math.max(0, (desiredPickupAt.getTime() - now.getTime()) / (60 * 1000));
+  }
+
+  const desiredDropoffAt = normalizeDateInput(request?.desiredDropoffAt);
+  if (!desiredDropoffAt) {
+    return null;
+  }
+
+  const directRideMinutes = travelMinutes(request?.pickupPoint, request?.dropoffPoint);
+  const safeDirectRideMinutes =
+    Number.isFinite(directRideMinutes) && directRideMinutes >= 0 ? directRideMinutes : 0;
+  const pickupServiceMinutes = normalizeNonNegative(serviceProfile?.dispatchPolicy?.pickupServiceMinutes, 0);
+  const dropoffServiceMinutes = normalizeNonNegative(serviceProfile?.dispatchPolicy?.dropoffServiceMinutes, 0);
+  const desiredPickupEtaMinutes =
+    (desiredDropoffAt.getTime() - now.getTime()) / (60 * 1000) -
+    safeDirectRideMinutes -
+    pickupServiceMinutes -
+    dropoffServiceMinutes;
+  if (!Number.isFinite(desiredPickupEtaMinutes)) {
+    return null;
+  }
+  return Math.max(0, desiredPickupEtaMinutes);
+}
+
+function resolveEffectiveMaxWaitMinutes({
+  request,
+  serviceProfile,
+  travelMinutes = defaultTravelMinutes
+}) {
+  const configuredMaxWait = normalizeNonNegative(serviceProfile?.dispatchPolicy?.maxWaitMinutes, 0);
+  const desiredPickupEtaMinutes = resolveArriveByPickupEtaMinutes({
+    request,
+    serviceProfile,
+    travelMinutes
+  });
+  if (!Number.isFinite(desiredPickupEtaMinutes)) {
+    return configuredMaxWait;
+  }
+  return Math.max(configuredMaxWait, desiredPickupEtaMinutes);
 }
 
 function travelMinutesUntilTask(startPoint, route, taskIndex, travelMinutes, serviceProfile) {
@@ -227,7 +298,11 @@ export function analyzeInsertionCandidateFailures({
   };
 
   const maxDetour = serviceProfile.poolingPolicy.maxDetourMinutes;
-  const maxWait = serviceProfile.dispatchPolicy.maxWaitMinutes;
+  const maxWait = resolveEffectiveMaxWaitMinutes({
+    request,
+    serviceProfile,
+    travelMinutes
+  });
   const maxAdditionalStops = serviceProfile.poolingPolicy.maxAdditionalStops;
 
   let candidateCount = 0;
@@ -325,7 +400,11 @@ export function findBestInsertionPlan({ vehicle, request, serviceProfile, travel
 
   let best = null;
   const maxDetour = serviceProfile.poolingPolicy.maxDetourMinutes;
-  const maxWait = serviceProfile.dispatchPolicy.maxWaitMinutes;
+  const maxWait = resolveEffectiveMaxWaitMinutes({
+    request,
+    serviceProfile,
+    travelMinutes
+  });
   const maxAdditionalStops = serviceProfile.poolingPolicy.maxAdditionalStops;
 
   for (let pickupIndex = 0; pickupIndex <= existingRoute.length; pickupIndex += 1) {
