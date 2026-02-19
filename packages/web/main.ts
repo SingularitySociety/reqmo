@@ -473,6 +473,8 @@ createApp({
     const previewDirty = ref(false);
     const callQueue = ref([]);
     const selectedRequestId = ref("");
+    const mapDisplayMode = ref("operation"); // operation | request
+    const selectedVehicleRouteStepKey = ref("");
     const leafletMapEl = ref(null);
     const now = ref(new Date());
 
@@ -1244,8 +1246,10 @@ createApp({
 
       if (!vehicle) {
         return {
+          vehicleId: "",
           vehicleLabel: "-",
           steps: [],
+          routePoints: [],
           emptyLabel: "対象車両なし"
         };
       }
@@ -1276,8 +1280,10 @@ createApp({
       const route = Array.isArray(vehicle.route) ? vehicle.route : [];
       if (!route.length || !hasPoint(vehicle.currentLocation)) {
         return {
+          vehicleId: vehicle.id,
           vehicleLabel,
           steps: [],
+          routePoints: currentPoint ? [currentPoint] : [],
           emptyLabel
         };
       }
@@ -1347,11 +1353,18 @@ createApp({
         steps.push({
           key: `${task.requestId ?? "task"}-${taskType}-${index}`,
           sequence: index + 1,
+          routeIndex: index,
           typeLabel: taskType === "PICKUP" ? "乗" : "降",
+          type: taskType,
           typeBadgeClass: taskType === "PICKUP" ? "is-pickup" : "is-dropoff",
           passengerCount,
           locationLabel,
           requestLabel,
+          requestId: typeof task?.requestId === "string" ? task.requestId : "",
+          point: {
+            lat: Number(task.point.lat),
+            lng: Number(task.point.lng)
+          },
           moveDistanceLabel,
           moveMinutesLabel,
           arrivalLabel: arrivalMs === null ? "--:--" : formatClock(new Date(arrivalMs)),
@@ -1363,8 +1376,10 @@ createApp({
       }
 
       return {
+        vehicleId: vehicle.id,
         vehicleLabel,
         steps,
+        routePoints: [currentPoint, ...steps.map((step) => step.point)].filter(hasPoint),
         emptyLabel: "乗降予定なし"
       };
     });
@@ -1378,6 +1393,19 @@ createApp({
     const selectedVehicleRouteEmptyLabel = computed(
       () => selectedVehicleRoutePlan.value.emptyLabel ?? "乗降予定なし"
     );
+    const selectedVehicleRoutePoints = computed(() =>
+      normalizeRoutePoints(selectedVehicleRoutePlan.value.routePoints)
+    );
+    const selectedVehicleRouteStep = computed(() =>
+      selectedVehicleRouteSteps.value.find((step) => step.key === selectedVehicleRouteStepKey.value) ?? null
+    );
+    const operationMapChipLabel = computed(() => {
+      const vehicleLabel = selectedVehicleRouteVehicleLabel.value || "対象車両";
+      if (selectedVehicleRouteStep.value) {
+        return `${vehicleLabel} / ${selectedVehicleRouteStep.value.sequence}. ${selectedVehicleRouteStep.value.typeLabel} ${selectedVehicleRouteStep.value.locationLabel}`;
+      }
+      return `${vehicleLabel} / 運行ステップ`;
+    });
 
     watch(
       requests,
@@ -1394,8 +1422,34 @@ createApp({
       { immediate: true }
     );
 
+    watch(
+      selectedVehicleRouteSteps,
+      (steps) => {
+        if (!steps.length) {
+          selectedVehicleRouteStepKey.value = "";
+          return;
+        }
+        if (!steps.some((step) => step.key === selectedVehicleRouteStepKey.value)) {
+          selectedVehicleRouteStepKey.value = "";
+        }
+      },
+      { immediate: true }
+    );
+
     function selectRequest(requestId) {
       selectedRequestId.value = requestId;
+      mapDisplayMode.value = "request";
+      selectedVehicleRouteStepKey.value = "";
+      refreshLeafletMap({ focusSelected: true });
+    }
+
+    function selectVehicleRouteStep(stepKey) {
+      if (!stepKey || !selectedVehicleRouteSteps.value.some((step) => step.key === stepKey)) {
+        return;
+      }
+      mapDisplayMode.value = "operation";
+      selectedVehicleRouteStepKey.value =
+        selectedVehicleRouteStepKey.value === stepKey ? "" : stepKey;
       refreshLeafletMap({ focusSelected: true });
     }
 
@@ -2248,12 +2302,45 @@ createApp({
       const leaflet = window.L;
       clearLeafletLayers();
 
+      const requestRoutePoints = selectedRequest.value
+        ? normalizeRoutePoints([selectedRequest.value.pickupPoint, selectedRequest.value.dropoffPoint])
+        : [];
+      const operationRoutePoints = selectedVehicleRoutePoints.value;
+      const selectedStep = selectedVehicleRouteStep.value;
+      const selectedRouteVehicle =
+        selectedVehicleRoutePlan.value?.vehicleId
+          ? vehicleIndex.value.get(selectedVehicleRoutePlan.value.vehicleId) ?? null
+          : null;
+      const isRequestRouteMode =
+        mapDisplayMode.value === "request" && requestRoutePoints.length > 1;
+      const selectedRoutePoints = isRequestRouteMode ? requestRoutePoints : operationRoutePoints;
+      const selectedStepRouteIndex = Number(selectedStep?.routeIndex);
+      const selectedStepPointIndex =
+        Number.isInteger(selectedStepRouteIndex) && selectedStepRouteIndex >= 0
+          ? selectedStepRouteIndex + 1
+          : -1;
+      const selectedOperationFocusPoints =
+        !isRequestRouteMode && selectedStepPointIndex >= 0
+          ? normalizeRoutePoints([
+              selectedRoutePoints[selectedStepPointIndex - 1],
+              selectedRoutePoints[selectedStepPointIndex],
+              selectedRoutePoints[selectedStepPointIndex + 1]
+            ])
+          : [];
+      const selectedRouteFocusPoints = isRequestRouteMode
+        ? requestRoutePoints
+        : selectedOperationFocusPoints.length
+          ? selectedOperationFocusPoints
+          : selectedRoutePoints;
+
       const selectedStopIds = new Set();
-      if (selectedRequest.value?.pickupStopId) {
-        selectedStopIds.add(selectedRequest.value.pickupStopId);
-      }
-      if (selectedRequest.value?.dropoffStopId) {
-        selectedStopIds.add(selectedRequest.value.dropoffStopId);
+      if (isRequestRouteMode) {
+        if (selectedRequest.value?.pickupStopId) {
+          selectedStopIds.add(selectedRequest.value.pickupStopId);
+        }
+        if (selectedRequest.value?.dropoffStopId) {
+          selectedStopIds.add(selectedRequest.value.dropoffStopId);
+        }
       }
 
       stops.value.forEach((stop) => {
@@ -2401,34 +2488,41 @@ createApp({
         });
       }
 
-      mapRows.value
-        .filter((row) => row.id !== selectedRequest.value?.id)
-        .filter((row) => row.status === "ASSIGNED" || row.status === "PICKED_UP")
-        .forEach((row) => {
-          const routePoints = [row.pickupPoint, row.dropoffPoint].filter(hasPoint);
-          if (routePoints.length < 2) {
-            return;
-          }
-          drawRoutePolyline({
-            leaflet,
-            layer: mapLayers.activeRoutes,
-            points: routePoints,
-            style: {
-              color: "#0e7490",
-              weight: 4,
-              opacity: 0.45
+      if (isRequestRouteMode) {
+        mapRows.value
+          .filter((row) => row.id !== selectedRequest.value?.id)
+          .filter((row) => row.status === "ASSIGNED" || row.status === "PICKED_UP")
+          .forEach((row) => {
+            const routePoints = normalizeRoutePoints([row.pickupPoint, row.dropoffPoint]);
+            if (routePoints.length < 2) {
+              return;
             }
+            drawRoutePolyline({
+              leaflet,
+              layer: mapLayers.activeRoutes,
+              points: routePoints,
+              style: {
+                color: "#0e7490",
+                weight: 4,
+                opacity: 0.45
+              }
+            });
           });
-        });
+      }
 
-      const selectedRoutePoints = selectedRequest.value
-        ? [selectedRequest.value.pickupPoint, selectedRequest.value.dropoffPoint].filter(hasPoint)
-        : [];
       if (selectedRoutePoints.length > 1) {
         drawRoutePolyline({
           leaflet,
           layer: mapLayers.selectedRoute,
           points: selectedRoutePoints,
+          ...(isRequestRouteMode
+            ? {}
+            : {
+                cacheKey: selectedRouteVehicle
+                  ? buildVehicleRouteCacheKey(selectedRouteVehicle)
+                  : "",
+                keepCurrentPointOnCachedRoute: true
+              }),
           style: {
             color: "#ea580c",
             weight: 6,
@@ -2437,37 +2531,63 @@ createApp({
         });
       }
 
-      if (selectedRequest.value?.pickupPoint && hasPoint(selectedRequest.value.pickupPoint)) {
-        leaflet
-          .circleMarker(toLeafletLatLng(selectedRequest.value.pickupPoint), {
-            radius: 8,
-            color: "#ecfdf5",
-            weight: 2,
-            fillColor: "#0f766e",
-            fillOpacity: 0.95
-          })
-          .bindTooltip(`乗車: ${selectedRequest.value.pickupLabel}`, {
-            permanent: true,
-            direction: "top",
-            offset: [0, -8]
-          })
-          .addTo(mapLayers.focus);
-      }
-      if (selectedRequest.value?.dropoffPoint && hasPoint(selectedRequest.value.dropoffPoint)) {
-        leaflet
-          .circleMarker(toLeafletLatLng(selectedRequest.value.dropoffPoint), {
-            radius: 8,
-            color: "#fff7ed",
-            weight: 2,
-            fillColor: "#ea580c",
-            fillOpacity: 0.95
-          })
-          .bindTooltip(`降車: ${selectedRequest.value.dropoffLabel}`, {
-            permanent: true,
-            direction: "top",
-            offset: [0, -8]
-          })
-          .addTo(mapLayers.focus);
+      if (isRequestRouteMode) {
+        if (selectedRequest.value?.pickupPoint && hasPoint(selectedRequest.value.pickupPoint)) {
+          leaflet
+            .circleMarker(toLeafletLatLng(selectedRequest.value.pickupPoint), {
+              radius: 8,
+              color: "#ecfdf5",
+              weight: 2,
+              fillColor: "#0f766e",
+              fillOpacity: 0.95
+            })
+            .bindTooltip(`乗車: ${selectedRequest.value.pickupLabel}`, {
+              permanent: true,
+              direction: "top",
+              offset: [0, -8]
+            })
+            .addTo(mapLayers.focus);
+        }
+        if (selectedRequest.value?.dropoffPoint && hasPoint(selectedRequest.value.dropoffPoint)) {
+          leaflet
+            .circleMarker(toLeafletLatLng(selectedRequest.value.dropoffPoint), {
+              radius: 8,
+              color: "#fff7ed",
+              weight: 2,
+              fillColor: "#ea580c",
+              fillOpacity: 0.95
+            })
+            .bindTooltip(`降車: ${selectedRequest.value.dropoffLabel}`, {
+              permanent: true,
+              direction: "top",
+              offset: [0, -8]
+            })
+            .addTo(mapLayers.focus);
+        }
+      } else {
+        selectedVehicleRouteSteps.value.forEach((step) => {
+          if (!hasPoint(step.point)) {
+            return;
+          }
+          const isStepSelected = step.key === selectedVehicleRouteStepKey.value;
+          leaflet
+            .circleMarker(toLeafletLatLng(step.point), {
+              radius: isStepSelected ? 8 : 6,
+              color: isStepSelected ? "#fef3c7" : "#ffffff",
+              weight: isStepSelected ? 2.5 : 2,
+              fillColor: step.type === "PICKUP" ? "#047857" : "#b45309",
+              fillOpacity: isStepSelected ? 0.95 : 0.85
+            })
+            .bindTooltip(
+              `${step.sequence}. ${step.type === "PICKUP" ? "乗車" : "降車"} ${step.locationLabel}`,
+              {
+                permanent: isStepSelected,
+                direction: "top",
+                offset: [0, -8]
+              }
+            )
+            .addTo(mapLayers.focus);
+        });
       }
 
       const allPoints = mapSourcePoints.value.map((point) => toLeafletLatLng(point));
@@ -2479,11 +2599,20 @@ createApp({
         return;
       }
 
-      if (focusSelected && selectedRoutePoints.length) {
-        leafletMap.flyToBounds(leaflet.latLngBounds(selectedRoutePoints.map(toLeafletLatLng)).pad(0.42), {
-          maxZoom: 16,
-          duration: 0.45
-        });
+      if (focusSelected && selectedRouteFocusPoints.length) {
+        if (selectedRouteFocusPoints.length === 1) {
+          leafletMap.flyTo(toLeafletLatLng(selectedRouteFocusPoints[0]), 16, {
+            duration: 0.45
+          });
+        } else {
+          leafletMap.flyToBounds(
+            leaflet.latLngBounds(selectedRouteFocusPoints.map(toLeafletLatLng)).pad(0.42),
+            {
+              maxZoom: 16,
+              duration: 0.45
+            }
+          );
+        }
       }
     }
 
@@ -3107,11 +3236,15 @@ createApp({
       requestRows,
       selectedRequestId,
       selectedRequest,
+      mapDisplayMode,
+      selectedVehicleRouteStepKey,
+      operationMapChipLabel,
       selectedVehicleRouteVehicleLabel,
       selectedVehicleRouteSteps,
       selectedVehicleRouteEmptyLabel,
       statusLabel,
       selectRequest,
+      selectVehicleRouteStep,
       canCancelRequest,
       leafletMapEl,
       hasStopData,
@@ -3907,12 +4040,16 @@ createApp({
         <v-btn icon="mdi-close" variant="text" density="compact" size="x-small" @click="cancelMapSelection" />
       </div>
       <!-- 選択中ルート表示 -->
-      <div v-if="selectedRequest" class="rq-map-selected-chip">
+      <div v-if="mapDisplayMode === 'request' && selectedRequest" class="rq-map-selected-chip">
         <v-icon size="12" color="#0f766e">mdi-map-marker</v-icon>
         {{ selectedRequest.pickupLabel }}
         <v-icon size="12" class="mx-1">mdi-arrow-right-thin</v-icon>
         <v-icon size="12" color="#ea580c">mdi-map-marker</v-icon>
         {{ selectedRequest.dropoffLabel }}
+      </div>
+      <div v-else-if="mapDisplayMode === 'operation'" class="rq-map-selected-chip">
+        <v-icon size="12" color="#0f766e">mdi-bus-clock</v-icon>
+        {{ operationMapChipLabel }}
       </div>
       <div v-if="hasAssignablePreview && previewSimulation" class="rq-map-preview-chip">
         <v-icon size="12" color="#b45309">mdi-bus-clock</v-icon>
@@ -3944,7 +4081,16 @@ createApp({
           <div class="rq-driver-plan-vehicle">{{ selectedVehicleRouteVehicleLabel }}</div>
         </div>
         <div v-if="selectedVehicleRouteSteps.length" class="rq-driver-plan-list">
-          <div v-for="step in selectedVehicleRouteSteps" :key="step.key" class="rq-driver-plan-item">
+          <div
+            v-for="step in selectedVehicleRouteSteps"
+            :key="step.key"
+            class="rq-driver-plan-item"
+            :class="{ 'is-active': mapDisplayMode === 'operation' && selectedVehicleRouteStepKey === step.key }"
+            role="button"
+            tabindex="0"
+            @click="selectVehicleRouteStep(step.key)"
+            @keydown.enter.prevent="selectVehicleRouteStep(step.key)"
+          >
             <div class="rq-driver-plan-row">
               <span class="rq-driver-plan-kind" :class="step.typeBadgeClass">{{ step.typeLabel }}</span>
               <span class="rq-driver-plan-count">{{ step.passengerCount }}人</span>
@@ -3968,7 +4114,7 @@ createApp({
           :key="row.id"
           type="button"
           class="rq-request-item"
-          :class="{ 'is-active': row.id === selectedRequestId }"
+          :class="{ 'is-active': mapDisplayMode === 'request' && row.id === selectedRequestId }"
           @click="selectRequest(row.id)"
         >
           <div class="rq-req-top">
