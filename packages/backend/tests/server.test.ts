@@ -192,6 +192,55 @@ test("api ride-request options can propose multiple strategies and confirm selec
   );
 });
 
+test("api ride-request options omits requested-time strategy when it is not closer", async () => {
+  const repository = new InMemoryRepository({
+    stops: [
+      { id: "stop_a", name: "Stop A", lat: 33.0, lng: 132.9 },
+      { id: "stop_b", name: "Stop B", lat: 33.01, lng: 132.905 }
+    ],
+    vehicles: [
+      {
+        id: "veh_1",
+        status: "ACTIVE",
+        capacity: 4,
+        onboardCount: 0,
+        currentLocation: { lat: 33.0, lng: 132.9 },
+        route: []
+      }
+    ],
+    serviceProfiles: [createDefaultServiceProfile()]
+  });
+  const { server } = createReqmoServer({ repository });
+
+  const desiredDropoffAt = new Date(Date.now() + 60 * 1000).toISOString();
+  const response = await invokeServer({
+    server,
+    method: "POST",
+    url: "/api/ride-requests/options",
+    body: {
+      pickup: { mode: "FIXED_STOP", stopId: "stop_a" },
+      dropoff: { mode: "FIXED_STOP", stopId: "stop_b" },
+      partySize: 1,
+      desiredDropoffAt,
+      optionLimit: 5
+    }
+  });
+
+  assert.equal(response.statusCode, 200);
+  const payload = JSON.parse(response.payload);
+  assert.equal(payload.status, "ASSIGNABLE");
+  assert.equal(Array.isArray(payload.options), true);
+  assert.equal(payload.options.length > 0, true);
+  assert.equal(
+    payload.options.some((option) => option.strategyKey === "REQUESTED_TIME"),
+    false
+  );
+  assert.equal(
+    payload.options.some((option) => option.strategyKey === "FASTEST"),
+    true
+  );
+});
+
 test("api can reset ride requests and clear vehicle routes", async () => {
   const repository = new InMemoryRepository({
     stops: [{ id: "shimanto_stop_1", name: "Shimanto Stop", lat: 32.99, lng: 132.93 }],

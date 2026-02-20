@@ -76,6 +76,29 @@ function normalizeOptionLimit(value, fallback = 5) {
   return Math.min(Math.max(Math.trunc(numeric), 1), 10);
 }
 
+function toTimestamp(value) {
+  if (!value) {
+    return null;
+  }
+  const date = new Date(value);
+  const timestamp = date.getTime();
+  if (Number.isNaN(timestamp)) {
+    return null;
+  }
+  return timestamp;
+}
+
+function absoluteDropoffDeltaMinutes(option, desiredDropoffTs) {
+  if (!Number.isFinite(desiredDropoffTs)) {
+    return Number.POSITIVE_INFINITY;
+  }
+  const dropoffTs = toTimestamp(option?.plannedDropoffAt);
+  if (!Number.isFinite(dropoffTs)) {
+    return Number.POSITIVE_INFINITY;
+  }
+  return Math.abs((dropoffTs - desiredDropoffTs) / (60 * 1000));
+}
+
 function buildPreviewRideRequest({
   tenantId,
   requesterId,
@@ -256,6 +279,7 @@ export async function listRideRequestOptions({
   });
   const normalizedLimit = normalizeOptionLimit(optionLimit, 5);
   const requestedDesiredDropoffAt = requestedTimeWindow?.desiredDropoffAt ?? null;
+  const requestedDesiredDropoffTs = toTimestamp(requestedDesiredDropoffAt);
 
   const strategies = [
     {
@@ -320,6 +344,26 @@ export async function listRideRequestOptions({
             }))
           : []
     });
+  }
+
+  if (Number.isFinite(requestedDesiredDropoffTs)) {
+    const fastestEntry =
+      strategyResults.find((entry) => entry.strategy.key === "FASTEST") ?? null;
+    const requestedEntry =
+      strategyResults.find((entry) => entry.strategy.key === "REQUESTED_TIME") ?? null;
+    if (fastestEntry && requestedEntry && Array.isArray(requestedEntry.options)) {
+      const fastestBestDelta = fastestEntry.options.reduce((best, option) => {
+        const delta = absoluteDropoffDeltaMinutes(option, requestedDesiredDropoffTs);
+        return Math.min(best, delta);
+      }, Number.POSITIVE_INFINITY);
+
+      if (Number.isFinite(fastestBestDelta)) {
+        requestedEntry.options = requestedEntry.options.filter(
+          (option) =>
+            absoluteDropoffDeltaMinutes(option, requestedDesiredDropoffTs) < fastestBestDelta
+        );
+      }
+    }
   }
 
   const buckets = strategyResults.map((entry) => [...entry.options]);
