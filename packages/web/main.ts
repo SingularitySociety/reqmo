@@ -698,6 +698,23 @@ createApp({
       return "地点";
     }
 
+    function resolveVehicleDisplayName(vehicleId, { includeId = false } = {}) {
+      const normalizedId = typeof vehicleId === "string" ? vehicleId.trim() : "";
+      if (!normalizedId || normalizedId === "-") {
+        return "-";
+      }
+      const vehicleMeta = vehicleIndex.value.get(normalizedId);
+      const vehicleName =
+        typeof vehicleMeta?.name === "string" ? vehicleMeta.name.trim() : "";
+      if (!vehicleName) {
+        return normalizedId;
+      }
+      if (includeId && vehicleName !== normalizedId) {
+        return `${vehicleName} (${normalizedId})`;
+      }
+      return vehicleName;
+    }
+
     function resolveVehicleTaskRequest(task) {
       if (!task?.requestId) {
         return null;
@@ -1132,17 +1149,7 @@ createApp({
           const etaMinutes = roundedEta(etaRaw);
           const etaDropoffMinutes = roundedEta(etaDropoffRaw);
           const vehicleId = request.assignment?.vehicleId ?? "-";
-          const vehicleMeta = vehicleIndex.value.get(vehicleId);
-          const vehicleName =
-            typeof vehicleMeta?.name === "string" && vehicleMeta.name.trim()
-              ? vehicleMeta.name.trim()
-              : "";
-          const vehicleLabel =
-            vehicleId === "-"
-              ? "-"
-              : vehicleName && vehicleName !== vehicleId
-                ? `${vehicleName} (${vehicleId})`
-                : vehicleId;
+          const vehicleLabel = resolveVehicleDisplayName(vehicleId, { includeId: true });
           const routeMetrics = requestRouteMetrics.value.get(request.id);
           const dropoffTravelDistanceKm = roundedDistanceKm(routeMetrics?.dropoffDistanceKm);
           const dropoffTravelMinutes = roundedEta(routeMetrics?.dropoffMinutes);
@@ -1487,6 +1494,9 @@ createApp({
     const previewSimulation = computed(() => dispatchPreview.value?.simulation ?? null);
     const hasAssignablePreview = computed(() => dispatchPreview.value?.status === "ASSIGNABLE");
     const previewStatusLabel = computed(() => statusLabel(dispatchPreview.value?.status));
+    const previewVehicleLabel = computed(() =>
+      resolveVehicleDisplayName(previewSimulation.value?.vehicleId ?? "-", { includeId: false })
+    );
     const previewPickupClock = computed(
       () => formatTimeLabel(previewSimulation.value?.plannedPickupAt)
     );
@@ -3289,6 +3299,7 @@ createApp({
       previewSimulation,
       hasAssignablePreview,
       previewStatusLabel,
+      previewVehicleLabel,
       previewPickupClock,
       previewDropoffClock,
       previewDropoffSuggestion,
@@ -3347,6 +3358,7 @@ createApp({
       formatSignedMinutes,
       previewReasonLabel,
       previewRejectionCodeLabel,
+      resolveVehicleDisplayName,
       simulateInboundCall,
       fetchPhoneRideOptions,
       createPhoneRide,
@@ -3679,7 +3691,7 @@ createApp({
                 />
                 <div class="rq-call-option-body">
                   <div class="rq-call-option-top">
-                    <span class="rq-call-option-vehicle">{{ option.strategyLabel }} / {{ option.vehicleId }}</span>
+                    <span class="rq-call-option-vehicle">{{ option.strategyLabel }} / {{ resolveVehicleDisplayName(option.vehicleId) }}</span>
                     <span class="rq-call-option-pickup">乗車 {{ formatTimeLabel(option.plannedPickupAt) }}</span>
                   </div>
                   <div class="rq-call-option-meta">
@@ -3701,7 +3713,7 @@ createApp({
             </div>
             <div class="rq-preview-kpi">
               <span class="rq-preview-kpi-label">担当車両</span>
-              <span class="rq-preview-kpi-value">{{ previewSimulation.vehicleId }}</span>
+              <span class="rq-preview-kpi-value">{{ previewVehicleLabel }}</span>
             </div>
             <div class="rq-preview-kpi">
               <span class="rq-preview-kpi-label">乗車予定</span>
@@ -4106,11 +4118,11 @@ createApp({
                 :value="option.optionId"
                 v-model="selectedCallOptionId"
               />
-              <div class="rq-call-option-body">
-                <div class="rq-call-option-top">
-                  <span class="rq-call-option-vehicle">{{ option.vehicleId }}</span>
-                  <span class="rq-call-option-pickup">ご案内乗車 {{ formatTimeLabel(option.plannedPickupAt) }}</span>
-                </div>
+                <div class="rq-call-option-body">
+                  <div class="rq-call-option-top">
+                    <span class="rq-call-option-vehicle">{{ resolveVehicleDisplayName(option.vehicleId) }}</span>
+                    <span class="rq-call-option-pickup">ご案内乗車 {{ formatTimeLabel(option.plannedPickupAt) }}</span>
+                  </div>
                 <div class="rq-call-option-meta">
                   <span>降車 {{ formatTimeLabel(option.plannedDropoffAt) }}</span>
                   <span v-if="option.desiredDropoffDeltaMinutes !== null">
@@ -4172,7 +4184,7 @@ createApp({
       </div>
       <div v-if="hasAssignablePreview && previewSimulation" class="rq-map-preview-chip">
         <v-icon size="12" color="#b45309">mdi-bus-clock</v-icon>
-        試算: {{ previewSimulation.vehicleId }} / 乗車 {{ previewPickupClock }} / 降車 {{ previewDropoffClock }}
+        試算: {{ previewVehicleLabel }} / 乗車 {{ previewPickupClock }} / 降車 {{ previewDropoffClock }}
       </div>
     </div>
 
