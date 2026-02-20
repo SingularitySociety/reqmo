@@ -31,6 +31,7 @@ const ROUTE_SEGMENT_METRICS_RETRY_MS = 30 * 1000;
 const VEHICLE_ROUTE_ON_PATH_TOLERANCE_METERS = 45;
 const ROUTE_POINT_SNAP_TOLERANCE_METERS = 2;
 const OFFICE_RETURN_ARRIVAL_METERS = 20;
+const DESIRED_TIME_STEP_MINUTES = 5;
 
 const simulatorQuery = new URLSearchParams(window.location.search);
 if (simulatorQuery.has("simulator")) {
@@ -94,6 +95,43 @@ function pad2(value) {
 
 function formatClock(date) {
   return `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+}
+
+function formatClockByMinuteStep(date, stepMinutes = DESIRED_TIME_STEP_MINUTES) {
+  const normalizedStep =
+    Number.isInteger(stepMinutes) && stepMinutes > 0 ? stepMinutes : DESIRED_TIME_STEP_MINUTES;
+  const normalized = new Date(date);
+  normalized.setSeconds(0, 0);
+  const minute = normalized.getMinutes();
+  const steppedMinute = Math.floor(minute / normalizedStep) * normalizedStep;
+  normalized.setMinutes(steppedMinute, 0, 0);
+  return formatClock(normalized);
+}
+
+function buildHourOptions() {
+  const options = [];
+  for (let hour = 0; hour < 24; hour += 1) {
+    options.push(pad2(hour));
+  }
+  return options;
+}
+
+function buildMinuteOptions(stepMinutes = DESIRED_TIME_STEP_MINUTES) {
+  const normalizedStep =
+    Number.isInteger(stepMinutes) && stepMinutes > 0 ? stepMinutes : DESIRED_TIME_STEP_MINUTES;
+  const options = [];
+  for (let minute = 0; minute < 60; minute += normalizedStep) {
+    options.push(pad2(minute));
+  }
+  return options;
+}
+
+function formatClockParts(hourValue, minuteValue) {
+  const hour = Number(hourValue);
+  const minute = Number(minuteValue);
+  const normalizedHour = Number.isInteger(hour) && hour >= 0 && hour <= 23 ? hour : 0;
+  const normalizedMinute = Number.isInteger(minute) && minute >= 0 && minute <= 59 ? minute : 0;
+  return `${pad2(normalizedHour)}:${pad2(normalizedMinute)}`;
 }
 
 function formatDateInput(date) {
@@ -198,6 +236,9 @@ function buildDesiredDropoffAtFromDateAndClock(dateText, clockText) {
   }
   if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
     throw new Error("希望降車時刻は 00:00 から 23:59 の範囲で入力してください");
+  }
+  if (minute % DESIRED_TIME_STEP_MINUTES !== 0) {
+    throw new Error(`希望降車時刻は ${DESIRED_TIME_STEP_MINUTES}分単位で入力してください`);
   }
 
   const candidate = new Date(year, month - 1, day, hour, minute, 0, 0);
@@ -393,7 +434,7 @@ const PREVIEW_REJECTION_LABELS = {
   MAX_WAIT: "乗車までの待ち時間上限を超える",
   MAX_DETOUR: "既存予約への迂回遅延上限を超える",
   MAX_ADDITIONAL_STOPS: "追加停留所数の上限を超える",
-  RESERVATION_WINDOW: "未来予約は時間帯を分けて別便として扱う",
+  RESERVATION_WINDOW: "予約日が異なる便を混在させない",
   OFFICE_BREAK_POLICY: "事務所・休憩ポリシーに合致しない"
 };
 
@@ -572,6 +613,11 @@ createApp({
     const now = ref(new Date());
     const dispatchDateInputEl = ref(null);
     const callDateInputEl = ref(null);
+    const dispatchTimeMenuOpen = ref(false);
+    const callTimeMenuOpen = ref(false);
+    const desiredHourOptions = buildHourOptions();
+    const desiredMinuteOptions = buildMinuteOptions();
+    const [defaultDesiredHour, defaultDesiredMinute] = formatClockByMinuteStep(new Date()).split(":");
 
     let nowTicker = null;
     let realtimeTicker = null;
@@ -604,7 +650,8 @@ createApp({
       passengerPhone: "",
       partySize: 1,
       desiredDate: formatDateInput(new Date()),
-      desiredTime: formatClock(new Date())
+      desiredHour: defaultDesiredHour ?? "00",
+      desiredMinute: defaultDesiredMinute ?? "00"
     });
 
     const callForm = ref({
@@ -613,11 +660,18 @@ createApp({
       dropoffStopId: "",
       partySize: 1,
       desiredDate: formatDateInput(new Date()),
-      desiredTime: formatClock(new Date())
+      desiredHour: defaultDesiredHour ?? "00",
+      desiredMinute: defaultDesiredMinute ?? "00"
     });
     const callRideOptions = ref([]);
     const selectedCallOptionId = ref("");
     const callDesiredDropoffAt = ref(null);
+    const formDesiredTimeLabel = computed(() =>
+      formatClockParts(form.value.desiredHour, form.value.desiredMinute)
+    );
+    const callDesiredTimeLabel = computed(() =>
+      formatClockParts(callForm.value.desiredHour, callForm.value.desiredMinute)
+    );
 
     const locationTitleState = ref({
       pickup: { manual: false, pending: false, requestId: 0, pointKey: "" },
@@ -639,7 +693,7 @@ createApp({
       businessHoursStart: "08:00",
       businessHoursEnd: "18:00",
       idleReturnThresholdMinutes: 40,
-      lunchBreakEnabled: true,
+      lunchBreakEnabled: false,
       lunchBreakStart: "11:00",
       lunchBreakEnd: "12:00"
     });
@@ -3072,7 +3126,7 @@ createApp({
             businessHoursStart: activeProfile.operationPolicy?.businessHours?.startLocalTime ?? "08:00",
             businessHoursEnd: activeProfile.operationPolicy?.businessHours?.endLocalTime ?? "18:00",
             idleReturnThresholdMinutes: activeProfile.operationPolicy?.idleReturnThresholdMinutes ?? 40,
-            lunchBreakEnabled: activeProfile.operationPolicy?.lunchBreak?.enabled !== false,
+            lunchBreakEnabled: activeProfile.operationPolicy?.lunchBreak?.enabled === true,
             lunchBreakStart: activeProfile.operationPolicy?.lunchBreak?.startLocalTime ?? "11:00",
             lunchBreakEnd: activeProfile.operationPolicy?.lunchBreak?.endLocalTime ?? "12:00"
           };
@@ -3134,7 +3188,7 @@ createApp({
       const passengerPhone = form.value.passengerPhone.trim();
       const desiredDropoffAt = buildDesiredDropoffAtFromDateAndClock(
         form.value.desiredDate,
-        form.value.desiredTime
+        `${form.value.desiredHour}:${form.value.desiredMinute}`
       );
       return {
         pickup: buildLocation(
@@ -3366,7 +3420,7 @@ createApp({
       const partySize = Math.max(1, Math.trunc(Number(callForm.value.partySize) || 1));
       const desiredDropoffAt = buildDesiredDropoffAtFromDateAndClock(
         callForm.value.desiredDate,
-        callForm.value.desiredTime
+        `${callForm.value.desiredHour}:${callForm.value.desiredMinute}`
       );
 
       return {
@@ -3482,6 +3536,7 @@ createApp({
           },
           operationPolicy: {
             ...(serviceProfile.value.operationPolicy ?? {}),
+            timeZone: serviceProfile.value.operationPolicy?.timeZone ?? "Asia/Tokyo",
             office: {
               ...(serviceProfile.value.operationPolicy?.office ?? {}),
               name: officeName,
@@ -3681,6 +3736,12 @@ createApp({
       serviceProfile,
       form,
       callForm,
+      dispatchTimeMenuOpen,
+      callTimeMenuOpen,
+      formDesiredTimeLabel,
+      callDesiredTimeLabel,
+      desiredHourOptions,
+      desiredMinuteOptions,
       dispatchDateInputEl,
       callDateInputEl,
       formDesiredDateLabel,
@@ -4483,7 +4544,50 @@ createApp({
           </div>
           <div class="rq-form-section" style="flex:1">
             <div class="rq-form-label">希望降車時刻</div>
-            <v-text-field type="time" v-model="form.desiredTime" density="compact" variant="outlined" hide-details />
+            <v-menu
+              v-model="dispatchTimeMenuOpen"
+              :close-on-content-click="false"
+              location="bottom start"
+              offset="6"
+            >
+              <template #activator="{ props }">
+                <v-text-field
+                  v-bind="props"
+                  :model-value="formDesiredTimeLabel"
+                  readonly
+                  density="compact"
+                  variant="outlined"
+                  hide-details
+                  append-inner-icon="mdi-clock-outline"
+                  class="rq-time-dropdown-activator"
+                />
+              </template>
+              <div class="rq-time-dropdown-menu">
+                <div class="rq-time-dropdown-grid">
+                  <v-select
+                    label="時"
+                    :items="desiredHourOptions"
+                    v-model="form.desiredHour"
+                    density="compact"
+                    variant="outlined"
+                    hide-details
+                  />
+                  <v-select
+                    label="分"
+                    :items="desiredMinuteOptions"
+                    v-model="form.desiredMinute"
+                    density="compact"
+                    variant="outlined"
+                    hide-details
+                  />
+                </div>
+                <div class="rq-time-dropdown-actions">
+                  <v-btn size="x-small" variant="text" color="primary" @click="dispatchTimeMenuOpen = false">
+                    閉じる
+                  </v-btn>
+                </div>
+              </div>
+            </v-menu>
           </div>
         </div>
 
@@ -4559,7 +4663,50 @@ createApp({
           </div>
           <div class="rq-form-section" style="flex:1">
             <div class="rq-form-label">希望降車時刻</div>
-            <v-text-field type="time" v-model="callForm.desiredTime" density="compact" variant="outlined" hide-details />
+            <v-menu
+              v-model="callTimeMenuOpen"
+              :close-on-content-click="false"
+              location="bottom start"
+              offset="6"
+            >
+              <template #activator="{ props }">
+                <v-text-field
+                  v-bind="props"
+                  :model-value="callDesiredTimeLabel"
+                  readonly
+                  density="compact"
+                  variant="outlined"
+                  hide-details
+                  append-inner-icon="mdi-clock-outline"
+                  class="rq-time-dropdown-activator"
+                />
+              </template>
+              <div class="rq-time-dropdown-menu">
+                <div class="rq-time-dropdown-grid">
+                  <v-select
+                    label="時"
+                    :items="desiredHourOptions"
+                    v-model="callForm.desiredHour"
+                    density="compact"
+                    variant="outlined"
+                    hide-details
+                  />
+                  <v-select
+                    label="分"
+                    :items="desiredMinuteOptions"
+                    v-model="callForm.desiredMinute"
+                    density="compact"
+                    variant="outlined"
+                    hide-details
+                  />
+                </div>
+                <div class="rq-time-dropdown-actions">
+                  <v-btn size="x-small" variant="text" color="primary" @click="callTimeMenuOpen = false">
+                    閉じる
+                  </v-btn>
+                </div>
+              </div>
+            </v-menu>
           </div>
         </div>
         <div class="rq-form-section">

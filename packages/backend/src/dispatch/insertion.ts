@@ -1,7 +1,7 @@
 import { estimateTravelMinutes } from "../../../shared/src/geo.ts";
 
 const DEFAULT_ARRIVE_BY_EARLY_PICKUP_TOLERANCE_MINUTES = 10;
-const DEFAULT_FUTURE_RESERVATION_SEPARATION_MINUTES = 60;
+const DEFAULT_OPERATION_TIME_ZONE = "Asia/Tokyo";
 
 function defaultTravelMinutes(a, b) {
   return estimateTravelMinutes(a, b);
@@ -24,6 +24,60 @@ function normalizeDateInput(value) {
     return null;
   }
   return date;
+}
+
+function pad2(value) {
+  return String(value).padStart(2, "0");
+}
+
+function resolveOperationTimeZone(serviceProfile) {
+  const configured =
+    typeof serviceProfile?.operationPolicy?.timeZone === "string"
+      ? serviceProfile.operationPolicy.timeZone.trim()
+      : "";
+  const candidate = configured || DEFAULT_OPERATION_TIME_ZONE;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: candidate }).format(new Date());
+    return candidate;
+  } catch (_error) {
+    return DEFAULT_OPERATION_TIME_ZONE;
+  }
+}
+
+function extractTimeZoneDateParts(date, timeZone) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(date);
+  const asNumber = (type, fallback = 0) => {
+    const raw = parts.find((part) => part.type === type)?.value;
+    const value = Number(raw);
+    return Number.isFinite(value) ? value : fallback;
+  };
+  return {
+    year: asNumber("year", date.getUTCFullYear()),
+    month: asNumber("month", date.getUTCMonth() + 1),
+    day: asNumber("day", date.getUTCDate())
+  };
+}
+
+function formatDateKeyInTimeZone(date, timeZone = DEFAULT_OPERATION_TIME_ZONE) {
+  const parts = extractTimeZoneDateParts(date, timeZone);
+  return `${parts.year}-${pad2(parts.month)}-${pad2(parts.day)}`;
+}
+
+function resolveReservationReferenceDate(request) {
+  const desiredPickupAt = normalizeDateInput(request?.desiredPickupAt);
+  if (desiredPickupAt) {
+    return desiredPickupAt;
+  }
+  const desiredDropoffAt = normalizeDateInput(request?.desiredDropoffAt);
+  if (desiredDropoffAt) {
+    return desiredDropoffAt;
+  }
+  return normalizeDateInput(request?.pickupNotBeforeAt);
 }
 
 function taskServiceMinutes(task, serviceProfile) {
@@ -83,6 +137,19 @@ function resolveArriveByPickupEtaMinutes({
   return Math.max(0, desiredPickupEtaMinutes);
 }
 
+function resolvePickupNotBeforeEtaMinutes(request) {
+  const now = resolveRequestEvaluationNow(request);
+  const pickupNotBeforeAt = normalizeDateInput(request?.pickupNotBeforeAt);
+  if (!pickupNotBeforeAt) {
+    return null;
+  }
+  const etaMinutes = (pickupNotBeforeAt.getTime() - now.getTime()) / (60 * 1000);
+  if (!Number.isFinite(etaMinutes)) {
+    return null;
+  }
+  return Math.max(0, etaMinutes);
+}
+
 function resolveEffectiveMaxWaitMinutes({
   request,
   serviceProfile,
@@ -94,24 +161,21 @@ function resolveEffectiveMaxWaitMinutes({
     serviceProfile,
     travelMinutes
   });
-  if (!Number.isFinite(desiredPickupEtaMinutes)) {
+  const pickupNotBeforeEtaMinutes = resolvePickupNotBeforeEtaMinutes(request);
+  const requiredPickupEtaMinutes =
+    Number.isFinite(desiredPickupEtaMinutes) || Number.isFinite(pickupNotBeforeEtaMinutes)
+      ? Math.max(desiredPickupEtaMinutes ?? 0, pickupNotBeforeEtaMinutes ?? 0)
+      : null;
+  if (!Number.isFinite(requiredPickupEtaMinutes)) {
     return configuredMaxWait;
   }
-  return Math.max(configuredMaxWait, desiredPickupEtaMinutes);
+  return Math.max(configuredMaxWait, requiredPickupEtaMinutes);
 }
 
 function resolveArriveByEarlyPickupToleranceMinutes(serviceProfile) {
   const configured = normalizeNonNegative(
     serviceProfile?.dispatchPolicy?.arriveByEarlyPickupToleranceMinutes,
     DEFAULT_ARRIVE_BY_EARLY_PICKUP_TOLERANCE_MINUTES
-  );
-  return configured;
-}
-
-function resolveFutureReservationSeparationMinutes(serviceProfile) {
-  const configured = normalizeNonNegative(
-    serviceProfile?.dispatchPolicy?.futureReservationSeparationMinutes,
-    DEFAULT_FUTURE_RESERVATION_SEPARATION_MINUTES
   );
   return configured;
 }
@@ -126,23 +190,40 @@ function resolveArriveByReservationConstraints({
     serviceProfile,
     travelMinutes
   });
-  if (!Number.isFinite(desiredPickupEtaMinutes)) {
+  const pickupNotBeforeEtaMinutes = resolvePickupNotBeforeEtaMinutes(request);
+  if (
+    !Number.isFinite(desiredPickupEtaMinutes) &&
+    !Number.isFinite(pickupNotBeforeEtaMinutes)
+  ) {
     return {
       enabled: false,
       earliestPickupEtaMinutes: null,
-      separateAsFutureReservation: false
+      reservationDateKey: null,
+      operationTimeZone: resolveOperationTimeZone(serviceProfile)
     };
   }
 
-  const configuredMaxWait = normalizeNonNegative(serviceProfile?.dispatchPolicy?.maxWaitMinutes, 0);
   const earlyPickupToleranceMinutes = resolveArriveByEarlyPickupToleranceMinutes(serviceProfile);
-  const futureReservationSeparationMinutes = resolveFutureReservationSeparationMinutes(serviceProfile);
-  const leadFromStandardDispatch = Math.max(0, desiredPickupEtaMinutes - configuredMaxWait);
+  const reservationReferenceDate = resolveReservationReferenceDate(request);
+  const operationTimeZone = resolveOperationTimeZone(serviceProfile);
+  let earliestPickupEtaMinutes = Number.isFinite(desiredPickupEtaMinutes)
+    ? Math.max(0, desiredPickupEtaMinutes - earlyPickupToleranceMinutes)
+    : null;
+  if (Number.isFinite(pickupNotBeforeEtaMinutes)) {
+    earliestPickupEtaMinutes = Number.isFinite(earliestPickupEtaMinutes)
+      ? Math.max(earliestPickupEtaMinutes, pickupNotBeforeEtaMinutes)
+      : Math.max(0, pickupNotBeforeEtaMinutes);
+  }
 
   return {
-    enabled: true,
-    earliestPickupEtaMinutes: Math.max(0, desiredPickupEtaMinutes - earlyPickupToleranceMinutes),
-    separateAsFutureReservation: leadFromStandardDispatch >= futureReservationSeparationMinutes
+    enabled: Number.isFinite(earliestPickupEtaMinutes),
+    earliestPickupEtaMinutes: Number.isFinite(earliestPickupEtaMinutes)
+      ? earliestPickupEtaMinutes
+      : null,
+    reservationDateKey: reservationReferenceDate
+      ? formatDateKeyInTimeZone(reservationReferenceDate, operationTimeZone)
+      : null,
+    operationTimeZone
   };
 }
 
@@ -325,6 +406,70 @@ function insertTasks(route, pickupTask, dropoffTask, pickupIndex, dropoffIndex) 
   return [...withPickup.slice(0, dropoffIndex), dropoffTask, ...withPickup.slice(dropoffIndex)];
 }
 
+function resolveTaskDateKey(task, operationTimeZone, fallbackDateKey) {
+  const notBeforeAt = normalizeDateInput(task?.notBeforeAt);
+  if (!notBeforeAt) {
+    return fallbackDateKey;
+  }
+  return formatDateKeyInTimeZone(notBeforeAt, operationTimeZone);
+}
+
+function candidateFitsReservationDateWindow({
+  candidateRoute,
+  requestId,
+  reservationDateKey,
+  operationTimeZone,
+  evaluationNow = new Date()
+}) {
+  if (!reservationDateKey) {
+    return true;
+  }
+  const fallbackDateKey = formatDateKeyInTimeZone(evaluationNow, operationTimeZone);
+
+  let pickupIndex = -1;
+  let dropoffIndex = -1;
+  for (let i = 0; i < candidateRoute.length; i += 1) {
+    const task = candidateRoute[i];
+    if (task?.requestId !== requestId) {
+      continue;
+    }
+    const type = typeof task?.type === "string" ? task.type.trim().toUpperCase() : "";
+    if (type === "PICKUP" && pickupIndex < 0) {
+      pickupIndex = i;
+      continue;
+    }
+    if (type === "DROPOFF" && dropoffIndex < 0) {
+      dropoffIndex = i;
+    }
+  }
+  if (pickupIndex < 0 || dropoffIndex < 0) {
+    return true;
+  }
+
+  for (let i = 0; i < pickupIndex; i += 1) {
+    const task = candidateRoute[i];
+    if (task?.requestId === requestId) {
+      continue;
+    }
+    const dateKey = resolveTaskDateKey(task, operationTimeZone, fallbackDateKey);
+    if (dateKey > reservationDateKey) {
+      return false;
+    }
+  }
+  for (let i = dropoffIndex + 1; i < candidateRoute.length; i += 1) {
+    const task = candidateRoute[i];
+    if (task?.requestId === requestId) {
+      continue;
+    }
+    const dateKey = resolveTaskDateKey(task, operationTimeZone, fallbackDateKey);
+    if (dateKey < reservationDateKey) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 function countConsecutivePickupPairs(route) {
   let consecutivePairs = 0;
   let previousWasPickup = false;
@@ -394,8 +539,6 @@ export function analyzeInsertionCandidateFailures({
     travelMinutes
   });
   const requestEvaluationNow = resolveRequestEvaluationNow(request);
-  const reservationTailPickupIndex = existingRoute.length;
-  const reservationTailDropoffIndex = existingRoute.length + 1;
   const maxAdditionalStops = serviceProfile.poolingPolicy.maxAdditionalStops;
 
   let candidateCount = 0;
@@ -406,16 +549,27 @@ export function analyzeInsertionCandidateFailures({
   for (let pickupIndex = 0; pickupIndex <= existingRoute.length; pickupIndex += 1) {
     for (let dropoffIndex = pickupIndex + 1; dropoffIndex <= existingRoute.length + 1; dropoffIndex += 1) {
       candidateCount += 1;
+      let pickupTaskForCandidate = pickupTask;
+      let candidateRoute = insertTasks(
+        existingRoute,
+        pickupTaskForCandidate,
+        dropoffTask,
+        pickupIndex,
+        dropoffIndex
+      );
       if (
         arriveByConstraints.enabled &&
-        arriveByConstraints.separateAsFutureReservation &&
-        (pickupIndex !== reservationTailPickupIndex || dropoffIndex !== reservationTailDropoffIndex)
+        !candidateFitsReservationDateWindow({
+          candidateRoute,
+          requestId: request.id,
+          reservationDateKey: arriveByConstraints.reservationDateKey,
+          operationTimeZone: arriveByConstraints.operationTimeZone,
+          evaluationNow: requestEvaluationNow
+        })
       ) {
         rejectionCounts.RESERVATION_WINDOW += 1;
         continue;
       }
-
-      const candidateRoute = insertTasks(existingRoute, pickupTask, dropoffTask, pickupIndex, dropoffIndex);
 
       const safety = evaluateRouteSafety({
         vehicle,
@@ -441,10 +595,19 @@ export function analyzeInsertionCandidateFailures({
         Number.isFinite(arriveByConstraints.earliestPickupEtaMinutes) &&
         etaPickupMinutes < arriveByConstraints.earliestPickupEtaMinutes
       ) {
-        if (pickupIndex !== reservationTailPickupIndex) {
-          rejectionCounts.RESERVATION_WINDOW += 1;
-          continue;
-        }
+        pickupTaskForCandidate = {
+          ...pickupTask,
+          notBeforeAt: new Date(
+            requestEvaluationNow.getTime() + arriveByConstraints.earliestPickupEtaMinutes * 60 * 1000
+          ).toISOString()
+        };
+        candidateRoute = insertTasks(
+          existingRoute,
+          pickupTaskForCandidate,
+          dropoffTask,
+          pickupIndex,
+          dropoffIndex
+        );
         etaPickupMinutes = arriveByConstraints.earliestPickupEtaMinutes;
       }
       if (minEtaPickupMinutes === null || etaPickupMinutes < minEtaPickupMinutes) {
@@ -525,23 +688,25 @@ export function findBestInsertionPlan({ vehicle, request, serviceProfile, travel
     serviceProfile,
     travelMinutes
   });
-  const reservationTailPickupIndex = existingRoute.length;
-  const reservationTailDropoffIndex = existingRoute.length + 1;
   const requestEvaluationNow = resolveRequestEvaluationNow(request);
   const maxAdditionalStops = serviceProfile.poolingPolicy.maxAdditionalStops;
 
   for (let pickupIndex = 0; pickupIndex <= existingRoute.length; pickupIndex += 1) {
     for (let dropoffIndex = pickupIndex + 1; dropoffIndex <= existingRoute.length + 1; dropoffIndex += 1) {
+      let pickupTaskForCandidate = pickupTask;
+      let candidateRoute = insertTasks(existingRoute, pickupTaskForCandidate, dropoffTask, pickupIndex, dropoffIndex);
       if (
         arriveByConstraints.enabled &&
-        arriveByConstraints.separateAsFutureReservation &&
-        (pickupIndex !== reservationTailPickupIndex || dropoffIndex !== reservationTailDropoffIndex)
+        !candidateFitsReservationDateWindow({
+          candidateRoute,
+          requestId: request.id,
+          reservationDateKey: arriveByConstraints.reservationDateKey,
+          operationTimeZone: arriveByConstraints.operationTimeZone,
+          evaluationNow: requestEvaluationNow
+        })
       ) {
         continue;
       }
-
-      let pickupTaskForCandidate = pickupTask;
-      let candidateRoute = insertTasks(existingRoute, pickupTaskForCandidate, dropoffTask, pickupIndex, dropoffIndex);
 
       if (
         !routeIsCapacitySafe({
@@ -567,9 +732,6 @@ export function findBestInsertionPlan({ vehicle, request, serviceProfile, travel
         Number.isFinite(arriveByConstraints.earliestPickupEtaMinutes) &&
         etaPickupMinutes < arriveByConstraints.earliestPickupEtaMinutes
       ) {
-        if (pickupIndex !== reservationTailPickupIndex) {
-          continue;
-        }
         pickupTaskForCandidate = {
           ...pickupTask,
           notBeforeAt: new Date(

@@ -280,6 +280,62 @@ test("far-future reservation is handled as separate route without impacting acti
   assert.equal(existingImpact.dropoffDeltaMinutes, 0);
 });
 
+test("future reservations on the same date can be reordered by requested time", async () => {
+  const repository = new InMemoryRepository();
+  repository.addVehicle({
+    id: "veh_1",
+    status: "ACTIVE",
+    capacity: 4,
+    onboardCount: 0,
+    currentLocation: { lat: 33.0, lng: 132.9 },
+    route: []
+  });
+  repository.addStop({ id: "stop_a", name: "Stop A", lat: 33.0, lng: 132.9 });
+  repository.addStop({ id: "stop_b", name: "Stop B", lat: 33.01, lng: 132.905 });
+  const evaluationNow = "2026-02-20T09:00:00+09:00";
+
+  const noonReservation = await createRideRequest({
+    repository,
+    tenantId: "tenant_default",
+    requesterId: "user_same_date_noon",
+    pickup: { mode: "FIXED_STOP", stopId: "stop_a" },
+    dropoff: { mode: "FIXED_STOP", stopId: "stop_b" },
+    partySize: 1,
+    desiredDropoffAt: "2026-02-21T12:00:00+09:00",
+    context: {
+      now: evaluationNow
+    }
+  });
+
+  assert.equal(noonReservation.status, "ASSIGNED");
+  assert.equal(noonReservation.rideRequest.assignment?.vehicleId, "veh_1");
+
+  const preview = await previewRideRequest({
+    repository,
+    tenantId: "tenant_default",
+    requesterId: "user_same_date_morning",
+    pickup: { mode: "FIXED_STOP", stopId: "stop_a" },
+    dropoff: { mode: "FIXED_STOP", stopId: "stop_b" },
+    partySize: 1,
+    desiredDropoffAt: "2026-02-21T10:00:00+09:00",
+    context: {
+      now: evaluationNow
+    }
+  });
+
+  assert.equal(preview.status, "ASSIGNABLE");
+  const routeAfter = preview.simulation?.routeAfter ?? [];
+  const morningPickupIndex = routeAfter.findIndex(
+    (task) => task.requestLabel === "新規予約" && task.type === "PICKUP"
+  );
+  const noonPickupIndex = routeAfter.findIndex(
+    (task) => task.requestId === noonReservation.rideRequest.id && task.type === "PICKUP"
+  );
+  assert.equal(morningPickupIndex >= 0, true);
+  assert.equal(noonPickupIndex >= 0, true);
+  assert.equal(morningPickupIndex < noonPickupIndex, true);
+});
+
 test("preview returns suggested dropoff time when planned dropoff exceeds desired time", async () => {
   const repository = seedRepository();
   const desiredDropoffAt = "2026-02-01T10:01:00+09:00";
@@ -936,6 +992,67 @@ test("dispatch rejects request when vehicle cannot return to office before lunch
   assert.equal(preview.diagnostics?.details?.type, "RETURN_BEFORE_BREAK");
 });
 
+test("dispatch rejects future reservation when pre-break office return is impossible", async () => {
+  const repository = new InMemoryRepository();
+  const baseProfile = createDefaultServiceProfile();
+  const profile = createDefaultServiceProfile({
+    id: "office_break_future_return_guard",
+    dispatchPolicy: {
+      ...baseProfile.dispatchPolicy,
+      maxWaitMinutes: 240
+    },
+    operationPolicy: {
+      office: {
+        name: "本社",
+        point: { lat: 33.0, lng: 132.9 }
+      },
+      idleReturnThresholdMinutes: 40,
+      lunchBreak: {
+        enabled: true,
+        startLocalTime: "12:00",
+        endLocalTime: "13:00",
+        requireReturnToOffice: true,
+        departFromOfficeAtEnd: true
+      }
+    }
+  });
+  upsertServiceProfile({ repository, profile });
+
+  repository.addVehicle({
+    id: "veh_1",
+    status: "ACTIVE",
+    capacity: 4,
+    onboardCount: 0,
+    currentLocation: { lat: 33.1, lng: 132.9 },
+    route: []
+  });
+
+  const preview = await previewRideRequest({
+    repository,
+    serviceProfileId: profile.id,
+    tenantId: "tenant_default",
+    requesterId: "user_break_guard_future",
+    pickup: {
+      mode: "FREE_POINT",
+      point: { lat: 33.1, lng: 132.9 }
+    },
+    dropoff: {
+      mode: "FREE_POINT",
+      point: { lat: 33.2, lng: 132.9 }
+    },
+    partySize: 1,
+    desiredDropoffAt: "2026-02-23T11:55:00+09:00",
+    context: {
+      now: "2026-02-20T10:50:00+09:00"
+    }
+  });
+
+  assert.equal(preview.status, "REJECTED");
+  assert.equal(preview.reason, "NO_FEASIBLE_VEHICLE");
+  assert.equal(preview.diagnostics?.rejectionCounts?.OFFICE_BREAK_POLICY, 1);
+  assert.equal(preview.diagnostics?.details?.type, "RETURN_BEFORE_BREAK");
+});
+
 test("dispatch does not require pre-break office return for afternoon reservation", async () => {
   const repository = new InMemoryRepository();
   const baseProfile = createDefaultServiceProfile();
@@ -995,7 +1112,7 @@ test("dispatch does not require pre-break office return for afternoon reservatio
   assert.equal(preview.diagnostics?.details?.type === "RETURN_BEFORE_BREAK", false);
 });
 
-test("dispatch applies lunch-break constraints on reservation date for future-day request", async () => {
+test("dispatch suggests post-break operation when requested time falls within lunch break", async () => {
   const repository = new InMemoryRepository();
   const baseProfile = createDefaultServiceProfile();
   const profile = createDefaultServiceProfile({
@@ -1050,10 +1167,191 @@ test("dispatch applies lunch-break constraints on reservation date for future-da
     }
   });
 
-  assert.equal(preview.status, "REJECTED");
-  assert.equal(preview.reason, "NO_FEASIBLE_VEHICLE");
-  assert.equal(preview.diagnostics?.rejectionCounts?.OFFICE_BREAK_POLICY, 1);
-  assert.equal(preview.diagnostics?.details?.type, "RETURN_BEFORE_BREAK");
+  assert.equal(preview.status, "ASSIGNABLE");
+  const pickupAt = Date.parse(preview.simulation?.plannedPickupAt ?? "");
+  const dropoffAt = Date.parse(preview.simulation?.plannedDropoffAt ?? "");
+  const breakEndAt = Date.parse("2026-02-23T12:00:00+09:00");
+  assert.equal(Number.isFinite(pickupAt), true);
+  assert.equal(Number.isFinite(dropoffAt), true);
+  assert.equal(pickupAt >= breakEndAt, true);
+  assert.equal(dropoffAt >= breakEndAt, true);
+  assert.equal(
+    typeof preview.simulation?.desiredDropoffSuggestion?.suggestedDropoffAt === "string",
+    true
+  );
+});
+
+test("dispatch applies lunch-break constraints when enabled flag is omitted", async () => {
+  const repository = new InMemoryRepository();
+  const baseProfile = createDefaultServiceProfile();
+  const profile = createDefaultServiceProfile({
+    id: "office_break_enabled_default_guard",
+    dispatchPolicy: {
+      ...baseProfile.dispatchPolicy,
+      maxWaitMinutes: 240
+    },
+    operationPolicy: {
+      office: {
+        name: "本社",
+        point: { lat: 33.0, lng: 132.9 }
+      },
+      idleReturnThresholdMinutes: 40,
+      lunchBreak: {
+        startLocalTime: "11:00",
+        endLocalTime: "12:00",
+        requireReturnToOffice: true,
+        departFromOfficeAtEnd: true
+      }
+    }
+  });
+  upsertServiceProfile({ repository, profile });
+
+  repository.addVehicle({
+    id: "veh_1",
+    status: "ACTIVE",
+    capacity: 4,
+    onboardCount: 0,
+    currentLocation: { lat: 33.0, lng: 132.9 },
+    route: []
+  });
+
+  const preview = await previewRideRequest({
+    repository,
+    serviceProfileId: profile.id,
+    tenantId: "tenant_default",
+    requesterId: "user_break_enabled_default",
+    pickup: {
+      mode: "FREE_POINT",
+      point: { lat: 33.0, lng: 132.9 }
+    },
+    dropoff: {
+      mode: "FREE_POINT",
+      point: { lat: 33.001, lng: 132.9 }
+    },
+    partySize: 1,
+    desiredDropoffAt: "2026-02-23T11:39:00+09:00",
+    context: {
+      now: "2026-02-20T10:50:00+09:00"
+    }
+  });
+
+  assert.equal(preview.status, "ASSIGNABLE");
+  const pickupAt = Date.parse(preview.simulation?.plannedPickupAt ?? "");
+  const breakEndAt = Date.parse("2026-02-23T12:00:00+09:00");
+  assert.equal(Number.isFinite(pickupAt), true);
+  assert.equal(pickupAt >= breakEndAt, true);
+});
+
+test("dispatch does not apply lunch-break constraints when operation policy is missing", async () => {
+  const repository = new InMemoryRepository();
+  const baseProfile = createDefaultServiceProfile();
+  const profile = createDefaultServiceProfile({
+    id: "office_break_missing_policy_guard",
+    dispatchPolicy: {
+      ...baseProfile.dispatchPolicy,
+      maxWaitMinutes: 240
+    },
+    operationPolicy: undefined
+  });
+  upsertServiceProfile({ repository, profile });
+
+  repository.addVehicle({
+    id: "veh_1",
+    status: "ACTIVE",
+    capacity: 4,
+    onboardCount: 0,
+    currentLocation: { lat: 33.0, lng: 132.9 },
+    route: []
+  });
+
+  const preview = await previewRideRequest({
+    repository,
+    serviceProfileId: profile.id,
+    tenantId: "tenant_default",
+    requesterId: "user_break_missing_policy",
+    pickup: {
+      mode: "FREE_POINT",
+      point: { lat: 33.0, lng: 132.9 }
+    },
+    dropoff: {
+      mode: "FREE_POINT",
+      point: { lat: 33.001, lng: 132.9 }
+    },
+    partySize: 1,
+    desiredDropoffAt: "2026-02-23T11:39:00+09:00",
+    context: {
+      now: "2026-02-20T10:50:00+09:00"
+    }
+  });
+
+  assert.equal(preview.status, "ASSIGNABLE");
+  const pickupAt = Date.parse(preview.simulation?.plannedPickupAt ?? "");
+  const breakEndAt = Date.parse("2026-02-23T12:00:00+09:00");
+  assert.equal(Number.isFinite(pickupAt), true);
+  assert.equal(pickupAt < breakEndAt, true);
+});
+
+test("dispatch evaluates lunch break using operation policy timezone", async () => {
+  const repository = new InMemoryRepository();
+  const baseProfile = createDefaultServiceProfile();
+  const profile = createDefaultServiceProfile({
+    id: "office_break_timezone_guard",
+    dispatchPolicy: {
+      ...baseProfile.dispatchPolicy,
+      maxWaitMinutes: 240
+    },
+    operationPolicy: {
+      office: {
+        name: "本社",
+        point: { lat: 33.0, lng: 132.9 }
+      },
+      timeZone: "UTC",
+      idleReturnThresholdMinutes: 40,
+      lunchBreak: {
+        enabled: true,
+        startLocalTime: "11:00",
+        endLocalTime: "12:00",
+        requireReturnToOffice: true,
+        departFromOfficeAtEnd: true
+      }
+    }
+  });
+  upsertServiceProfile({ repository, profile });
+
+  repository.addVehicle({
+    id: "veh_1",
+    status: "ACTIVE",
+    capacity: 4,
+    onboardCount: 0,
+    currentLocation: { lat: 33.0, lng: 132.9 },
+    route: []
+  });
+
+  const preview = await previewRideRequest({
+    repository,
+    serviceProfileId: profile.id,
+    tenantId: "tenant_default",
+    requesterId: "user_break_timezone",
+    pickup: {
+      mode: "FREE_POINT",
+      point: { lat: 33.0, lng: 132.9 }
+    },
+    dropoff: {
+      mode: "FREE_POINT",
+      point: { lat: 33.001, lng: 132.9 }
+    },
+    partySize: 1,
+    desiredDropoffAt: "2026-02-23T11:39:00+09:00",
+    context: {
+      now: "2026-02-20T10:50:00+09:00"
+    }
+  });
+
+  assert.equal(preview.status, "ASSIGNABLE");
+  const pickupAt = Date.parse(preview.simulation?.plannedPickupAt ?? "");
+  const breakEndAtTokyo = Date.parse("2026-02-23T12:00:00+09:00");
+  assert.equal(Number.isFinite(pickupAt), true);
+  assert.equal(pickupAt < breakEndAtTokyo, true);
 });
 
 test("dispatch rejects request when 12:00 office departure cannot reach pickup in time", async () => {
@@ -1107,6 +1405,67 @@ test("dispatch rejects request when 12:00 office departure cannot reach pickup i
     partySize: 1,
     context: {
       now: "2026-02-01T11:59:00+09:00"
+    }
+  });
+
+  assert.equal(preview.status, "REJECTED");
+  assert.equal(preview.reason, "NO_FEASIBLE_VEHICLE");
+  assert.equal(preview.diagnostics?.rejectionCounts?.OFFICE_BREAK_POLICY, 1);
+  assert.equal(preview.diagnostics?.details?.type, "DEPART_AFTER_BREAK");
+});
+
+test("dispatch rejects future reservation when 13:00 office departure cannot reach pickup in time", async () => {
+  const repository = new InMemoryRepository();
+  const baseProfile = createDefaultServiceProfile();
+  const profile = createDefaultServiceProfile({
+    id: "office_break_future_departure_guard",
+    dispatchPolicy: {
+      ...baseProfile.dispatchPolicy,
+      maxWaitMinutes: 240
+    },
+    operationPolicy: {
+      office: {
+        name: "本社",
+        point: { lat: 33.0, lng: 132.9 }
+      },
+      idleReturnThresholdMinutes: 40,
+      lunchBreak: {
+        enabled: true,
+        startLocalTime: "12:00",
+        endLocalTime: "13:00",
+        requireReturnToOffice: false,
+        departFromOfficeAtEnd: true
+      }
+    }
+  });
+  upsertServiceProfile({ repository, profile });
+
+  repository.addVehicle({
+    id: "veh_1",
+    status: "ACTIVE",
+    capacity: 4,
+    onboardCount: 0,
+    currentLocation: { lat: 33.0, lng: 132.9 },
+    route: []
+  });
+
+  const preview = await previewRideRequest({
+    repository,
+    serviceProfileId: profile.id,
+    tenantId: "tenant_default",
+    requesterId: "user_departure_guard_future",
+    pickup: {
+      mode: "FREE_POINT",
+      point: { lat: 33.05, lng: 132.9 }
+    },
+    dropoff: {
+      mode: "FREE_POINT",
+      point: { lat: 33.051, lng: 132.901 }
+    },
+    partySize: 1,
+    desiredDropoffAt: "2026-02-23T13:05:00+09:00",
+    context: {
+      now: "2026-02-20T10:50:00+09:00"
     }
   });
 

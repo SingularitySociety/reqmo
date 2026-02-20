@@ -73,6 +73,19 @@ function resolveArriveByPickupEtaMinutes({
   return Math.max(0, desiredPickupEtaMinutes);
 }
 
+function resolvePickupNotBeforeEtaMinutes(request) {
+  const now = resolveRequestEvaluationNow(request);
+  const pickupNotBeforeAt = normalizeDateInput(request?.pickupNotBeforeAt);
+  if (!pickupNotBeforeAt) {
+    return null;
+  }
+  const etaMinutes = (pickupNotBeforeAt.getTime() - now.getTime()) / (60 * 1000);
+  if (!Number.isFinite(etaMinutes)) {
+    return null;
+  }
+  return Math.max(0, etaMinutes);
+}
+
 export function findGreedyVehicle({ request, vehicles, serviceProfile, travelMinutes = defaultTravelMinutes }) {
   const limit = serviceProfile.dispatchPolicy.candidateVehicleLimit;
   const maxOnboard = serviceProfile.poolingPolicy.maxOnboardPerVehicle;
@@ -82,17 +95,27 @@ export function findGreedyVehicle({ request, vehicles, serviceProfile, travelMin
     serviceProfile,
     travelMinutes
   });
+  const pickupNotBeforeEtaMinutes = resolvePickupNotBeforeEtaMinutes(request);
+  const requiredPickupEtaMinutes =
+    Number.isFinite(desiredPickupEtaMinutes) || Number.isFinite(pickupNotBeforeEtaMinutes)
+      ? Math.max(desiredPickupEtaMinutes ?? 0, pickupNotBeforeEtaMinutes ?? 0)
+      : null;
   const configuredMaxWait = normalizeNonNegative(serviceProfile.dispatchPolicy.maxWaitMinutes, 0);
-  const maxWait = Number.isFinite(desiredPickupEtaMinutes)
-    ? Math.max(configuredMaxWait, desiredPickupEtaMinutes)
+  const maxWait = Number.isFinite(requiredPickupEtaMinutes)
+    ? Math.max(configuredMaxWait, requiredPickupEtaMinutes)
     : configuredMaxWait;
   const arriveByEarlyPickupToleranceMinutes = normalizeNonNegative(
     serviceProfile?.dispatchPolicy?.arriveByEarlyPickupToleranceMinutes,
     DEFAULT_ARRIVE_BY_EARLY_PICKUP_TOLERANCE_MINUTES
   );
-  const earliestPickupEtaMinutes = Number.isFinite(desiredPickupEtaMinutes)
+  let earliestPickupEtaMinutes = Number.isFinite(desiredPickupEtaMinutes)
     ? Math.max(0, desiredPickupEtaMinutes - arriveByEarlyPickupToleranceMinutes)
     : null;
+  if (Number.isFinite(pickupNotBeforeEtaMinutes)) {
+    earliestPickupEtaMinutes = Number.isFinite(earliestPickupEtaMinutes)
+      ? Math.max(earliestPickupEtaMinutes, pickupNotBeforeEtaMinutes)
+      : Math.max(0, pickupNotBeforeEtaMinutes);
+  }
 
   let best = null;
   let inspected = 0;

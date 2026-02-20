@@ -4,6 +4,7 @@ export function createDefaultServiceProfile(overrides = {}) {
   return {
     id: "weekday_default_v1",
     operationPolicy: {
+      timeZone: "Asia/Tokyo",
       office: {
         name: "事務所",
         point: null

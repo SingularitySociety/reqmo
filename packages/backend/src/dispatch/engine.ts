@@ -9,6 +9,8 @@ import { estimateTravelMinutes } from "../../../shared/src/geo.ts";
 import { createTravelEstimator } from "../routing/service.ts";
 
 const DEFAULT_CRUISE_SPEED_KMH = 25;
+const DEFAULT_ARRIVE_BY_EARLY_PICKUP_TOLERANCE_MINUTES = 10;
+const DEFAULT_OPERATION_TIME_ZONE = "Asia/Tokyo";
 
 function selectAlgorithm(serviceProfile) {
   return serviceProfile.dispatchPolicy.algorithmPrimary ?? "INSERTION";
@@ -37,6 +39,7 @@ function buildDispatchRequest(rideRequest, resolvedLocations, now = new Date()) 
     requestType,
     desiredPickupAt: desiredPickupAt?.toISOString() ?? null,
     desiredDropoffAt: desiredDropoffAt?.toISOString() ?? null,
+    pickupNotBeforeAt: null,
     evaluationNowAt: now.toISOString()
   };
 }
@@ -59,6 +62,13 @@ function resolveCruiseSpeedKmh(serviceProfile) {
     return DEFAULT_CRUISE_SPEED_KMH;
   }
   return Math.min(Math.max(speed, 1), 130);
+}
+
+function resolveArriveByEarlyPickupToleranceMinutes(serviceProfile) {
+  return normalizeNonNegative(
+    serviceProfile?.dispatchPolicy?.arriveByEarlyPickupToleranceMinutes,
+    DEFAULT_ARRIVE_BY_EARLY_PICKUP_TOLERANCE_MINUTES
+  );
 }
 
 function resolveTaskServiceMinutes(task, serviceProfile) {
@@ -91,8 +101,105 @@ function pad2(value) {
   return String(value).padStart(2, "0");
 }
 
-function formatLocalClock(date) {
-  return `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+function resolveOperationTimeZone(operationPolicy) {
+  const configured =
+    typeof operationPolicy?.timeZone === "string" ? operationPolicy.timeZone.trim() : "";
+  const candidate = configured || DEFAULT_OPERATION_TIME_ZONE;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: candidate }).format(new Date());
+    return candidate;
+  } catch (_error) {
+    return DEFAULT_OPERATION_TIME_ZONE;
+  }
+}
+
+function parseTimeZoneOffsetMinutes(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.replace("UTC", "GMT").trim();
+  if (normalized === "GMT" || normalized === "GMT+0" || normalized === "GMT+00:00" || normalized === "GMT-0" || normalized === "GMT-00:00") {
+    return 0;
+  }
+  const match = normalized.match(/^GMT([+-])(\d{1,2})(?::?(\d{2}))?$/);
+  if (!match) {
+    return null;
+  }
+  const sign = match[1] === "-" ? -1 : 1;
+  const hour = Number(match[2]);
+  const minute = Number(match[3] ?? "0");
+  if (!Number.isInteger(hour) || !Number.isInteger(minute)) {
+    return null;
+  }
+  return sign * (hour * 60 + minute);
+}
+
+function resolveTimeZoneOffsetMinutes(date, timeZone) {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      timeZoneName: "shortOffset",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false
+    }).formatToParts(date);
+    const zoneName = parts.find((part) => part.type === "timeZoneName")?.value ?? "";
+    const parsed = parseTimeZoneOffsetMinutes(zoneName);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  } catch (_error) {
+    // Fallback below.
+  }
+
+  const localized = new Date(date.toLocaleString("en-US", { timeZone }));
+  if (Number.isNaN(localized.getTime())) {
+    return 0;
+  }
+  return Math.round((localized.getTime() - date.getTime()) / (60 * 1000));
+}
+
+function extractTimeZoneDateParts(date, timeZone) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  }).formatToParts(date);
+  const asNumber = (type, fallback = 0) => {
+    const raw = parts.find((part) => part.type === type)?.value;
+    const value = Number(raw);
+    return Number.isFinite(value) ? value : fallback;
+  };
+  return {
+    year: asNumber("year", date.getUTCFullYear()),
+    month: asNumber("month", date.getUTCMonth() + 1),
+    day: asNumber("day", date.getUTCDate()),
+    hour: asNumber("hour", date.getUTCHours()) % 24,
+    minute: asNumber("minute", date.getUTCMinutes())
+  };
+}
+
+function buildDateInTimeZone({ year, month, day, hour, minute }, timeZone) {
+  const localAsUtcMs = Date.UTC(year, month - 1, day, hour, minute, 0, 0);
+  let utcMs = localAsUtcMs;
+  for (let i = 0; i < 3; i += 1) {
+    const offsetMinutes = resolveTimeZoneOffsetMinutes(new Date(utcMs), timeZone);
+    const adjustedUtcMs = localAsUtcMs - offsetMinutes * 60 * 1000;
+    if (adjustedUtcMs === utcMs) {
+      break;
+    }
+    utcMs = adjustedUtcMs;
+  }
+  return new Date(utcMs);
+}
+
+function formatLocalClock(date, timeZone = DEFAULT_OPERATION_TIME_ZONE) {
+  const parts = extractTimeZoneDateParts(date, timeZone);
+  return `${pad2(parts.hour)}:${pad2(parts.minute)}`;
 }
 
 function parseLocalClockMinutes(value, fallbackMinutes) {
@@ -115,13 +222,20 @@ function parseLocalClockMinutes(value, fallbackMinutes) {
   return hour * 60 + minute;
 }
 
-function buildLocalTimeDate(baseDate, minutesOfDay) {
-  const date = new Date(baseDate);
-  date.setSeconds(0, 0);
+function buildLocalTimeDate(baseDate, minutesOfDay, timeZone = DEFAULT_OPERATION_TIME_ZONE) {
+  const localParts = extractTimeZoneDateParts(baseDate, timeZone);
   const hour = Math.floor(minutesOfDay / 60);
   const minute = minutesOfDay % 60;
-  date.setHours(hour, minute, 0, 0);
-  return date;
+  return buildDateInTimeZone(
+    {
+      year: localParts.year,
+      month: localParts.month,
+      day: localParts.day,
+      hour,
+      minute
+    },
+    timeZone
+  );
 }
 
 function resolveOfficePointFromPolicy(serviceProfile, vehicle = null) {
@@ -145,16 +259,25 @@ function resolveOfficePointFromPolicy(serviceProfile, vehicle = null) {
 }
 
 function resolveLunchBreakWindow(operationPolicy, baseDate) {
-  const lunchBreak = operationPolicy?.lunchBreak ?? {};
+  const timeZone = resolveOperationTimeZone(operationPolicy);
+  const lunchBreakConfigured =
+    operationPolicy &&
+    typeof operationPolicy === "object" &&
+    operationPolicy.lunchBreak &&
+    typeof operationPolicy.lunchBreak === "object"
+      ? operationPolicy.lunchBreak
+      : null;
+  const lunchBreak = lunchBreakConfigured ?? {};
   const startMinutes = parseLocalClockMinutes(lunchBreak.startLocalTime, 11 * 60);
   const endMinutes = parseLocalClockMinutes(lunchBreak.endLocalTime, 12 * 60);
-  const startAt = buildLocalTimeDate(baseDate, startMinutes);
-  const endAt = buildLocalTimeDate(baseDate, endMinutes);
+  const startAt = buildLocalTimeDate(baseDate, startMinutes, timeZone);
+  const endAt = buildLocalTimeDate(baseDate, endMinutes, timeZone);
   if (endAt.getTime() <= startAt.getTime()) {
     endAt.setDate(endAt.getDate() + 1);
   }
   return {
-    enabled: lunchBreak.enabled === true,
+    enabled: Boolean(lunchBreakConfigured) && lunchBreak.enabled !== false,
+    timeZone,
     startMinutes,
     endMinutes,
     startAt,
@@ -165,16 +288,18 @@ function resolveLunchBreakWindow(operationPolicy, baseDate) {
 }
 
 function resolveBusinessHoursWindow(operationPolicy, baseDate) {
+  const timeZone = resolveOperationTimeZone(operationPolicy);
   const businessHours = operationPolicy?.businessHours ?? {};
   const startMinutes = parseLocalClockMinutes(businessHours.startLocalTime, 8 * 60);
   const endMinutes = parseLocalClockMinutes(businessHours.endLocalTime, 18 * 60);
-  const startAt = buildLocalTimeDate(baseDate, startMinutes);
-  const endAt = buildLocalTimeDate(baseDate, endMinutes);
+  const startAt = buildLocalTimeDate(baseDate, startMinutes, timeZone);
+  const endAt = buildLocalTimeDate(baseDate, endMinutes, timeZone);
   if (endAt.getTime() <= startAt.getTime()) {
     endAt.setDate(endAt.getDate() + 1);
   }
   return {
     enabled: businessHours.enabled === true,
+    timeZone,
     startMinutes,
     endMinutes,
     startAt,
@@ -186,10 +311,84 @@ function resolveBusinessHoursWindow(operationPolicy, baseDate) {
 
 function hasOperationPolicyConstraints(serviceProfile) {
   const operationPolicy = serviceProfile?.operationPolicy ?? {};
+  const lunchBreakEnabled = resolveLunchBreakWindow(operationPolicy, new Date()).enabled;
   return (
-    operationPolicy?.lunchBreak?.enabled === true ||
+    lunchBreakEnabled ||
     operationPolicy?.businessHours?.enabled === true
   );
+}
+
+function isWithinHalfOpenRange(timestampMs, startMs, endMs) {
+  if (
+    !Number.isFinite(timestampMs) ||
+    !Number.isFinite(startMs) ||
+    !Number.isFinite(endMs)
+  ) {
+    return false;
+  }
+  return timestampMs >= startMs && timestampMs < endMs;
+}
+
+function applyLunchBreakPickupNotBefore({
+  requestForDispatch,
+  serviceProfile,
+  now,
+  travelMinutes
+}) {
+  const operationPolicy = serviceProfile?.operationPolicy ?? {};
+  const baseDate =
+    normalizeDateInput(requestForDispatch?.desiredPickupAt) ??
+    normalizeDateInput(requestForDispatch?.desiredDropoffAt) ??
+    now;
+  let lunchBreakWindow = resolveLunchBreakWindow(operationPolicy, baseDate);
+  if (!lunchBreakWindow.enabled || !lunchBreakWindow.departFromOfficeAtEnd) {
+    return requestForDispatch;
+  }
+
+  const expectedPickupAt = resolveOperationPolicyPickupAt({
+    requestSummary: null,
+    requestForDispatch,
+    travelMinutes,
+    serviceProfile
+  });
+  if (expectedPickupAt) {
+    lunchBreakWindow = resolveLunchBreakWindow(operationPolicy, expectedPickupAt);
+  }
+
+  const startMs = lunchBreakWindow.startAt.getTime();
+  const endMs = lunchBreakWindow.endAt.getTime();
+  const pickupMs = expectedPickupAt?.getTime();
+  const earlyPickupToleranceMinutes = resolveArriveByEarlyPickupToleranceMinutes(serviceProfile);
+  const earlyPickupToleranceMs = earlyPickupToleranceMinutes * 60 * 1000;
+  const shouldDelayPickup =
+    isWithinHalfOpenRange(pickupMs, startMs, endMs) ||
+    (!expectedPickupAt && isWithinHalfOpenRange(now.getTime(), startMs, endMs));
+  const shouldClampEarlyPickupToBreakEnd =
+    Number.isFinite(pickupMs) &&
+    pickupMs >= endMs &&
+    pickupMs - earlyPickupToleranceMs < endMs;
+
+  if (!shouldDelayPickup && !shouldClampEarlyPickupToBreakEnd) {
+    return requestForDispatch;
+  }
+
+  const desiredPickupAt = normalizeDateInput(requestForDispatch?.desiredPickupAt);
+  const pickupNotBeforeAt = normalizeDateInput(requestForDispatch?.pickupNotBeforeAt);
+  const enforcedPickupAt = shouldDelayPickup
+    ? desiredPickupAt && desiredPickupAt.getTime() > endMs
+      ? desiredPickupAt
+      : lunchBreakWindow.endAt
+    : desiredPickupAt;
+  const enforcedPickupNotBeforeAt =
+    pickupNotBeforeAt && pickupNotBeforeAt.getTime() > endMs
+      ? pickupNotBeforeAt
+      : lunchBreakWindow.endAt;
+
+  return {
+    ...requestForDispatch,
+    desiredPickupAt: enforcedPickupAt?.toISOString() ?? requestForDispatch?.desiredPickupAt ?? null,
+    pickupNotBeforeAt: enforcedPickupNotBeforeAt.toISOString()
+  };
 }
 
 function resolveOperationPolicyPickupAt({
@@ -233,6 +432,13 @@ function resolveOperationPolicyPickupAt({
     }
   }
 
+  const pickupNotBeforeAt = normalizeDateInput(requestForDispatch?.pickupNotBeforeAt);
+  if (pickupNotBeforeAt) {
+    if (!policyPickupAt || pickupNotBeforeAt.getTime() > policyPickupAt.getTime()) {
+      policyPickupAt = pickupNotBeforeAt;
+    }
+  }
+
   return policyPickupAt;
 }
 
@@ -271,12 +477,14 @@ function buildOperationPolicyDiagnostics({
   const officeArrivalAt = new Date(
     completionAt.getTime() + safeTravelMinutes(completionPoint, officePoint, travelMinutes) * 60 * 1000
   );
-  const pickupAt = resolveOperationPolicyPickupAt({
+  const plannedPickupAt = normalizeDateInput(requestSummary?.pickupEtaAt);
+  const policyPickupAt = resolveOperationPolicyPickupAt({
     requestSummary,
     requestForDispatch,
     travelMinutes,
     serviceProfile
   });
+  const pickupAt = plannedPickupAt ?? policyPickupAt;
   const policyBaseDate = pickupAt ?? completionAt ?? now;
   const lunchBreakWindow = resolveLunchBreakWindow(operationPolicy, policyBaseDate);
   const businessHoursWindow = resolveBusinessHoursWindow(operationPolicy, policyBaseDate);
@@ -310,13 +518,15 @@ function buildOperationPolicyDiagnostics({
 
   let countermeasure = "運行ポリシーに沿うよう、希望時刻か乗降地点を調整してください。";
   if (violation.type === "RETURN_BEFORE_BREAK") {
-    countermeasure = `昼休憩開始(${formatLocalClock(lunchBreakWindow.startAt)})までに事務所へ戻れるよう、希望時刻か乗降地点を調整してください。`;
+    countermeasure = `昼休憩開始(${formatLocalClock(lunchBreakWindow.startAt, lunchBreakWindow.timeZone)})までに事務所へ戻れるよう、希望時刻か乗降地点を調整してください。`;
   } else if (violation.type === "DEPART_AFTER_BREAK") {
-    countermeasure = `昼休憩終了(${formatLocalClock(lunchBreakWindow.endAt)})に事務所を出発しても乗車時刻に間に合いません。希望時刻か乗車地点を調整してください。`;
+    countermeasure = `昼休憩終了(${formatLocalClock(lunchBreakWindow.endAt, lunchBreakWindow.timeZone)})に事務所を出発しても乗車時刻に間に合いません。希望時刻か乗車地点を調整してください。`;
+  } else if (violation.type === "PICKUP_DURING_BREAK") {
+    countermeasure = `昼休憩時間帯(${formatLocalClock(lunchBreakWindow.startAt, lunchBreakWindow.timeZone)}-${formatLocalClock(lunchBreakWindow.endAt, lunchBreakWindow.timeZone)})の予約は、休憩終了後の時刻で再試算してください。`;
   } else if (violation.type === "DEPART_BEFORE_BUSINESS_HOURS") {
-    countermeasure = `営業時間開始(${formatLocalClock(businessHoursWindow.startAt)})以降の事務所出発で間に合うよう、希望時刻か乗車地点を調整してください。`;
+    countermeasure = `営業時間開始(${formatLocalClock(businessHoursWindow.startAt, businessHoursWindow.timeZone)})以降の事務所出発で間に合うよう、希望時刻か乗車地点を調整してください。`;
   } else if (violation.type === "RETURN_AFTER_BUSINESS_HOURS") {
-    countermeasure = `営業時間終了(${formatLocalClock(businessHoursWindow.endAt)})までに事務所へ戻れるよう、希望時刻か降車地点を調整してください。`;
+    countermeasure = `営業時間終了(${formatLocalClock(businessHoursWindow.endAt, businessHoursWindow.timeZone)})までに事務所へ戻れるよう、希望時刻か降車地点を調整してください。`;
   }
 
   return {
@@ -370,7 +580,7 @@ function evaluateOperationPolicyForPlan({
   travelMinutes
 }) {
   const operationPolicy = serviceProfile?.operationPolicy ?? {};
-  const lunchBreakEnabled = operationPolicy?.lunchBreak?.enabled === true;
+  const lunchBreakEnabled = resolveLunchBreakWindow(operationPolicy, now).enabled;
   const businessHoursEnabled = operationPolicy?.businessHours?.enabled === true;
   if (!lunchBreakEnabled && !businessHoursEnabled) {
     return null;
@@ -403,15 +613,31 @@ function evaluateOperationPolicyForPlan({
   const officeArrivalAt = new Date(
     completionAt.getTime() + safeTravelMinutes(completionPoint, officePoint, travelMinutes) * 60 * 1000
   );
-  const pickupAt = resolveOperationPolicyPickupAt({
+  const plannedPickupAt = normalizeDateInput(requestSummary?.pickupEtaAt);
+  const policyPickupAt = resolveOperationPolicyPickupAt({
     requestSummary,
     requestForDispatch,
     travelMinutes,
     serviceProfile
   });
+  const pickupAt = plannedPickupAt ?? policyPickupAt;
   const policyBaseDate = pickupAt ?? completionAt ?? now;
   const lunchBreakWindow = resolveLunchBreakWindow(operationPolicy, policyBaseDate);
   const businessHoursWindow = resolveBusinessHoursWindow(operationPolicy, policyBaseDate);
+  const pickupAtMs = pickupAt?.getTime();
+  const breakStartMs = lunchBreakWindow.startAt.getTime();
+  const breakEndMs = lunchBreakWindow.endAt.getTime();
+
+  if (
+    lunchBreakWindow.enabled &&
+    isWithinHalfOpenRange(pickupAtMs, breakStartMs, breakEndMs)
+  ) {
+    return {
+      type: "PICKUP_DURING_BREAK",
+      message: `昼休憩時間帯(${formatLocalClock(lunchBreakWindow.startAt, lunchBreakWindow.timeZone)}-${formatLocalClock(lunchBreakWindow.endAt, lunchBreakWindow.timeZone)})の乗車予定となるため、予約を受け付けできません。`,
+      officePoint
+    };
+  }
 
   if (businessHoursWindow.enabled) {
     const officeToPickupMinutes = safeTravelMinutes(
@@ -431,7 +657,7 @@ function evaluateOperationPolicyForPlan({
     ) {
       return {
         type: "DEPART_BEFORE_BUSINESS_HOURS",
-        message: `営業時間開始(${formatLocalClock(businessHoursWindow.startAt)})より前に事務所を出発する必要があるため、予約を受け付けできません。`,
+        message: `営業時間開始(${formatLocalClock(businessHoursWindow.startAt, businessHoursWindow.timeZone)})より前に事務所を出発する必要があるため、予約を受け付けできません。`,
         officePoint
       };
     }
@@ -442,7 +668,7 @@ function evaluateOperationPolicyForPlan({
     ) {
       return {
         type: "RETURN_AFTER_BUSINESS_HOURS",
-        message: `営業時間終了(${formatLocalClock(businessHoursWindow.endAt)})までに事務所へ戻れないため、予約を受け付けできません。`,
+        message: `営業時間終了(${formatLocalClock(businessHoursWindow.endAt, businessHoursWindow.timeZone)})までに事務所へ戻れないため、予約を受け付けできません。`,
         officePoint
       };
     }
@@ -459,7 +685,7 @@ function evaluateOperationPolicyForPlan({
   ) {
     return {
       type: "RETURN_BEFORE_BREAK",
-      message: `昼休憩開始(${formatLocalClock(lunchBreakWindow.startAt)})までに事務所へ戻れないため、予約を受け付けできません。`,
+      message: `昼休憩開始(${formatLocalClock(lunchBreakWindow.startAt, lunchBreakWindow.timeZone)})までに事務所へ戻れないため、予約を受け付けできません。`,
       officePoint
     };
   }
@@ -481,7 +707,7 @@ function evaluateOperationPolicyForPlan({
     if (earliestPickupFromOffice.getTime() > pickupAt.getTime()) {
       return {
         type: "DEPART_AFTER_BREAK",
-        message: `昼休憩終了(${formatLocalClock(lunchBreakWindow.endAt)})に事務所を出発しても乗車時刻に間に合わないため、予約を受け付けできません。`,
+        message: `昼休憩終了(${formatLocalClock(lunchBreakWindow.endAt, lunchBreakWindow.timeZone)})に事務所を出発しても乗車時刻に間に合わないため、予約を受け付けできません。`,
         officePoint
       };
     }
@@ -967,7 +1193,7 @@ function buildCountermeasureCandidates({
   if (rejectionCounts.RESERVATION_WINDOW > 0) {
     pushCandidateSuggestion(
       candidates,
-      "未来予約の時間窓に合わせるため既存便との同時挿入を避けています。予約時刻に近い便として扱えるよう時刻設定を確認してください。"
+      "予約対象日が異なるタスクを同じ便に混在させないよう除外されています。予約日を確認して再試算してください。"
     );
   }
   if (!candidates.length) {
@@ -1179,7 +1405,7 @@ async function evaluateDispatchPlan({
     context
   });
 
-  const requestForDispatch = buildDispatchRequest(rideRequest, resolvedLocations, now);
+  let requestForDispatch = buildDispatchRequest(rideRequest, resolvedLocations, now);
   if (!vehicles.length) {
     return {
       status: "REJECTED",
@@ -1197,6 +1423,14 @@ async function evaluateDispatchPlan({
     context,
     speedKmh: resolveCruiseSpeedKmh(serviceProfile)
   });
+  if (hasOperationPolicyConstraints(serviceProfile)) {
+    requestForDispatch = applyLunchBreakPickupNotBefore({
+      requestForDispatch,
+      serviceProfile,
+      now,
+      travelMinutes: travelEstimator.travelMinutes
+    });
+  }
   let bestPlan = chooseBestPlan({
     requestForDispatch,
     vehicles,
@@ -1446,7 +1680,7 @@ export async function listRideRequestDispatchOptions({
     context
   });
 
-  const requestForDispatch = buildDispatchRequest(rideRequest, resolvedLocations, now);
+  let requestForDispatch = buildDispatchRequest(rideRequest, resolvedLocations, now);
   if (!vehicles.length) {
     return {
       status: "REJECTED",
@@ -1467,8 +1701,17 @@ export async function listRideRequestDispatchOptions({
     context,
     speedKmh: resolveCruiseSpeedKmh(serviceProfile)
   });
+  if (hasOperationPolicyConstraints(serviceProfile)) {
+    requestForDispatch = applyLunchBreakPickupNotBefore({
+      requestForDispatch,
+      serviceProfile,
+      now,
+      travelMinutes: travelEstimator.travelMinutes
+    });
+  }
   const desiredDropoffDate = normalizeDateInput(desiredDropoffAt);
   const options = [];
+  let firstPolicyRejected = null;
 
   for (const vehicle of vehicles) {
     const plan = chooseBestPlan({
@@ -1500,6 +1743,29 @@ export async function listRideRequestDispatchOptions({
     const requestSummary = afterSummary.get(rideRequest.id) ?? {};
     const pickupAt = requestSummary.pickupEtaAt ?? null;
     const dropoffAt = requestSummary.dropoffEtaAt ?? null;
+    if (hasOperationPolicyConstraints(serviceProfile)) {
+      const policyViolation = evaluateOperationPolicyForPlan({
+        serviceProfile,
+        vehicle,
+        route: plan.route ?? [],
+        requestForDispatch,
+        requestSummary,
+        now,
+        travelMinutes: travelEstimator.travelMinutes
+      });
+      if (policyViolation) {
+        if (!firstPolicyRejected) {
+          firstPolicyRejected = {
+            violation: policyViolation,
+            vehicle,
+            route: plan.route ?? [],
+            requestSummary
+          };
+        }
+        continue;
+      }
+    }
+
     const dropoffDeltaMinutes =
       desiredDropoffDate && dropoffAt
         ? roundMinutes((new Date(dropoffAt).getTime() - desiredDropoffDate.getTime()) / (60 * 1000))
@@ -1538,6 +1804,26 @@ export async function listRideRequestDispatchOptions({
     .slice(0, normalizedLimit);
 
   if (!sortedOptions.length) {
+    if (firstPolicyRejected) {
+      return {
+        status: "REJECTED",
+        reason: "NO_FEASIBLE_VEHICLE",
+        resolvedLocations,
+        desiredDropoffAt: desiredDropoffDate?.toISOString() ?? null,
+        options: [],
+        diagnostics: buildOperationPolicyDiagnostics({
+          violation: firstPolicyRejected.violation,
+          serviceProfile,
+          officePoint: firstPolicyRejected.violation.officePoint,
+          vehicle: firstPolicyRejected.vehicle,
+          route: firstPolicyRejected.route,
+          now,
+          requestSummary: firstPolicyRejected.requestSummary,
+          requestForDispatch,
+          travelMinutes: travelEstimator.travelMinutes
+        })
+      };
+    }
     return {
       status: "REJECTED",
       reason: "NO_FEASIBLE_VEHICLE",

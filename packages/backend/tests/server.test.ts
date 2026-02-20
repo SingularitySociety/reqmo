@@ -309,6 +309,199 @@ test("api ride-request options for future reservation date prioritize reservatio
   });
 });
 
+test("api ride-request options suggest post-break pickup when desired time is within lunch break", async () => {
+  const baseProfile = createDefaultServiceProfile();
+  const profile = createDefaultServiceProfile({
+    id: "server_lunch_break_option_profile",
+    dispatchPolicy: {
+      ...baseProfile.dispatchPolicy,
+      maxWaitMinutes: 240
+    },
+    operationPolicy: {
+      office: {
+        name: "本社",
+        point: { lat: 33.0, lng: 132.9 }
+      },
+      idleReturnThresholdMinutes: 40,
+      lunchBreak: {
+        enabled: true,
+        startLocalTime: "11:00",
+        endLocalTime: "12:00",
+        requireReturnToOffice: true,
+        departFromOfficeAtEnd: true
+      }
+    }
+  });
+  const repository = new InMemoryRepository({
+    stops: [
+      { id: "stop_a", name: "Stop A", lat: 33.0, lng: 132.9 },
+      { id: "stop_b", name: "Stop B", lat: 33.01, lng: 132.905 }
+    ],
+    vehicles: [
+      {
+        id: "veh_1",
+        status: "ACTIVE",
+        capacity: 4,
+        onboardCount: 0,
+        currentLocation: { lat: 33.0, lng: 132.9 },
+        route: []
+      }
+    ],
+    serviceProfiles: [profile]
+  });
+  const { server } = createReqmoServer({ repository });
+
+  const desiredDropoffAt = "2026-02-23T11:20:00+09:00";
+  const breakEndAt = new Date("2026-02-23T12:00:00+09:00");
+
+  const response = await invokeServer({
+    server,
+    method: "POST",
+    url: "/api/ride-requests/options",
+    body: {
+      serviceProfileId: profile.id,
+      pickup: { mode: "FIXED_STOP", stopId: "stop_a" },
+      dropoff: { mode: "FIXED_STOP", stopId: "stop_b" },
+      partySize: 1,
+      desiredDropoffAt,
+      optionLimit: 5
+    }
+  });
+
+  assert.equal(response.statusCode, 200);
+  const payload = JSON.parse(response.payload);
+  assert.equal(payload.status, "ASSIGNABLE");
+  assert.equal(Array.isArray(payload.options), true);
+  assert.equal(payload.options.length > 0, true);
+  payload.options.forEach((option) => {
+    const pickupAt = new Date(option.plannedPickupAt);
+    assert.equal(Number.isFinite(pickupAt.getTime()), true);
+    assert.equal(pickupAt.getTime() >= breakEndAt.getTime(), true);
+  });
+});
+
+test("api ride-request options do not apply lunch break when operation policy is missing", async () => {
+  const baseProfile = createDefaultServiceProfile();
+  const profile = createDefaultServiceProfile({
+    id: "server_missing_operation_policy_profile",
+    dispatchPolicy: {
+      ...baseProfile.dispatchPolicy,
+      maxWaitMinutes: 240
+    },
+    operationPolicy: undefined
+  });
+  const repository = new InMemoryRepository({
+    stops: [
+      { id: "stop_a", name: "Stop A", lat: 33.0, lng: 132.9 },
+      { id: "stop_b", name: "Stop B", lat: 33.01, lng: 132.905 }
+    ],
+    vehicles: [
+      {
+        id: "veh_1",
+        status: "ACTIVE",
+        capacity: 4,
+        onboardCount: 0,
+        currentLocation: { lat: 33.0, lng: 132.9 },
+        route: []
+      }
+    ],
+    serviceProfiles: [profile]
+  });
+  const { server } = createReqmoServer({ repository });
+
+  const desiredDropoffAt = "2026-02-23T11:30:00+09:00";
+  const breakEndAt = new Date("2026-02-23T12:00:00+09:00");
+
+  const response = await invokeServer({
+    server,
+    method: "POST",
+    url: "/api/ride-requests/options",
+    body: {
+      serviceProfileId: profile.id,
+      pickup: { mode: "FIXED_STOP", stopId: "stop_a" },
+      dropoff: { mode: "FIXED_STOP", stopId: "stop_b" },
+      partySize: 1,
+      desiredDropoffAt,
+      optionLimit: 5
+    }
+  });
+
+  assert.equal(response.statusCode, 200);
+  const payload = JSON.parse(response.payload);
+  assert.equal(payload.status, "ASSIGNABLE");
+  assert.equal(Array.isArray(payload.options), true);
+  assert.equal(payload.options.length > 0, true);
+  const hasBeforeBreakOption = payload.options.some((option) => {
+    const pickupAt = new Date(option.plannedPickupAt);
+    return Number.isFinite(pickupAt.getTime()) && pickupAt.getTime() < breakEndAt.getTime();
+  });
+  assert.equal(hasBeforeBreakOption, true);
+});
+
+test("api ride-request options reject future reservation when 13:00 office departure cannot reach pickup", async () => {
+  const baseProfile = createDefaultServiceProfile();
+  const profile = createDefaultServiceProfile({
+    id: "server_lunch_break_future_departure_guard",
+    dispatchPolicy: {
+      ...baseProfile.dispatchPolicy,
+      maxWaitMinutes: 240
+    },
+    operationPolicy: {
+      office: {
+        name: "本社",
+        point: { lat: 33.0, lng: 132.9 }
+      },
+      idleReturnThresholdMinutes: 40,
+      lunchBreak: {
+        enabled: true,
+        startLocalTime: "12:00",
+        endLocalTime: "13:00",
+        requireReturnToOffice: false,
+        departFromOfficeAtEnd: true
+      }
+    }
+  });
+  const repository = new InMemoryRepository({
+    stops: [
+      { id: "stop_office", name: "Office", lat: 33.0, lng: 132.9 },
+      { id: "stop_far", name: "Far Pickup", lat: 33.05, lng: 132.9 },
+      { id: "stop_far_drop", name: "Far Dropoff", lat: 33.051, lng: 132.901 }
+    ],
+    vehicles: [
+      {
+        id: "veh_1",
+        status: "ACTIVE",
+        capacity: 4,
+        onboardCount: 0,
+        currentLocation: { lat: 33.0, lng: 132.9 },
+        route: []
+      }
+    ],
+    serviceProfiles: [profile]
+  });
+  const { server } = createReqmoServer({ repository });
+
+  const response = await invokeServer({
+    server,
+    method: "POST",
+    url: "/api/ride-requests/options",
+    body: {
+      serviceProfileId: profile.id,
+      pickup: { mode: "FIXED_STOP", stopId: "stop_far" },
+      dropoff: { mode: "FIXED_STOP", stopId: "stop_far_drop" },
+      partySize: 1,
+      desiredDropoffAt: "2026-02-23T13:05:00+09:00",
+      optionLimit: 5
+    }
+  });
+
+  assert.equal(response.statusCode, 200);
+  const payload = JSON.parse(response.payload);
+  assert.equal(payload.status, "REJECTED");
+  assert.equal(payload.reason, "NO_FEASIBLE_VEHICLE");
+  assert.equal(payload.diagnostics?.details?.type, "DEPART_AFTER_BREAK");
+});
+
 test("api can reset ride requests and clear vehicle routes", async () => {
   const repository = new InMemoryRepository({
     stops: [{ id: "shimanto_stop_1", name: "Shimanto Stop", lat: 32.99, lng: 132.93 }],
