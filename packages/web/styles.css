@@ -306,6 +306,66 @@ html, body, #app {
   display: flex;
   gap: 8px;
   margin-bottom: 10px;
+  align-items: stretch;
+}
+
+.rq-date-picker-trigger-wrap {
+  position: relative;
+}
+
+.rq-date-picker-native-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+  z-index: 2;
+}
+
+.rq-date-picker-trigger {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid var(--rq-border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.96);
+  display: grid;
+  grid-template-columns: 16px 1fr 13px;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  text-align: left;
+  pointer-events: none;
+}
+
+.rq-date-picker-trigger-wrap:hover .rq-date-picker-trigger {
+  border-color: rgba(15, 118, 110, 0.32);
+}
+
+.rq-date-picker-native-input:focus-visible + .rq-date-picker-trigger {
+  outline: 2px solid rgba(15, 118, 110, 0.36);
+  outline-offset: 1px;
+}
+
+.rq-date-picker-trigger-body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.1;
+}
+
+.rq-date-picker-trigger-date {
+  color: #0f172a;
+  font-size: 0.74rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+}
+
+.rq-date-picker-trigger-weekday {
+  color: #64748b;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
 }
 
 .rq-inline-help {
@@ -356,6 +416,32 @@ html, body, #app {
   overflow-y: auto;
 }
 
+.rq-date-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.rq-date-section--compact {
+  gap: 4px;
+}
+
+.rq-date-section-header {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  max-width: 100%;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(15, 118, 110, 0.22);
+  background: rgba(240, 253, 250, 0.9);
+  color: #0f766e;
+  font-size: 0.64rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
 .rq-call-option-item {
   display: flex;
   align-items: flex-start;
@@ -387,9 +473,10 @@ html, body, #app {
 
 .rq-call-option-top {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .rq-call-option-vehicle {
@@ -399,9 +486,10 @@ html, body, #app {
 }
 
 .rq-call-option-pickup {
-  font-size: 0.7rem;
+  font-size: 0.66rem;
   color: var(--rq-green);
   font-weight: 700;
+  margin-left: auto;
 }
 
 .rq-call-option-meta {
@@ -631,7 +719,7 @@ html, body, #app {
 
 .rq-driver-step {
   display: grid;
-  grid-template-columns: 20px 44px 1fr;
+  grid-template-columns: 20px 112px 1fr;
   align-items: center;
   gap: 6px;
   font-size: 0.68rem;
@@ -657,6 +745,7 @@ html, body, #app {
 .rq-step-time {
   font-weight: 800;
   color: var(--rq-ink);
+  font-size: 0.62rem;
   letter-spacing: 0.02em;
 }
 
@@ -844,6 +933,9 @@ html, body, #app {
   z-index: 500;
   white-space: nowrap;
   pointer-events: none;
+  max-width: calc(100% - 40px);
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ===== パネルヘッダー ===== */
@@ -899,6 +991,42 @@ html, body, #app {
   color: var(--rq-green);
   font-size: 0.68rem;
   font-weight: 700;
+}
+
+.rq-panel-date-nav {
+  display: grid;
+  grid-template-columns: 28px 1fr 28px;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px 8px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+  background: linear-gradient(180deg, rgba(241, 245, 249, 0.76), rgba(255, 255, 255, 0.92));
+}
+
+.rq-panel-date-nav-btn {
+  color: #0f766e !important;
+}
+
+.rq-panel-date-nav-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+}
+
+.rq-panel-date-nav-date {
+  font-size: 0.74rem;
+  font-weight: 800;
+  color: #0f172a;
+  line-height: 1.15;
+}
+
+.rq-panel-date-nav-weekday {
+  font-size: 0.62rem;
+  font-weight: 700;
+  color: #64748b;
+  line-height: 1.1;
 }
 
 /* ===== 右パネル: 運行ステップ ===== */
@@ -1039,6 +1167,12 @@ html, body, #app {
   font-weight: 700;
 }
 
+.rq-driver-plan-arrival {
+  display: inline-flex;
+  flex-direction: column;
+  line-height: 1.15;
+}
+
 .rq-driver-plan-empty {
   padding: 6px 2px 2px;
 }
@@ -1173,6 +1307,18 @@ html, body, #app {
 
 .rq-req-meta .v-icon {
   vertical-align: middle;
+}
+
+.rq-req-date-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.rq-req-date-meta-body {
+  display: inline-flex;
+  flex-direction: column;
+  line-height: 1.08;
 }
 
 .rq-party-size {

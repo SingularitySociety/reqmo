@@ -96,8 +96,49 @@ function formatClock(date) {
   return `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
 }
 
+function formatDateInput(date) {
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+}
+
+function formatDateKey(date) {
+  return formatDateInput(date);
+}
+
 function formatDateLabel(date) {
   return `${date.getFullYear()}.${pad2(date.getMonth() + 1)}.${pad2(date.getDate())}`;
+}
+
+const WEEKDAY_LABELS = ["日", "月", "火", "水", "木", "金", "土"];
+
+function parseDateKeyToDate(value) {
+  const dateMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(`${value}`.trim());
+  if (!dateMatch) {
+    return null;
+  }
+  const year = Number(dateMatch[1]);
+  const month = Number(dateMatch[2]);
+  const day = Number(dateMatch[3]);
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) {
+    return null;
+  }
+  const date = new Date(year, month - 1, day, 0, 0, 0, 0);
+  if (
+    date.getFullYear() !== year ||
+    date.getMonth() !== month - 1 ||
+    date.getDate() !== day
+  ) {
+    return null;
+  }
+  return date;
+}
+
+function formatWeekdayLabel(value) {
+  const date = value instanceof Date ? value : parseDateKeyToDate(value);
+  if (!date) {
+    return "";
+  }
+  const weekday = WEEKDAY_LABELS[date.getDay()] ?? "";
+  return weekday ? `${weekday}曜日` : "";
 }
 
 function formatTimeLabel(value) {
@@ -109,6 +150,17 @@ function formatTimeLabel(value) {
     return "--:--";
   }
   return formatClock(date);
+}
+
+function formatDateTimeLabel(value) {
+  if (!value) {
+    return "--:--";
+  }
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "--:--";
+  }
+  return `${formatDateLabel(date)} ${formatClock(date)}`;
 }
 
 function parseTimeValueMs(value) {
@@ -123,7 +175,21 @@ function parseTimeValueMs(value) {
   return timestampMs;
 }
 
-function buildDesiredDropoffAtFromClock(clockText, baseNow = new Date()) {
+function buildDesiredDropoffAtFromDateAndClock(dateText, clockText) {
+  const dateMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(`${dateText}`.trim());
+  if (!dateMatch) {
+    throw new Error("予約日は YYYY-MM-DD 形式で入力してください");
+  }
+  const year = Number(dateMatch[1]);
+  const month = Number(dateMatch[2]);
+  const day = Number(dateMatch[3]);
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) {
+    throw new Error("予約日は YYYY-MM-DD 形式で入力してください");
+  }
+  if (month < 1 || month > 12 || day < 1 || day > 31) {
+    throw new Error("予約日を正しく入力してください");
+  }
+
   const [hourRaw, minuteRaw] = `${clockText}`.split(":");
   const hour = Number(hourRaw);
   const minute = Number(minuteRaw);
@@ -134,17 +200,40 @@ function buildDesiredDropoffAtFromClock(clockText, baseNow = new Date()) {
     throw new Error("希望降車時刻は 00:00 から 23:59 の範囲で入力してください");
   }
 
-  const candidate = new Date(baseNow);
-  candidate.setSeconds(0, 0);
-  candidate.setHours(hour, minute, 0, 0);
-  if (candidate.getTime() < baseNow.getTime() - 5 * 60 * 1000) {
-    candidate.setDate(candidate.getDate() + 1);
+  const candidate = new Date(year, month - 1, day, hour, minute, 0, 0);
+  if (
+    candidate.getFullYear() !== year ||
+    candidate.getMonth() !== month - 1 ||
+    candidate.getDate() !== day
+  ) {
+    throw new Error("予約日を正しく入力してください");
   }
   return candidate.toISOString();
 }
 
 function addMinutes(baseDate, minutes) {
   return new Date(baseDate.getTime() + minutes * 60 * 1000);
+}
+
+function resolvePlannedDateTime({
+  plannedAt = null,
+  etaMinutes = null,
+  fallbackAt = null,
+  now = new Date()
+} = {}) {
+  const plannedTimestamp = parseTimeValueMs(plannedAt);
+  if (plannedTimestamp !== null) {
+    return new Date(plannedTimestamp);
+  }
+  const eta = Number(etaMinutes);
+  if (Number.isFinite(eta)) {
+    return addMinutes(now, Math.max(0, eta));
+  }
+  const fallbackTimestamp = parseTimeValueMs(fallbackAt);
+  if (fallbackTimestamp !== null) {
+    return new Date(fallbackTimestamp);
+  }
+  return new Date(now);
 }
 
 function hasPoint(point) {
@@ -481,6 +570,8 @@ createApp({
     const selectedVehicleRouteStepKey = ref("");
     const leafletMapEl = ref(null);
     const now = ref(new Date());
+    const dispatchDateInputEl = ref(null);
+    const callDateInputEl = ref(null);
 
     let nowTicker = null;
     let realtimeTicker = null;
@@ -512,6 +603,7 @@ createApp({
       passengerName: "",
       passengerPhone: "",
       partySize: 1,
+      desiredDate: formatDateInput(new Date()),
       desiredTime: formatClock(new Date())
     });
 
@@ -520,6 +612,7 @@ createApp({
       pickupStopId: "",
       dropoffStopId: "",
       partySize: 1,
+      desiredDate: formatDateInput(new Date()),
       desiredTime: formatClock(new Date())
     });
     const callRideOptions = ref([]);
@@ -634,6 +727,34 @@ createApp({
 
     const currentDateLabel = computed(() => formatDateLabel(now.value));
     const currentClockLabel = computed(() => formatClock(now.value));
+    const formDesiredDateLabel = computed(() => {
+      const date = parseDateKeyToDate(form.value.desiredDate);
+      return date ? formatDateLabel(date) : "日付を選択";
+    });
+    const formDesiredDateWeekdayLabel = computed(() =>
+      formatWeekdayLabel(form.value.desiredDate) || "カレンダーから選択"
+    );
+    const callDesiredDateLabel = computed(() => {
+      const date = parseDateKeyToDate(callForm.value.desiredDate);
+      return date ? formatDateLabel(date) : "日付を選択";
+    });
+    const callDesiredDateWeekdayLabel = computed(() =>
+      formatWeekdayLabel(callForm.value.desiredDate) || "カレンダーから選択"
+    );
+
+    function openNativeDatePicker(target) {
+      const inputEl =
+        target === "dispatch" ? dispatchDateInputEl.value : callDateInputEl.value;
+      if (!(inputEl instanceof HTMLInputElement)) {
+        return;
+      }
+      if (typeof inputEl.showPicker === "function") {
+        inputEl.showPicker();
+        return;
+      }
+      inputEl.focus();
+      inputEl.click();
+    }
     const mapSelectionField = ref("");
     const mapSelectionVehicleIndex = ref(null);
     const isMapPicking = computed(() => Boolean(mapSelectionField.value));
@@ -1115,21 +1236,38 @@ createApp({
       { deep: true, immediate: true }
     );
 
-    const requestRows = computed(() =>
-      [...requests.value]
+    const requestRows = computed(() => {
+      const nowValue = now.value;
+      return [...requests.value]
         .sort((left, right) => {
-          const leftPickupEta = Number(left.assignment?.etaPickupMinutes);
-          const rightPickupEta = Number(right.assignment?.etaPickupMinutes);
-          const leftPickupSort = Number.isFinite(leftPickupEta) ? Math.max(0, leftPickupEta) : Number.POSITIVE_INFINITY;
-          const rightPickupSort = Number.isFinite(rightPickupEta) ? Math.max(0, rightPickupEta) : Number.POSITIVE_INFINITY;
+          const leftPickupSort = resolvePlannedDateTime({
+            plannedAt: left.assignment?.plannedPickupAt,
+            etaMinutes: left.assignment?.etaPickupMinutes,
+            fallbackAt: left.createdAt,
+            now: nowValue
+          }).getTime();
+          const rightPickupSort = resolvePlannedDateTime({
+            plannedAt: right.assignment?.plannedPickupAt,
+            etaMinutes: right.assignment?.etaPickupMinutes,
+            fallbackAt: right.createdAt,
+            now: nowValue
+          }).getTime();
           if (leftPickupSort !== rightPickupSort) {
             return leftPickupSort - rightPickupSort;
           }
 
-          const leftDropoffEta = Number(left.assignment?.etaDropoffMinutes);
-          const rightDropoffEta = Number(right.assignment?.etaDropoffMinutes);
-          const leftDropoffSort = Number.isFinite(leftDropoffEta) ? Math.max(0, leftDropoffEta) : Number.POSITIVE_INFINITY;
-          const rightDropoffSort = Number.isFinite(rightDropoffEta) ? Math.max(0, rightDropoffEta) : Number.POSITIVE_INFINITY;
+          const leftDropoffSort = resolvePlannedDateTime({
+            plannedAt: left.assignment?.plannedDropoffAt,
+            etaMinutes: left.assignment?.etaDropoffMinutes,
+            fallbackAt: left.createdAt,
+            now: nowValue
+          }).getTime();
+          const rightDropoffSort = resolvePlannedDateTime({
+            plannedAt: right.assignment?.plannedDropoffAt,
+            etaMinutes: right.assignment?.etaDropoffMinutes,
+            fallbackAt: right.createdAt,
+            now: nowValue
+          }).getTime();
           if (leftDropoffSort !== rightDropoffSort) {
             return leftDropoffSort - rightDropoffSort;
           }
@@ -1184,10 +1322,22 @@ createApp({
             nextTaskType === "PICKUP" &&
             Number.isFinite(nextTaskTravelMinutes) &&
             nextTaskTravelMinutes >= idleReturnThresholdMinutes;
-          const plannedPickup = etaMinutes !== null ? addMinutes(now.value, etaMinutes) : new Date(request.createdAt ?? now.value);
-          const plannedDropoff = etaDropoffMinutes !== null
-            ? addMinutes(now.value, etaDropoffMinutes)
-            : new Date(request.createdAt ?? now.value);
+          const plannedPickup = resolvePlannedDateTime({
+            plannedAt: request.assignment?.plannedPickupAt,
+            etaMinutes,
+            fallbackAt: request.createdAt,
+            now: nowValue
+          });
+          const plannedDropoff = resolvePlannedDateTime({
+            plannedAt: request.assignment?.plannedDropoffAt,
+            etaMinutes: etaDropoffMinutes,
+            fallbackAt: request.createdAt,
+            now: nowValue
+          });
+          const pickupDateKey = formatDateKey(plannedPickup);
+          const dropoffDateKey = formatDateKey(plannedDropoff);
+          const pickupDateLabel = formatDateLabel(plannedPickup);
+          const dropoffDateLabel = formatDateLabel(plannedDropoff);
           const passengerName =
             typeof request.passenger?.name === "string" ? request.passenger.name.trim() : "";
           const passengerPhone =
@@ -1221,9 +1371,18 @@ createApp({
             nextTaskLabel,
             shouldReturnOffice,
             idleReturnThresholdMinutes,
+            pickupDateKey,
+            pickupDateLabel,
+            dropoffDateKey,
+            dropoffDateLabel,
             displayTime: formatClock(plannedPickup),
-            dropoffDisplayTime: formatClock(plannedDropoff),
-            createdTime: formatTimeLabel(request.createdAt),
+            displayDateTime: formatDateTimeLabel(plannedPickup),
+            dropoffDisplayTime:
+              pickupDateKey === dropoffDateKey
+                ? formatClock(plannedDropoff)
+                : `${dropoffDateLabel} ${formatClock(plannedDropoff)}`,
+            dropoffDateTime: formatDateTimeLabel(plannedDropoff),
+            createdTime: formatDateTimeLabel(request.createdAt),
             pickupLabel: resolveLocationLabel(request.pickup),
             dropoffLabel: resolveLocationLabel(request.dropoff),
             pickupPoint,
@@ -1233,8 +1392,27 @@ createApp({
             passengerName,
             passengerPhone
           };
-        })
-    );
+        });
+    });
+
+    const requestDateSections = computed(() => {
+      const sectionIndex = new Map();
+      const sections = [];
+      requestRows.value.forEach((row) => {
+        const key = row.pickupDateKey || "unknown";
+        if (!sectionIndex.has(key)) {
+          const nextSection = {
+            dateKey: key,
+            dateLabel: row.pickupDateLabel || "日付未設定",
+            rows: []
+          };
+          sectionIndex.set(key, nextSection);
+          sections.push(nextSection);
+        }
+        sectionIndex.get(key).rows.push(row);
+      });
+      return sections;
+    });
 
     const selectedRequest = computed(() =>
       requestRows.value.find((request) => request.id === selectedRequestId.value) ?? requestRows.value[0] ?? null
@@ -1360,6 +1538,7 @@ createApp({
           const rawWaitMinutes = (nextArrivalMs - arrivalMs) / (60 * 1000) - serviceMinutes;
           waitLabel = `${Math.max(0, Math.round(rawWaitMinutes))}分`;
         }
+        const arrivalDate = Number.isFinite(arrivalMs) ? new Date(arrivalMs) : null;
 
         steps.push({
           key: `${task.requestId ?? "task"}-${taskType}-${index}`,
@@ -1378,6 +1557,9 @@ createApp({
           },
           moveDistanceLabel,
           moveMinutesLabel,
+          arrivalDateKey: arrivalDate ? formatDateKey(arrivalDate) : "",
+          arrivalDateLabel: arrivalDate ? formatDateLabel(arrivalDate) : "日付未設定",
+          arrivalDateTime: arrivalDate ? formatDateTimeLabel(arrivalDate) : "--:--",
           arrivalLabel: arrivalMs === null ? "--:--" : formatClock(new Date(arrivalMs)),
           waitLabel,
           onboardAfter: Math.max(0, onboard)
@@ -1401,19 +1583,133 @@ createApp({
     const selectedVehicleRouteSteps = computed(
       () => selectedVehicleRoutePlan.value.steps
     );
+    const selectedVehicleRouteDateSections = computed(() => {
+      const sectionIndex = new Map();
+      const sections = [];
+      selectedVehicleRouteSteps.value.forEach((step) => {
+        const key = step.arrivalDateKey || "unknown";
+        if (!sectionIndex.has(key)) {
+          const nextSection = {
+            dateKey: key,
+            dateLabel: step.arrivalDateLabel || "日付未設定",
+            steps: []
+          };
+          sectionIndex.set(key, nextSection);
+          sections.push(nextSection);
+        }
+        sectionIndex.get(key).steps.push(step);
+      });
+      return sections;
+    });
+    const selectedPanelDateKey = ref("");
+    const panelAvailableDateKeys = computed(() => {
+      const keys = new Set();
+      requestDateSections.value.forEach((section) => {
+        if (section?.dateKey) {
+          keys.add(section.dateKey);
+        }
+      });
+      selectedVehicleRouteDateSections.value.forEach((section) => {
+        if (section?.dateKey) {
+          keys.add(section.dateKey);
+        }
+      });
+      return [...keys].sort((left, right) => left.localeCompare(right));
+    });
+    const activePanelDateKey = computed(() => {
+      const keys = panelAvailableDateKeys.value;
+      if (!keys.length) {
+        return "";
+      }
+      if (keys.includes(selectedPanelDateKey.value)) {
+        return selectedPanelDateKey.value;
+      }
+      return keys[0];
+    });
+    const activePanelDate = computed(() => parseDateKeyToDate(activePanelDateKey.value));
+    const activePanelDateLabel = computed(() =>
+      activePanelDate.value ? formatDateLabel(activePanelDate.value) : "日付なし"
+    );
+    const activePanelDateWeekdayLabel = computed(() =>
+      activePanelDate.value ? formatWeekdayLabel(activePanelDate.value) : ""
+    );
+    const activePanelDateIndex = computed(() =>
+      panelAvailableDateKeys.value.findIndex((dateKey) => dateKey === activePanelDateKey.value)
+    );
+    const hasPreviousPanelDate = computed(() => activePanelDateIndex.value > 0);
+    const hasNextPanelDate = computed(
+      () =>
+        activePanelDateIndex.value >= 0 &&
+        activePanelDateIndex.value < panelAvailableDateKeys.value.length - 1
+    );
+    const visibleRequestDateSections = computed(() => {
+      const key = activePanelDateKey.value;
+      if (!key) {
+        return [];
+      }
+      return requestDateSections.value.filter((section) => section.dateKey === key);
+    });
+    const visibleVehicleRouteDateSections = computed(() => {
+      const key = activePanelDateKey.value;
+      if (!key) {
+        return [];
+      }
+      return selectedVehicleRouteDateSections.value.filter((section) => section.dateKey === key);
+    });
+    const visibleVehicleRouteSteps = computed(() =>
+      visibleVehicleRouteDateSections.value.flatMap((section) =>
+        Array.isArray(section?.steps) ? section.steps : []
+      )
+    );
+
+    function movePanelDate(delta) {
+      if (!Number.isInteger(delta) || delta === 0) {
+        return;
+      }
+      const keys = panelAvailableDateKeys.value;
+      if (!keys.length) {
+        return;
+      }
+      const index = activePanelDateIndex.value >= 0 ? activePanelDateIndex.value : 0;
+      const nextIndex = Math.max(0, Math.min(keys.length - 1, index + delta));
+      selectedPanelDateKey.value = keys[nextIndex];
+    }
+
+    watch(
+      panelAvailableDateKeys,
+      (keys) => {
+        if (!keys.length) {
+          selectedPanelDateKey.value = "";
+          return;
+        }
+        if (keys.includes(selectedPanelDateKey.value)) {
+          return;
+        }
+        const todayKey = formatDateKey(now.value);
+        selectedPanelDateKey.value = keys.includes(todayKey) ? todayKey : keys[0];
+      },
+      { immediate: true }
+    );
     const selectedVehicleRouteEmptyLabel = computed(
       () => selectedVehicleRoutePlan.value.emptyLabel ?? "乗降予定なし"
     );
-    const selectedVehicleRoutePoints = computed(() =>
-      normalizeRoutePoints(selectedVehicleRoutePlan.value.routePoints)
-    );
+    const selectedVehicleRoutePoints = computed(() => {
+      const currentPoint = selectedVehicleRoutePlan.value.routePoints?.[0];
+      const points = hasPoint(currentPoint) ? [currentPoint] : [];
+      visibleVehicleRouteSteps.value.forEach((step) => {
+        if (hasPoint(step.point)) {
+          points.push(step.point);
+        }
+      });
+      return normalizeRoutePoints(points);
+    });
     const selectedVehicleRouteStep = computed(() =>
-      selectedVehicleRouteSteps.value.find((step) => step.key === selectedVehicleRouteStepKey.value) ?? null
+      visibleVehicleRouteSteps.value.find((step) => step.key === selectedVehicleRouteStepKey.value) ?? null
     );
     const operationMapChipLabel = computed(() => {
       const vehicleLabel = selectedVehicleRouteVehicleLabel.value || "対象車両";
       if (selectedVehicleRouteStep.value) {
-        return `${vehicleLabel} / ${selectedVehicleRouteStep.value.sequence}. ${selectedVehicleRouteStep.value.typeLabel} ${selectedVehicleRouteStep.value.locationLabel}`;
+        return `${vehicleLabel} / ${selectedVehicleRouteStep.value.arrivalDateTime} / ${selectedVehicleRouteStep.value.sequence}. ${selectedVehicleRouteStep.value.typeLabel} ${selectedVehicleRouteStep.value.locationLabel}`;
       }
       return `${vehicleLabel} / 運行ステップ`;
     });
@@ -1446,6 +1742,19 @@ createApp({
       },
       { immediate: true }
     );
+    watch(
+      visibleVehicleRouteSteps,
+      (steps) => {
+        if (!steps.length) {
+          selectedVehicleRouteStepKey.value = "";
+          return;
+        }
+        if (!steps.some((step) => step.key === selectedVehicleRouteStepKey.value)) {
+          selectedVehicleRouteStepKey.value = "";
+        }
+      },
+      { immediate: true }
+    );
 
     function selectRequest(requestId) {
       selectedRequestId.value = requestId;
@@ -1455,7 +1764,7 @@ createApp({
     }
 
     function selectVehicleRouteStep(stepKey) {
-      if (!stepKey || !selectedVehicleRouteSteps.value.some((step) => step.key === stepKey)) {
+      if (!stepKey || !visibleVehicleRouteSteps.value.some((step) => step.key === stepKey)) {
         return;
       }
       mapDisplayMode.value = "operation";
@@ -1484,6 +1793,50 @@ createApp({
     const selectedDispatchOption = computed(() =>
       dispatchOptions.value.find((option) => option.optionId === selectedDispatchOptionId.value) ?? null
     );
+    const dispatchOptionDateSections = computed(() => {
+      const sectionIndex = new Map();
+      const sections = [];
+      dispatchOptions.value.forEach((option) => {
+        const plannedDate =
+          parseTimeValueMs(option?.plannedPickupAt ?? null) ??
+          parseTimeValueMs(option?.plannedDropoffAt ?? null);
+        const plannedAt = plannedDate === null ? null : new Date(plannedDate);
+        const key = plannedAt ? formatDateKey(plannedAt) : "unknown";
+        if (!sectionIndex.has(key)) {
+          const nextSection = {
+            dateKey: key,
+            dateLabel: plannedAt ? formatDateLabel(plannedAt) : "日付未設定",
+            options: []
+          };
+          sectionIndex.set(key, nextSection);
+          sections.push(nextSection);
+        }
+        sectionIndex.get(key).options.push(option);
+      });
+      return sections;
+    });
+    const callRideOptionDateSections = computed(() => {
+      const sectionIndex = new Map();
+      const sections = [];
+      callRideOptions.value.forEach((option) => {
+        const plannedDate =
+          parseTimeValueMs(option?.plannedPickupAt ?? null) ??
+          parseTimeValueMs(option?.plannedDropoffAt ?? null);
+        const plannedAt = plannedDate === null ? null : new Date(plannedDate);
+        const key = plannedAt ? formatDateKey(plannedAt) : "unknown";
+        if (!sectionIndex.has(key)) {
+          const nextSection = {
+            dateKey: key,
+            dateLabel: plannedAt ? formatDateLabel(plannedAt) : "日付未設定",
+            options: []
+          };
+          sectionIndex.set(key, nextSection);
+          sections.push(nextSection);
+        }
+        sectionIndex.get(key).options.push(option);
+      });
+      return sections;
+    });
     const selectedDispatchStrategyLabel = computed(() => {
       const label =
         typeof selectedDispatchOption.value?.strategyLabel === "string"
@@ -1498,10 +1851,10 @@ createApp({
       resolveVehicleDisplayName(previewSimulation.value?.vehicleId ?? "-", { includeId: false })
     );
     const previewPickupClock = computed(
-      () => formatTimeLabel(previewSimulation.value?.plannedPickupAt)
+      () => formatDateTimeLabel(previewSimulation.value?.plannedPickupAt)
     );
     const previewDropoffClock = computed(
-      () => formatTimeLabel(previewSimulation.value?.plannedDropoffAt)
+      () => formatDateTimeLabel(previewSimulation.value?.plannedDropoffAt)
     );
     const previewDropoffSuggestion = computed(() => {
       const suggestion = previewSimulation.value?.desiredDropoffSuggestion;
@@ -2335,10 +2688,13 @@ createApp({
         selectedVehicleRoutePlan.value?.vehicleId
           ? vehicleIndex.value.get(selectedVehicleRoutePlan.value.vehicleId) ?? null
           : null;
+      const selectedRouteVehicleId = selectedRouteVehicle?.id ?? "";
       const isRequestRouteMode =
         mapDisplayMode.value === "request" && requestRoutePoints.length > 1;
       const selectedRoutePoints = isRequestRouteMode ? requestRoutePoints : operationRoutePoints;
-      const selectedStepRouteIndex = Number(selectedStep?.routeIndex);
+      const selectedStepRouteIndex = selectedStep
+        ? visibleVehicleRouteSteps.value.findIndex((step) => step.key === selectedStep.key)
+        : -1;
       const selectedStepPointIndex =
         Number.isInteger(selectedStepRouteIndex) && selectedStepRouteIndex >= 0
           ? selectedStepRouteIndex + 1
@@ -2449,13 +2805,16 @@ createApp({
           );
         vehicleMarker.addTo(mapLayers.vehicles);
 
-        const routeLatLngs = [vehicle.currentLocation, ...(vehicle.route ?? []).map((task) => task.point)].filter(hasPoint);
+        const isSelectedRouteVehicle = vehicle.id === selectedRouteVehicleId;
+        const routeLatLngs = isSelectedRouteVehicle
+          ? operationRoutePoints
+          : [vehicle.currentLocation, ...(vehicle.route ?? []).map((task) => task.point)].filter(hasPoint);
         if (routeLatLngs.length > 1) {
           drawRoutePolyline({
             leaflet,
             layer: mapLayers.vehicleRoutes,
             points: routeLatLngs,
-            cacheKey: buildVehicleRouteCacheKey(vehicle),
+            cacheKey: isSelectedRouteVehicle ? "" : buildVehicleRouteCacheKey(vehicle),
             keepCurrentPointOnCachedRoute: true,
             style: {
               color: vehicleColor,
@@ -2542,9 +2901,6 @@ createApp({
           ...(isRequestRouteMode
             ? {}
             : {
-                cacheKey: selectedRouteVehicle
-                  ? buildVehicleRouteCacheKey(selectedRouteVehicle)
-                  : "",
                 keepCurrentPointOnCachedRoute: true
               }),
           style: {
@@ -2589,7 +2945,7 @@ createApp({
             .addTo(mapLayers.focus);
         }
       } else {
-        selectedVehicleRouteSteps.value.forEach((step) => {
+        visibleVehicleRouteSteps.value.forEach((step) => {
           if (!hasPoint(step.point)) {
             return;
           }
@@ -2743,7 +3099,10 @@ createApp({
     function buildDispatchPayload() {
       const passengerName = form.value.passengerName.trim();
       const passengerPhone = form.value.passengerPhone.trim();
-      const desiredDropoffAt = buildDesiredDropoffAtFromClock(form.value.desiredTime, now.value);
+      const desiredDropoffAt = buildDesiredDropoffAtFromDateAndClock(
+        form.value.desiredDate,
+        form.value.desiredTime
+      );
       return {
         pickup: buildLocation(
           form.value.pickupMode,
@@ -2972,7 +3331,10 @@ createApp({
       }
 
       const partySize = Math.max(1, Math.trunc(Number(callForm.value.partySize) || 1));
-      const desiredDropoffAt = buildDesiredDropoffAtFromClock(callForm.value.desiredTime, now.value);
+      const desiredDropoffAt = buildDesiredDropoffAtFromDateAndClock(
+        callForm.value.desiredDate,
+        callForm.value.desiredTime
+      );
 
       return {
         callerRaw: callForm.value.callerRaw,
@@ -3205,6 +3567,9 @@ createApp({
       },
       { deep: true }
     );
+    watch(activePanelDateKey, () => {
+      refreshLeafletMap({ focusSelected: mapDisplayMode.value === "operation" });
+    });
 
     watch(
       () => form.value.pickupMode,
@@ -3283,10 +3648,19 @@ createApp({
       serviceProfile,
       form,
       callForm,
+      dispatchDateInputEl,
+      callDateInputEl,
+      formDesiredDateLabel,
+      formDesiredDateWeekdayLabel,
+      callDesiredDateLabel,
+      callDesiredDateWeekdayLabel,
+      openNativeDatePicker,
       dispatchOptions,
+      dispatchOptionDateSections,
       selectedDispatchOptionId,
       selectedDispatchStrategyLabel,
       callRideOptions,
+      callRideOptionDateSections,
       selectedCallOptionId,
       callDesiredDropoffAt,
       locationTitleState,
@@ -3328,6 +3702,7 @@ createApp({
       currentDateLabel,
       currentClockLabel,
       requestRows,
+      requestDateSections,
       selectedRequestId,
       selectedRequest,
       mapDisplayMode,
@@ -3335,10 +3710,19 @@ createApp({
       operationMapChipLabel,
       selectedVehicleRouteVehicleLabel,
       selectedVehicleRouteSteps,
+      selectedVehicleRouteDateSections,
+      visibleVehicleRouteDateSections,
       selectedVehicleRouteEmptyLabel,
+      activePanelDateKey,
+      activePanelDateLabel,
+      activePanelDateWeekdayLabel,
+      hasPreviousPanelDate,
+      hasNextPanelDate,
+      visibleRequestDateSections,
       statusLabel,
       selectRequest,
       selectVehicleRouteStep,
+      movePanelDate,
       canCancelRequest,
       leafletMapEl,
       hasStopData,
@@ -3355,6 +3739,7 @@ createApp({
       closeResetRequestsDialog,
       resetRideRequests,
       formatTimeLabel,
+      formatDateTimeLabel,
       formatSignedMinutes,
       previewReasonLabel,
       previewRejectionCodeLabel,
@@ -3677,32 +4062,39 @@ createApp({
           <div v-if="dispatchOptions.length" class="rq-form-section rq-call-options-panel mb-2">
             <div class="rq-preview-subtitle">予約候補（選択）</div>
             <div class="rq-call-options-list">
-              <label
-                v-for="option in dispatchOptions"
-                :key="option.optionId"
-                class="rq-call-option-item"
-                :class="{ 'is-selected': selectedDispatchOptionId === option.optionId }"
+              <div
+                v-for="section in dispatchOptionDateSections"
+                :key="'dispatch-option-date-' + section.dateKey"
+                class="rq-date-section"
               >
-                <input
-                  type="radio"
-                  name="dispatch-option"
-                  :value="option.optionId"
-                  v-model="selectedDispatchOptionId"
-                />
-                <div class="rq-call-option-body">
-                  <div class="rq-call-option-top">
-                    <span class="rq-call-option-vehicle">{{ option.strategyLabel }} / {{ resolveVehicleDisplayName(option.vehicleId) }}</span>
-                    <span class="rq-call-option-pickup">乗車 {{ formatTimeLabel(option.plannedPickupAt) }}</span>
+                <div class="rq-date-section-header">{{ section.dateLabel }}</div>
+                <label
+                  v-for="option in section.options"
+                  :key="option.optionId"
+                  class="rq-call-option-item"
+                  :class="{ 'is-selected': selectedDispatchOptionId === option.optionId }"
+                >
+                  <input
+                    type="radio"
+                    name="dispatch-option"
+                    :value="option.optionId"
+                    v-model="selectedDispatchOptionId"
+                  />
+                  <div class="rq-call-option-body">
+                    <div class="rq-call-option-top">
+                      <span class="rq-call-option-vehicle">{{ option.strategyLabel }} / {{ resolveVehicleDisplayName(option.vehicleId) }}</span>
+                      <span class="rq-call-option-pickup">乗車 {{ formatDateTimeLabel(option.plannedPickupAt) }}</span>
+                    </div>
+                    <div class="rq-call-option-meta">
+                      <span>降車 {{ formatDateTimeLabel(option.plannedDropoffAt) }}</span>
+                      <span v-if="option.desiredDropoffDeltaMinutes !== null">
+                        希望降車との差 {{ formatSignedMinutes(option.desiredDropoffDeltaMinutes) }}
+                      </span>
+                      <span v-else>{{ option.strategyDescription || '最短案内' }}</span>
+                    </div>
                   </div>
-                  <div class="rq-call-option-meta">
-                    <span>降車 {{ formatTimeLabel(option.plannedDropoffAt) }}</span>
-                    <span v-if="option.desiredDropoffDeltaMinutes !== null">
-                      希望降車との差 {{ formatSignedMinutes(option.desiredDropoffDeltaMinutes) }}
-                    </span>
-                    <span v-else>{{ option.strategyDescription || '最短案内' }}</span>
-                  </div>
-                </div>
-              </label>
+                </label>
+              </div>
             </div>
           </div>
 
@@ -3716,11 +4108,11 @@ createApp({
               <span class="rq-preview-kpi-value">{{ previewVehicleLabel }}</span>
             </div>
             <div class="rq-preview-kpi">
-              <span class="rq-preview-kpi-label">乗車予定</span>
+              <span class="rq-preview-kpi-label">乗車予定日時</span>
               <span class="rq-preview-kpi-value">{{ previewPickupClock }}</span>
             </div>
             <div class="rq-preview-kpi">
-              <span class="rq-preview-kpi-label">降車予定</span>
+              <span class="rq-preview-kpi-label">降車予定日時</span>
               <span class="rq-preview-kpi-value">{{ previewDropoffClock }}</span>
             </div>
           </div>
@@ -3730,8 +4122,8 @@ createApp({
               {{ previewDropoffSuggestion.message }}
             </template>
             <template v-else>
-              希望降車 {{ formatTimeLabel(previewDropoffSuggestion.requestedDropoffAt) }} に対して、
-              最短の受付可能時刻は {{ formatTimeLabel(previewDropoffSuggestion.suggestedDropoffAt) }} です。
+              希望降車 {{ formatDateTimeLabel(previewDropoffSuggestion.requestedDropoffAt) }} に対して、
+              最短の受付可能時刻は {{ formatDateTimeLabel(previewDropoffSuggestion.suggestedDropoffAt) }} です。
             </template>
             OK で提案時刻に自動調整して登録します。
           </div>
@@ -3752,8 +4144,8 @@ createApp({
                     </v-chip>
                   </div>
                   <div class="rq-impact-times">
-                    <span>乗車 {{ formatTimeLabel(impact.pickupBeforeAt) }} → {{ formatTimeLabel(impact.pickupAfterAt) }}</span>
-                    <span>降車 {{ formatTimeLabel(impact.dropoffBeforeAt) }} → {{ formatTimeLabel(impact.dropoffAfterAt) }}</span>
+                    <span>乗車 {{ formatDateTimeLabel(impact.pickupBeforeAt) }} → {{ formatDateTimeLabel(impact.pickupAfterAt) }}</span>
+                    <span>降車 {{ formatDateTimeLabel(impact.dropoffBeforeAt) }} → {{ formatDateTimeLabel(impact.dropoffAfterAt) }}</span>
                   </div>
                 </div>
               </div>
@@ -3765,7 +4157,7 @@ createApp({
               <div class="rq-driver-steps">
                 <div v-for="step in previewSimulation.routeAfter" :key="step.sequence + '-' + step.requestId + '-' + step.type" class="rq-driver-step">
                   <span class="rq-step-index">{{ step.sequence }}</span>
-                  <span class="rq-step-time">{{ formatTimeLabel(step.etaAt) }}</span>
+                  <span class="rq-step-time">{{ formatDateTimeLabel(step.etaAt) }}</span>
                   <span class="rq-step-label">{{ step.type === 'PICKUP' ? '乗車' : '降車' }}: {{ step.locationLabel }}</span>
                 </div>
               </div>
@@ -4025,6 +4417,31 @@ createApp({
           </div>
         </div>
 
+        <div class="rq-form-section">
+          <div class="rq-form-label">予約日</div>
+          <div class="rq-date-picker-trigger-wrap" @click="openNativeDatePicker('dispatch')">
+            <input
+              ref="dispatchDateInputEl"
+              type="date"
+              v-model="form.desiredDate"
+              class="rq-date-picker-native-input"
+              aria-label="予約日を選択"
+            />
+            <button
+              type="button"
+              class="rq-date-picker-trigger"
+              tabindex="-1"
+              aria-hidden="true"
+            >
+                <v-icon size="14" color="#0f766e">mdi-calendar-month-outline</v-icon>
+                <span class="rq-date-picker-trigger-body">
+                  <span class="rq-date-picker-trigger-date">{{ formDesiredDateLabel }}</span>
+                  <span class="rq-date-picker-trigger-weekday">{{ formDesiredDateWeekdayLabel }}</span>
+                </span>
+                <v-icon size="13" color="#64748b">mdi-chevron-down</v-icon>
+            </button>
+          </div>
+        </div>
         <div class="rq-form-row">
           <div class="rq-form-section" style="flex:1">
             <div class="rq-form-label">人数</div>
@@ -4076,6 +4493,31 @@ createApp({
         <v-btn color="secondary" block variant="tonal" prepend-icon="mdi-phone-incoming" size="small" density="comfortable" @click="simulateInboundCall" class="mb-3 rq-action-btn">
           着信イベント送信
         </v-btn>
+        <div class="rq-form-section">
+          <div class="rq-form-label">予約日</div>
+          <div class="rq-date-picker-trigger-wrap" @click="openNativeDatePicker('calls')">
+            <input
+              ref="callDateInputEl"
+              type="date"
+              v-model="callForm.desiredDate"
+              class="rq-date-picker-native-input"
+              aria-label="電話予約日を選択"
+            />
+            <button
+              type="button"
+              class="rq-date-picker-trigger"
+              tabindex="-1"
+              aria-hidden="true"
+            >
+                <v-icon size="14" color="#0f766e">mdi-calendar-month-outline</v-icon>
+                <span class="rq-date-picker-trigger-body">
+                  <span class="rq-date-picker-trigger-date">{{ callDesiredDateLabel }}</span>
+                  <span class="rq-date-picker-trigger-weekday">{{ callDesiredDateWeekdayLabel }}</span>
+                </span>
+                <v-icon size="13" color="#64748b">mdi-chevron-down</v-icon>
+            </button>
+          </div>
+        </div>
         <div class="rq-form-row">
           <div class="rq-form-section" style="flex:1">
             <div class="rq-form-label">人数</div>
@@ -4103,36 +4545,43 @@ createApp({
         </v-btn>
         <div class="rq-form-section rq-call-options-panel">
           <div class="rq-form-label">
-            <v-icon size="14" color="#0f766e">mdi-bus-clock</v-icon>オペレータ案内候補（乗車時刻）
+            <v-icon size="14" color="#0f766e">mdi-bus-clock</v-icon>オペレータ案内候補（乗車日時）
           </div>
-          <div v-if="callRideOptions.length" class="rq-call-options-list">
-            <label
-              v-for="option in callRideOptions"
-              :key="option.optionId"
-              class="rq-call-option-item"
-              :class="{ 'is-selected': selectedCallOptionId === option.optionId }"
+          <div v-if="callRideOptionDateSections.length" class="rq-call-options-list">
+            <div
+              v-for="section in callRideOptionDateSections"
+              :key="'call-option-date-' + section.dateKey"
+              class="rq-date-section"
             >
-              <input
-                type="radio"
-                name="phone-ride-option"
-                :value="option.optionId"
-                v-model="selectedCallOptionId"
-              />
+              <div class="rq-date-section-header">{{ section.dateLabel }}</div>
+              <label
+                v-for="option in section.options"
+                :key="option.optionId"
+                class="rq-call-option-item"
+                :class="{ 'is-selected': selectedCallOptionId === option.optionId }"
+              >
+                <input
+                  type="radio"
+                  name="phone-ride-option"
+                  :value="option.optionId"
+                  v-model="selectedCallOptionId"
+                />
                 <div class="rq-call-option-body">
                   <div class="rq-call-option-top">
                     <span class="rq-call-option-vehicle">{{ resolveVehicleDisplayName(option.vehicleId) }}</span>
-                    <span class="rq-call-option-pickup">ご案内乗車 {{ formatTimeLabel(option.plannedPickupAt) }}</span>
+                    <span class="rq-call-option-pickup">ご案内乗車 {{ formatDateTimeLabel(option.plannedPickupAt) }}</span>
                   </div>
-                <div class="rq-call-option-meta">
-                  <span>降車 {{ formatTimeLabel(option.plannedDropoffAt) }}</span>
-                  <span v-if="option.desiredDropoffDeltaMinutes !== null">
-                    希望降車との差 {{ formatSignedMinutes(option.desiredDropoffDeltaMinutes) }}
-                  </span>
+                  <div class="rq-call-option-meta">
+                    <span>降車 {{ formatDateTimeLabel(option.plannedDropoffAt) }}</span>
+                    <span v-if="option.desiredDropoffDeltaMinutes !== null">
+                      希望降車との差 {{ formatSignedMinutes(option.desiredDropoffDeltaMinutes) }}
+                    </span>
+                  </div>
                 </div>
-              </div>
-            </label>
+              </label>
+            </div>
           </div>
-          <div v-else class="rq-inline-help">人数と希望降車時刻を入力して候補を取得してください。</div>
+          <div v-else class="rq-inline-help">人数・予約日・希望降車時刻を入力して候補を取得してください。</div>
         </div>
         <v-btn color="primary" block prepend-icon="mdi-phone-plus" :loading="loading" size="small" density="comfortable" @click="createPhoneRide" class="rq-submit-btn rq-action-btn">
           選択した候補で予約確定
@@ -4206,101 +4655,150 @@ createApp({
         </v-btn>
       </div>
 
+      <div v-if="activePanelDateKey" class="rq-panel-date-nav">
+        <v-btn
+          icon="mdi-chevron-left"
+          variant="text"
+          density="compact"
+          size="small"
+          class="rq-panel-date-nav-btn"
+          :disabled="!hasPreviousPanelDate"
+          @click="movePanelDate(-1)"
+        />
+        <div class="rq-panel-date-nav-body">
+          <div class="rq-panel-date-nav-date">{{ activePanelDateLabel }}</div>
+          <div class="rq-panel-date-nav-weekday">{{ activePanelDateWeekdayLabel }}</div>
+        </div>
+        <v-btn
+          icon="mdi-chevron-right"
+          variant="text"
+          density="compact"
+          size="small"
+          class="rq-panel-date-nav-btn"
+          :disabled="!hasNextPanelDate"
+          @click="movePanelDate(1)"
+        />
+      </div>
+
       <div class="rq-driver-plan-panel">
         <div class="rq-driver-plan-header">
           <div class="rq-driver-plan-title">運行ステップ</div>
           <div class="rq-driver-plan-vehicle">{{ selectedVehicleRouteVehicleLabel }}</div>
         </div>
-        <div v-if="selectedVehicleRouteSteps.length" class="rq-driver-plan-list">
+        <div v-if="visibleVehicleRouteDateSections.length" class="rq-driver-plan-list">
           <div
-            v-for="step in selectedVehicleRouteSteps"
-            :key="step.key"
-            class="rq-driver-plan-item"
-            :class="{ 'is-active': mapDisplayMode === 'operation' && selectedVehicleRouteStepKey === step.key }"
-            role="button"
-            tabindex="0"
-            @click="selectVehicleRouteStep(step.key)"
-            @keydown.enter.prevent="selectVehicleRouteStep(step.key)"
+            v-for="section in visibleVehicleRouteDateSections"
+            :key="'driver-step-date-' + section.dateKey"
+            class="rq-date-section rq-date-section--compact"
           >
-            <div class="rq-driver-plan-row">
-              <span class="rq-driver-plan-kind" :class="step.typeBadgeClass">{{ step.typeLabel }}</span>
-              <span class="rq-driver-plan-count">{{ step.passengerCount }}人</span>
-              <span class="rq-driver-plan-location">{{ step.locationLabel }}</span>
-            </div>
-            <div class="rq-driver-plan-subrow">{{ step.requestLabel }}</div>
-            <div class="rq-driver-plan-meta">
-              <span>着 {{ step.arrivalLabel }}</span>
-              <span>待 {{ step.waitLabel }}</span>
-              <span>移動 {{ step.moveDistanceLabel }} / {{ step.moveMinutesLabel }}</span>
-              <span>車内 {{ step.onboardAfter }}人</span>
+            <div class="rq-date-section-header">{{ section.dateLabel }}</div>
+            <div
+              v-for="step in section.steps"
+              :key="step.key"
+              class="rq-driver-plan-item"
+              :class="{ 'is-active': mapDisplayMode === 'operation' && selectedVehicleRouteStepKey === step.key }"
+              role="button"
+              tabindex="0"
+              @click="selectVehicleRouteStep(step.key)"
+              @keydown.enter.prevent="selectVehicleRouteStep(step.key)"
+            >
+              <div class="rq-driver-plan-row">
+                <span class="rq-driver-plan-kind" :class="step.typeBadgeClass">{{ step.typeLabel }}</span>
+                <span class="rq-driver-plan-count">{{ step.passengerCount }}人</span>
+                <span class="rq-driver-plan-location">{{ step.locationLabel }}</span>
+              </div>
+              <div class="rq-driver-plan-subrow">{{ step.requestLabel }}</div>
+              <div class="rq-driver-plan-meta">
+                <span class="rq-driver-plan-arrival">
+                  <span>着 {{ step.arrivalDateLabel }}</span>
+                  <span>{{ step.arrivalLabel }}</span>
+                </span>
+                <span>待 {{ step.waitLabel }}</span>
+                <span>移動 {{ step.moveDistanceLabel }} / {{ step.moveMinutesLabel }}</span>
+                <span>車内 {{ step.onboardAfter }}人</span>
+              </div>
             </div>
           </div>
         </div>
         <div v-else class="rq-inline-help rq-driver-plan-empty">{{ selectedVehicleRouteEmptyLabel }}</div>
       </div>
 
-      <div class="rq-request-list" v-if="requestRows.length">
-        <button
-          v-for="row in requestRows"
-          :key="row.id"
-          type="button"
-          class="rq-request-item"
-          :class="{ 'is-active': mapDisplayMode === 'request' && row.id === selectedRequestId }"
-          @click="selectRequest(row.id)"
+      <div class="rq-request-list" v-if="visibleRequestDateSections.length">
+        <div
+          v-for="section in visibleRequestDateSections"
+          :key="'request-date-' + section.dateKey"
+          class="rq-date-section"
         >
-          <div class="rq-req-top">
-            <span class="rq-req-time">{{ row.displayTime }}</span>
-            <span class="rq-req-subtime">降車 {{ row.dropoffDisplayTime }}</span>
-            <div class="rq-req-actions">
-              <v-chip :color="row.statusColor" size="x-small" variant="tonal" class="rq-req-status">
-                {{ row.statusLabel }}
-              </v-chip>
-              <v-btn
-                v-if="canCancelRequest(row)"
-                icon="mdi-close-circle-outline"
-                variant="text"
-                color="error"
-                density="compact"
-                size="x-small"
-                class="rq-cancel-btn"
-                :loading="loading"
-                @click.stop="cancelRideRequestById(row.id)"
-              />
+          <div class="rq-date-section-header">{{ section.dateLabel }}</div>
+          <button
+            v-for="row in section.rows"
+            :key="row.id"
+            type="button"
+            class="rq-request-item"
+            :class="{ 'is-active': mapDisplayMode === 'request' && row.id === selectedRequestId }"
+            @click="selectRequest(row.id)"
+          >
+            <div class="rq-req-top">
+              <span class="rq-req-time">{{ row.displayTime }}</span>
+              <span class="rq-req-subtime">降車 {{ row.dropoffDisplayTime }}</span>
+              <div class="rq-req-actions">
+                <v-chip :color="row.statusColor" size="x-small" variant="tonal" class="rq-req-status">
+                  {{ row.statusLabel }}
+                </v-chip>
+                <v-btn
+                  v-if="canCancelRequest(row)"
+                  icon="mdi-close-circle-outline"
+                  variant="text"
+                  color="error"
+                  density="compact"
+                  size="x-small"
+                  class="rq-cancel-btn"
+                  :loading="loading"
+                  @click.stop="cancelRideRequestById(row.id)"
+                />
+              </div>
             </div>
-          </div>
-          <div class="rq-req-route">
-            <span class="rq-req-stop rq-req-stop--pickup">{{ row.pickupLabel }}</span>
-            <v-icon size="12" class="rq-req-arrow">mdi-arrow-right-thin</v-icon>
-            <span class="rq-req-stop rq-req-stop--dropoff">{{ row.dropoffLabel }}</span>
-          </div>
-          <div v-if="row.passengerName || row.passengerPhone" class="rq-req-contact">
-            <span v-if="row.passengerName"><v-icon size="11">mdi-account</v-icon> {{ row.passengerName }}</span>
-            <span v-if="row.passengerPhone"><v-icon size="11">mdi-phone</v-icon> {{ row.passengerPhone }}</span>
-          </div>
-          <div class="rq-req-meta">
-            <span class="rq-party-size"><v-icon size="14">mdi-account-multiple</v-icon><strong>{{ row.partySize }}</strong>人乗車</span>
-            <span><v-icon size="11">mdi-bus</v-icon> {{ row.vehicleLabel }}</span>
-            <span v-if="row.etaMinutes !== null"><v-icon size="11">mdi-clock-outline</v-icon> 乗車 {{ row.etaMinutes }}分後</span>
-            <span v-if="row.etaDropoffMinutes !== null"><v-icon size="11">mdi-flag-checkered</v-icon> 降車 {{ row.etaDropoffMinutes }}分後</span>
-          </div>
-          <div v-if="row.vehicleId !== '-'" class="rq-req-metrics">
-            <span class="rq-req-metric">
-              <v-icon size="12" color="#b45309">mdi-map-marker-distance</v-icon>
-              降車まで 距離 {{ row.dropoffTravelDistanceLabel ?? "算出中" }} / 時間 {{ row.dropoffTravelMinutesLabel ?? "算出中" }}
-            </span>
-            <span class="rq-req-metric">
-              <v-icon size="12" color="#0f766e">mdi-map-clock-outline</v-icon>
-              <template v-if="row.hasNextTask">
-                次の{{ row.nextTaskLabel }}まで 距離 {{ row.nextTaskTravelDistanceLabel ?? "算出中" }} / 時間 {{ row.nextTaskTravelMinutesLabel ?? "算出中" }}
-              </template>
-              <template v-else>次の乗降予定なし</template>
-            </span>
-            <span v-if="row.shouldReturnOffice" class="rq-req-metric">
-              <v-icon size="12" color="#0369a1">mdi-office-building-marker-outline</v-icon>
-              次の乗車まで {{ row.idleReturnThresholdMinutes }}分以上のため、事務所待機を推奨
-            </span>
-          </div>
-        </button>
+            <div class="rq-req-route">
+              <span class="rq-req-stop rq-req-stop--pickup">{{ row.pickupLabel }}</span>
+              <v-icon size="12" class="rq-req-arrow">mdi-arrow-right-thin</v-icon>
+              <span class="rq-req-stop rq-req-stop--dropoff">{{ row.dropoffLabel }}</span>
+            </div>
+            <div v-if="row.passengerName || row.passengerPhone" class="rq-req-contact">
+              <span v-if="row.passengerName"><v-icon size="11">mdi-account</v-icon> {{ row.passengerName }}</span>
+              <span v-if="row.passengerPhone"><v-icon size="11">mdi-phone</v-icon> {{ row.passengerPhone }}</span>
+            </div>
+            <div class="rq-req-meta">
+              <span class="rq-party-size"><v-icon size="14">mdi-account-multiple</v-icon><strong>{{ row.partySize }}</strong>人乗車</span>
+              <span class="rq-req-date-meta">
+                <v-icon size="11">mdi-calendar</v-icon>
+                <span class="rq-req-date-meta-body">
+                  <span>{{ row.pickupDateLabel }}</span>
+                  <span>{{ row.displayTime }}</span>
+                </span>
+              </span>
+              <span><v-icon size="11">mdi-bus</v-icon> {{ row.vehicleLabel }}</span>
+              <span v-if="row.etaMinutes !== null"><v-icon size="11">mdi-clock-outline</v-icon> 乗車 {{ row.etaMinutes }}分後</span>
+              <span v-if="row.etaDropoffMinutes !== null"><v-icon size="11">mdi-flag-checkered</v-icon> 降車 {{ row.etaDropoffMinutes }}分後</span>
+            </div>
+            <div v-if="row.vehicleId !== '-'" class="rq-req-metrics">
+              <span class="rq-req-metric">
+                <v-icon size="12" color="#b45309">mdi-map-marker-distance</v-icon>
+                降車まで 距離 {{ row.dropoffTravelDistanceLabel ?? "算出中" }} / 時間 {{ row.dropoffTravelMinutesLabel ?? "算出中" }}
+              </span>
+              <span class="rq-req-metric">
+                <v-icon size="12" color="#0f766e">mdi-map-clock-outline</v-icon>
+                <template v-if="row.hasNextTask">
+                  次の{{ row.nextTaskLabel }}まで 距離 {{ row.nextTaskTravelDistanceLabel ?? "算出中" }} / 時間 {{ row.nextTaskTravelMinutesLabel ?? "算出中" }}
+                </template>
+                <template v-else>次の乗降予定なし</template>
+              </span>
+              <span v-if="row.shouldReturnOffice" class="rq-req-metric">
+                <v-icon size="12" color="#0369a1">mdi-office-building-marker-outline</v-icon>
+                次の乗車まで {{ row.idleReturnThresholdMinutes }}分以上のため、事務所待機を推奨
+              </span>
+            </div>
+          </button>
+        </div>
       </div>
 
       <div v-else class="rq-empty">

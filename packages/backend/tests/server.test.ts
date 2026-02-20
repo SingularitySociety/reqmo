@@ -155,9 +155,11 @@ test("api ride-request options can propose multiple strategies and confirm selec
   assert.equal(optionsPayload.status, "ASSIGNABLE");
   assert.equal(Array.isArray(optionsPayload.options), true);
   assert.equal(optionsPayload.options.length > 0, true);
+  const expectedFastest =
+    new Date(desiredDropoffAt).toDateString() === new Date().toDateString();
   assert.equal(
     optionsPayload.options.some((option) => option.strategyKey === "FASTEST"),
-    true
+    expectedFastest
   );
   assert.equal(
     optionsPayload.options.some((option) => option.strategyKey === "REQUESTED_TIME"),
@@ -231,14 +233,80 @@ test("api ride-request options omits requested-time strategy when it is not clos
   assert.equal(payload.status, "ASSIGNABLE");
   assert.equal(Array.isArray(payload.options), true);
   assert.equal(payload.options.length > 0, true);
+  const expectedFastest =
+    new Date(desiredDropoffAt).toDateString() === new Date().toDateString();
+  if (expectedFastest) {
+    assert.equal(
+      payload.options.some((option) => option.strategyKey === "REQUESTED_TIME"),
+      false
+    );
+    assert.equal(
+      payload.options.some((option) => option.strategyKey === "FASTEST"),
+      true
+    );
+  } else {
+    assert.equal(
+      payload.options.some((option) => option.strategyKey === "REQUESTED_TIME"),
+      true
+    );
+    assert.equal(
+      payload.options.some((option) => option.strategyKey === "FASTEST"),
+      false
+    );
+  }
+});
+
+test("api ride-request options for future reservation date prioritize reservation-time strategy", async () => {
+  const repository = new InMemoryRepository({
+    stops: [
+      { id: "stop_a", name: "Stop A", lat: 33.0, lng: 132.9 },
+      { id: "stop_b", name: "Stop B", lat: 33.01, lng: 132.905 }
+    ],
+    vehicles: [
+      {
+        id: "veh_1",
+        status: "ACTIVE",
+        capacity: 4,
+        onboardCount: 0,
+        currentLocation: { lat: 33.0, lng: 132.9 },
+        route: []
+      }
+    ],
+    serviceProfiles: [createDefaultServiceProfile()]
+  });
+  const { server } = createReqmoServer({ repository });
+
+  const desiredDropoffAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+  const response = await invokeServer({
+    server,
+    method: "POST",
+    url: "/api/ride-requests/options",
+    body: {
+      pickup: { mode: "FIXED_STOP", stopId: "stop_a" },
+      dropoff: { mode: "FIXED_STOP", stopId: "stop_b" },
+      partySize: 1,
+      desiredDropoffAt,
+      optionLimit: 5
+    }
+  });
+
+  assert.equal(response.statusCode, 200);
+  const payload = JSON.parse(response.payload);
+  assert.equal(payload.status, "ASSIGNABLE");
+  assert.equal(Array.isArray(payload.options), true);
+  assert.equal(payload.options.length > 0, true);
   assert.equal(
-    payload.options.some((option) => option.strategyKey === "REQUESTED_TIME"),
+    payload.options.some((option) => option.strategyKey === "FASTEST"),
     false
   );
   assert.equal(
-    payload.options.some((option) => option.strategyKey === "FASTEST"),
+    payload.options.some((option) => option.strategyKey === "REQUESTED_TIME"),
     true
   );
+  payload.options.forEach((option) => {
+    assert.equal(option.requestType, "ARRIVE_BY");
+    assert.equal(option.desiredDropoffAt, desiredDropoffAt);
+  });
 });
 
 test("api can reset ride requests and clear vehicle routes", async () => {

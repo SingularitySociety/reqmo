@@ -88,6 +88,22 @@ function toTimestamp(value) {
   return timestamp;
 }
 
+function isSameLocalDate(left, right) {
+  return (
+    left.getFullYear() === right.getFullYear() &&
+    left.getMonth() === right.getMonth() &&
+    left.getDate() === right.getDate()
+  );
+}
+
+function shouldIncludeFastestStrategy(requestedDesiredDropoffAt, now = new Date()) {
+  const requestedTs = toTimestamp(requestedDesiredDropoffAt);
+  if (!Number.isFinite(requestedTs)) {
+    return true;
+  }
+  return isSameLocalDate(new Date(requestedTs), now);
+}
+
 function absoluteDropoffDeltaMinutes(option, desiredDropoffTs) {
   if (!Number.isFinite(desiredDropoffTs)) {
     return Number.POSITIVE_INFINITY;
@@ -280,9 +296,11 @@ export async function listRideRequestOptions({
   const normalizedLimit = normalizeOptionLimit(optionLimit, 5);
   const requestedDesiredDropoffAt = requestedTimeWindow?.desiredDropoffAt ?? null;
   const requestedDesiredDropoffTs = toTimestamp(requestedDesiredDropoffAt);
+  const includeFastestStrategy = shouldIncludeFastestStrategy(requestedDesiredDropoffAt);
 
-  const strategies = [
-    {
+  const strategies = [];
+  if (includeFastestStrategy) {
+    strategies.push({
       key: "FASTEST",
       label: "今すぐ向かう",
       description: "最短で乗車できる案",
@@ -291,8 +309,8 @@ export async function listRideRequestOptions({
         scheduledAt: null,
         desiredDropoffAt: null
       }
-    }
-  ];
+    });
+  }
 
   if (requestedDesiredDropoffAt) {
     strategies.push({
@@ -303,6 +321,19 @@ export async function listRideRequestOptions({
         requestType: "ARRIVE_BY",
         scheduledAt: null,
         desiredDropoffAt: requestedDesiredDropoffAt
+      }
+    });
+  }
+
+  if (!strategies.length) {
+    strategies.push({
+      key: "FASTEST",
+      label: "今すぐ向かう",
+      description: "最短で乗車できる案",
+      timeWindow: {
+        requestType: "ASAP",
+        scheduledAt: null,
+        desiredDropoffAt: null
       }
     });
   }
