@@ -995,6 +995,67 @@ test("dispatch does not require pre-break office return for afternoon reservatio
   assert.equal(preview.diagnostics?.details?.type === "RETURN_BEFORE_BREAK", false);
 });
 
+test("dispatch applies lunch-break constraints on reservation date for future-day request", async () => {
+  const repository = new InMemoryRepository();
+  const baseProfile = createDefaultServiceProfile();
+  const profile = createDefaultServiceProfile({
+    id: "office_break_future_day_guard",
+    dispatchPolicy: {
+      ...baseProfile.dispatchPolicy,
+      maxWaitMinutes: 240
+    },
+    operationPolicy: {
+      office: {
+        name: "本社",
+        point: { lat: 33.0, lng: 132.9 }
+      },
+      idleReturnThresholdMinutes: 40,
+      lunchBreak: {
+        enabled: true,
+        startLocalTime: "11:00",
+        endLocalTime: "12:00",
+        requireReturnToOffice: true,
+        departFromOfficeAtEnd: true
+      }
+    }
+  });
+  upsertServiceProfile({ repository, profile });
+
+  repository.addVehicle({
+    id: "veh_1",
+    status: "ACTIVE",
+    capacity: 4,
+    onboardCount: 0,
+    currentLocation: { lat: 33.0, lng: 132.9 },
+    route: []
+  });
+
+  const preview = await previewRideRequest({
+    repository,
+    serviceProfileId: profile.id,
+    tenantId: "tenant_default",
+    requesterId: "user_break_future_day",
+    pickup: {
+      mode: "FREE_POINT",
+      point: { lat: 33.0, lng: 132.9 }
+    },
+    dropoff: {
+      mode: "FREE_POINT",
+      point: { lat: 33.001, lng: 132.9 }
+    },
+    partySize: 1,
+    desiredDropoffAt: "2026-02-23T11:20:00+09:00",
+    context: {
+      now: "2026-02-20T10:50:00+09:00"
+    }
+  });
+
+  assert.equal(preview.status, "REJECTED");
+  assert.equal(preview.reason, "NO_FEASIBLE_VEHICLE");
+  assert.equal(preview.diagnostics?.rejectionCounts?.OFFICE_BREAK_POLICY, 1);
+  assert.equal(preview.diagnostics?.details?.type, "RETURN_BEFORE_BREAK");
+});
+
 test("dispatch rejects request when 12:00 office departure cannot reach pickup in time", async () => {
   const repository = new InMemoryRepository();
   const baseProfile = createDefaultServiceProfile();

@@ -144,12 +144,12 @@ function resolveOfficePointFromPolicy(serviceProfile, vehicle = null) {
   return null;
 }
 
-function resolveLunchBreakWindow(operationPolicy, now) {
+function resolveLunchBreakWindow(operationPolicy, baseDate) {
   const lunchBreak = operationPolicy?.lunchBreak ?? {};
   const startMinutes = parseLocalClockMinutes(lunchBreak.startLocalTime, 11 * 60);
   const endMinutes = parseLocalClockMinutes(lunchBreak.endLocalTime, 12 * 60);
-  const startAt = buildLocalTimeDate(now, startMinutes);
-  const endAt = buildLocalTimeDate(now, endMinutes);
+  const startAt = buildLocalTimeDate(baseDate, startMinutes);
+  const endAt = buildLocalTimeDate(baseDate, endMinutes);
   if (endAt.getTime() <= startAt.getTime()) {
     endAt.setDate(endAt.getDate() + 1);
   }
@@ -164,12 +164,12 @@ function resolveLunchBreakWindow(operationPolicy, now) {
   };
 }
 
-function resolveBusinessHoursWindow(operationPolicy, now) {
+function resolveBusinessHoursWindow(operationPolicy, baseDate) {
   const businessHours = operationPolicy?.businessHours ?? {};
   const startMinutes = parseLocalClockMinutes(businessHours.startLocalTime, 8 * 60);
   const endMinutes = parseLocalClockMinutes(businessHours.endLocalTime, 18 * 60);
-  const startAt = buildLocalTimeDate(now, startMinutes);
-  const endAt = buildLocalTimeDate(now, endMinutes);
+  const startAt = buildLocalTimeDate(baseDate, startMinutes);
+  const endAt = buildLocalTimeDate(baseDate, endMinutes);
   if (endAt.getTime() <= startAt.getTime()) {
     endAt.setDate(endAt.getDate() + 1);
   }
@@ -248,8 +248,6 @@ function buildOperationPolicyDiagnostics({
   travelMinutes
 }) {
   const operationPolicy = serviceProfile?.operationPolicy ?? {};
-  const lunchBreakWindow = resolveLunchBreakWindow(operationPolicy, now);
-  const businessHoursWindow = resolveBusinessHoursWindow(operationPolicy, now);
 
   let completionAt = now;
   let completionPoint = vehicle.currentLocation;
@@ -279,6 +277,9 @@ function buildOperationPolicyDiagnostics({
     travelMinutes,
     serviceProfile
   });
+  const policyBaseDate = pickupAt ?? completionAt ?? now;
+  const lunchBreakWindow = resolveLunchBreakWindow(operationPolicy, policyBaseDate);
+  const businessHoursWindow = resolveBusinessHoursWindow(operationPolicy, policyBaseDate);
   const officeToPickupMinutes = safeTravelMinutes(
     officePoint,
     requestForDispatch.pickupPoint,
@@ -369,9 +370,9 @@ function evaluateOperationPolicyForPlan({
   travelMinutes
 }) {
   const operationPolicy = serviceProfile?.operationPolicy ?? {};
-  const lunchBreakWindow = resolveLunchBreakWindow(operationPolicy, now);
-  const businessHoursWindow = resolveBusinessHoursWindow(operationPolicy, now);
-  if (!lunchBreakWindow.enabled && !businessHoursWindow.enabled) {
+  const lunchBreakEnabled = operationPolicy?.lunchBreak?.enabled === true;
+  const businessHoursEnabled = operationPolicy?.businessHours?.enabled === true;
+  if (!lunchBreakEnabled && !businessHoursEnabled) {
     return null;
   }
 
@@ -408,6 +409,9 @@ function evaluateOperationPolicyForPlan({
     travelMinutes,
     serviceProfile
   });
+  const policyBaseDate = pickupAt ?? completionAt ?? now;
+  const lunchBreakWindow = resolveLunchBreakWindow(operationPolicy, policyBaseDate);
+  const businessHoursWindow = resolveBusinessHoursWindow(operationPolicy, policyBaseDate);
 
   if (businessHoursWindow.enabled) {
     const officeToPickupMinutes = safeTravelMinutes(

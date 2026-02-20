@@ -1856,6 +1856,41 @@ createApp({
     const previewDropoffClock = computed(
       () => formatDateTimeLabel(previewSimulation.value?.plannedDropoffAt)
     );
+    const previewRouteDateKey = computed(() => {
+      const baseTimeValue =
+        selectedDispatchOption.value?.plannedPickupAt ??
+        previewSimulation.value?.plannedPickupAt ??
+        previewPayload.value?.desiredDropoffAt ??
+        null;
+      const timestamp = parseTimeValueMs(baseTimeValue);
+      if (timestamp === null) {
+        return "";
+      }
+      return formatDateKey(new Date(timestamp));
+    });
+    const previewRouteAfterSteps = computed(() => {
+      const routeAfter = Array.isArray(previewSimulation.value?.routeAfter)
+        ? previewSimulation.value.routeAfter
+        : [];
+      if (!routeAfter.length) {
+        return [];
+      }
+      const dateKey = previewRouteDateKey.value;
+      const sameDateSteps = dateKey
+        ? routeAfter.filter((step) => {
+            const etaTimestamp = parseTimeValueMs(step?.etaAt ?? null);
+            if (etaTimestamp === null) {
+              return false;
+            }
+            return formatDateKey(new Date(etaTimestamp)) === dateKey;
+          })
+        : [];
+      const sourceSteps = sameDateSteps.length ? sameDateSteps : routeAfter;
+      return sourceSteps.map((step, index) => ({
+        ...step,
+        displaySequence: index + 1
+      }));
+    });
     const previewDropoffSuggestion = computed(() => {
       const suggestion = previewSimulation.value?.desiredDropoffSuggestion;
       if (!suggestion || typeof suggestion !== "object") {
@@ -2061,9 +2096,7 @@ createApp({
       return items.slice(0, 6);
     });
     const previewRoutePoints = computed(() =>
-      (previewSimulation.value?.routeAfter ?? [])
-        .map((task) => task.point)
-        .filter(hasPoint)
+      previewRouteAfterSteps.value.map((task) => task.point).filter(hasPoint)
     );
     const vehicleOfficeLocations = computed(() =>
       vehicles.value
@@ -2832,7 +2865,7 @@ createApp({
         );
         const previewPath = [
           previewVehicle?.currentLocation,
-          ...(previewSimulation.value.routeAfter ?? []).map((task) => task.point)
+          ...previewRouteAfterSteps.value.map((task) => task.point)
         ].filter(hasPoint);
 
         if (previewPath.length > 1) {
@@ -2848,7 +2881,7 @@ createApp({
           });
         }
 
-        (previewSimulation.value.routeAfter ?? []).forEach((task) => {
+        previewRouteAfterSteps.value.forEach((task) => {
           if (!hasPoint(task.point)) {
             return;
           }
@@ -2862,7 +2895,7 @@ createApp({
               fillOpacity: 0.95
             })
             .bindTooltip(
-              `${task.sequence}. ${taskTypeLabel} ${task.locationLabel} (${formatTimeLabel(task.etaAt)})`,
+              `${task.displaySequence}. ${taskTypeLabel} ${task.locationLabel} (${formatTimeLabel(task.etaAt)})`,
               {
                 direction: "top"
               }
@@ -3671,6 +3704,7 @@ createApp({
       resetRequestsDialogOpen,
       previewDirty,
       previewSimulation,
+      previewRouteAfterSteps,
       hasAssignablePreview,
       previewStatusLabel,
       previewVehicleLabel,
@@ -4155,8 +4189,8 @@ createApp({
             <div class="rq-preview-section">
               <div class="rq-preview-subtitle">ドライバー運行手順（最適）</div>
               <div class="rq-driver-steps">
-                <div v-for="step in previewSimulation.routeAfter" :key="step.sequence + '-' + step.requestId + '-' + step.type" class="rq-driver-step">
-                  <span class="rq-step-index">{{ step.sequence }}</span>
+                <div v-for="step in previewRouteAfterSteps" :key="step.displaySequence + '-' + step.requestId + '-' + step.type" class="rq-driver-step">
+                  <span class="rq-step-index">{{ step.displaySequence }}</span>
                   <span class="rq-step-time">{{ formatDateTimeLabel(step.etaAt) }}</span>
                   <span class="rq-step-label">{{ step.type === 'PICKUP' ? '乗車' : '降車' }}: {{ step.locationLabel }}</span>
                 </div>
