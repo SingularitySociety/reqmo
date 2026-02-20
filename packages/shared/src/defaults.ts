@@ -56,6 +56,8 @@ export function createDefaultServiceProfile(overrides = {}) {
       cruiseSpeedKmh: 25,
       pickupServiceMinutes: 0,
       dropoffServiceMinutes: 0,
+      arriveByEarlyPickupToleranceMinutes: 10,
+      futureReservationSeparationMinutes: 60,
       weights: {
         pickupDelay: 0.4,
         detour: 0.25,

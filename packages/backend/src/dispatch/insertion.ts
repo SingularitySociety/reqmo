@@ -1,5 +1,8 @@
 import { estimateTravelMinutes } from "../../../shared/src/geo.ts";
 
+const DEFAULT_ARRIVE_BY_EARLY_PICKUP_TOLERANCE_MINUTES = 10;
+const DEFAULT_FUTURE_RESERVATION_SEPARATION_MINUTES = 60;
+
 function defaultTravelMinutes(a, b) {
   return estimateTravelMinutes(a, b);
 }
@@ -97,12 +100,82 @@ function resolveEffectiveMaxWaitMinutes({
   return Math.max(configuredMaxWait, desiredPickupEtaMinutes);
 }
 
-function travelMinutesUntilTask(startPoint, route, taskIndex, travelMinutes, serviceProfile) {
+function resolveArriveByEarlyPickupToleranceMinutes(serviceProfile) {
+  const configured = normalizeNonNegative(
+    serviceProfile?.dispatchPolicy?.arriveByEarlyPickupToleranceMinutes,
+    DEFAULT_ARRIVE_BY_EARLY_PICKUP_TOLERANCE_MINUTES
+  );
+  return configured;
+}
+
+function resolveFutureReservationSeparationMinutes(serviceProfile) {
+  const configured = normalizeNonNegative(
+    serviceProfile?.dispatchPolicy?.futureReservationSeparationMinutes,
+    DEFAULT_FUTURE_RESERVATION_SEPARATION_MINUTES
+  );
+  return configured;
+}
+
+function resolveArriveByReservationConstraints({
+  request,
+  serviceProfile,
+  travelMinutes = defaultTravelMinutes
+}) {
+  const desiredPickupEtaMinutes = resolveArriveByPickupEtaMinutes({
+    request,
+    serviceProfile,
+    travelMinutes
+  });
+  if (!Number.isFinite(desiredPickupEtaMinutes)) {
+    return {
+      enabled: false,
+      earliestPickupEtaMinutes: null,
+      separateAsFutureReservation: false
+    };
+  }
+
+  const configuredMaxWait = normalizeNonNegative(serviceProfile?.dispatchPolicy?.maxWaitMinutes, 0);
+  const earlyPickupToleranceMinutes = resolveArriveByEarlyPickupToleranceMinutes(serviceProfile);
+  const futureReservationSeparationMinutes = resolveFutureReservationSeparationMinutes(serviceProfile);
+  const leadFromStandardDispatch = Math.max(0, desiredPickupEtaMinutes - configuredMaxWait);
+
+  return {
+    enabled: true,
+    earliestPickupEtaMinutes: Math.max(0, desiredPickupEtaMinutes - earlyPickupToleranceMinutes),
+    separateAsFutureReservation: leadFromStandardDispatch >= futureReservationSeparationMinutes
+  };
+}
+
+function taskNotBeforeEtaMinutes(task, evaluationNow = new Date()) {
+  const notBeforeAt = normalizeDateInput(task?.notBeforeAt);
+  if (!notBeforeAt) {
+    return null;
+  }
+  return (notBeforeAt.getTime() - evaluationNow.getTime()) / (60 * 1000);
+}
+
+function alignElapsedWithTaskWindow(elapsedMinutes, task, evaluationNow = new Date()) {
+  const notBeforeEtaMinutes = taskNotBeforeEtaMinutes(task, evaluationNow);
+  if (Number.isFinite(notBeforeEtaMinutes) && notBeforeEtaMinutes > elapsedMinutes) {
+    return notBeforeEtaMinutes;
+  }
+  return elapsedMinutes;
+}
+
+function travelMinutesUntilTask(
+  startPoint,
+  route,
+  taskIndex,
+  travelMinutes,
+  serviceProfile,
+  evaluationNow = new Date()
+) {
   let minutes = 0;
   let current = startPoint;
   for (let i = 0; i <= taskIndex; i += 1) {
     const task = route[i];
     minutes += travelMinutes(current, task.point);
+    minutes = alignElapsedWithTaskWindow(minutes, task, evaluationNow);
     current = task.point;
     if (i < taskIndex) {
       minutes += taskServiceMinutes(task, serviceProfile);
@@ -130,13 +203,14 @@ function routeIsCapacitySafe(args) {
   return evaluateRouteSafety(args).ok;
 }
 
-function taskEtasFromStart(startPoint, route, travelMinutes, serviceProfile) {
+function taskEtasFromStart(startPoint, route, travelMinutes, serviceProfile, evaluationNow = new Date()) {
   const etas = [];
   let minutes = 0;
   let current = startPoint;
 
   for (const task of route) {
     minutes += travelMinutes(current, task.point);
+    minutes = alignElapsedWithTaskWindow(minutes, task, evaluationNow);
     etas.push(minutes);
     minutes += taskServiceMinutes(task, serviceProfile);
     current = task.point;
@@ -151,13 +225,20 @@ function existingTaskDelayMinutes({
   candidateRoute,
   newRequestId,
   travelMinutes,
-  serviceProfile
+  serviceProfile,
+  evaluationNow = new Date()
 }) {
   if (!existingRoute.length) {
     return 0;
   }
 
-  const baselineEtas = taskEtasFromStart(startPoint, existingRoute, travelMinutes, serviceProfile);
+  const baselineEtas = taskEtasFromStart(
+    startPoint,
+    existingRoute,
+    travelMinutes,
+    serviceProfile,
+    evaluationNow
+  );
   let current = startPoint;
   let elapsed = 0;
   let existingTaskIndex = 0;
@@ -165,6 +246,7 @@ function existingTaskDelayMinutes({
 
   for (const task of candidateRoute) {
     elapsed += travelMinutes(current, task.point);
+    elapsed = alignElapsedWithTaskWindow(elapsed, task, evaluationNow);
     current = task.point;
 
     if (task.requestId !== newRequestId) {
@@ -185,7 +267,8 @@ function requestRideMinutes({
   route,
   requestId,
   travelMinutes,
-  serviceProfile
+  serviceProfile,
+  evaluationNow = new Date()
 }) {
   let current = startPoint;
   let elapsed = 0;
@@ -193,6 +276,7 @@ function requestRideMinutes({
 
   for (const task of route) {
     elapsed += travelMinutes(current, task.point);
+    elapsed = alignElapsedWithTaskWindow(elapsed, task, evaluationNow);
     current = task.point;
 
     if (task.requestId === requestId) {
@@ -268,7 +352,8 @@ export function analyzeInsertionCandidateFailures({
     CAPACITY: 0,
     MAX_WAIT: 0,
     MAX_DETOUR: 0,
-    MAX_ADDITIONAL_STOPS: 0
+    MAX_ADDITIONAL_STOPS: 0,
+    RESERVATION_WINDOW: 0
   };
 
   if (vehicle.status !== "ACTIVE") {
@@ -303,6 +388,14 @@ export function analyzeInsertionCandidateFailures({
     serviceProfile,
     travelMinutes
   });
+  const arriveByConstraints = resolveArriveByReservationConstraints({
+    request,
+    serviceProfile,
+    travelMinutes
+  });
+  const requestEvaluationNow = resolveRequestEvaluationNow(request);
+  const reservationTailPickupIndex = existingRoute.length;
+  const reservationTailDropoffIndex = existingRoute.length + 1;
   const maxAdditionalStops = serviceProfile.poolingPolicy.maxAdditionalStops;
 
   let candidateCount = 0;
@@ -313,6 +406,15 @@ export function analyzeInsertionCandidateFailures({
   for (let pickupIndex = 0; pickupIndex <= existingRoute.length; pickupIndex += 1) {
     for (let dropoffIndex = pickupIndex + 1; dropoffIndex <= existingRoute.length + 1; dropoffIndex += 1) {
       candidateCount += 1;
+      if (
+        arriveByConstraints.enabled &&
+        arriveByConstraints.separateAsFutureReservation &&
+        (pickupIndex !== reservationTailPickupIndex || dropoffIndex !== reservationTailDropoffIndex)
+      ) {
+        rejectionCounts.RESERVATION_WINDOW += 1;
+        continue;
+      }
+
       const candidateRoute = insertTasks(existingRoute, pickupTask, dropoffTask, pickupIndex, dropoffIndex);
 
       const safety = evaluateRouteSafety({
@@ -326,13 +428,25 @@ export function analyzeInsertionCandidateFailures({
         continue;
       }
 
-      const etaPickupMinutes = travelMinutesUntilTask(
+      let etaPickupMinutes = travelMinutesUntilTask(
         vehicle.currentLocation,
         candidateRoute,
         pickupIndex,
         travelMinutes,
-        serviceProfile
+        serviceProfile,
+        requestEvaluationNow
       );
+      if (
+        arriveByConstraints.enabled &&
+        Number.isFinite(arriveByConstraints.earliestPickupEtaMinutes) &&
+        etaPickupMinutes < arriveByConstraints.earliestPickupEtaMinutes
+      ) {
+        if (pickupIndex !== reservationTailPickupIndex) {
+          rejectionCounts.RESERVATION_WINDOW += 1;
+          continue;
+        }
+        etaPickupMinutes = arriveByConstraints.earliestPickupEtaMinutes;
+      }
       if (minEtaPickupMinutes === null || etaPickupMinutes < minEtaPickupMinutes) {
         minEtaPickupMinutes = etaPickupMinutes;
       }
@@ -347,7 +461,8 @@ export function analyzeInsertionCandidateFailures({
         candidateRoute,
         newRequestId: request.id,
         travelMinutes,
-        serviceProfile
+        serviceProfile,
+        evaluationNow: requestEvaluationNow
       });
       if (minDetourMinutes === null || detourMinutes < minDetourMinutes) {
         minDetourMinutes = detourMinutes;
@@ -405,11 +520,28 @@ export function findBestInsertionPlan({ vehicle, request, serviceProfile, travel
     serviceProfile,
     travelMinutes
   });
+  const arriveByConstraints = resolveArriveByReservationConstraints({
+    request,
+    serviceProfile,
+    travelMinutes
+  });
+  const reservationTailPickupIndex = existingRoute.length;
+  const reservationTailDropoffIndex = existingRoute.length + 1;
+  const requestEvaluationNow = resolveRequestEvaluationNow(request);
   const maxAdditionalStops = serviceProfile.poolingPolicy.maxAdditionalStops;
 
   for (let pickupIndex = 0; pickupIndex <= existingRoute.length; pickupIndex += 1) {
     for (let dropoffIndex = pickupIndex + 1; dropoffIndex <= existingRoute.length + 1; dropoffIndex += 1) {
-      const candidateRoute = insertTasks(existingRoute, pickupTask, dropoffTask, pickupIndex, dropoffIndex);
+      if (
+        arriveByConstraints.enabled &&
+        arriveByConstraints.separateAsFutureReservation &&
+        (pickupIndex !== reservationTailPickupIndex || dropoffIndex !== reservationTailDropoffIndex)
+      ) {
+        continue;
+      }
+
+      let pickupTaskForCandidate = pickupTask;
+      let candidateRoute = insertTasks(existingRoute, pickupTaskForCandidate, dropoffTask, pickupIndex, dropoffIndex);
 
       if (
         !routeIsCapacitySafe({
@@ -422,13 +554,37 @@ export function findBestInsertionPlan({ vehicle, request, serviceProfile, travel
         continue;
       }
 
-      const etaPickupMinutes = travelMinutesUntilTask(
+      let etaPickupMinutes = travelMinutesUntilTask(
         vehicle.currentLocation,
         candidateRoute,
         pickupIndex,
         travelMinutes,
-        serviceProfile
+        serviceProfile,
+        requestEvaluationNow
       );
+      if (
+        arriveByConstraints.enabled &&
+        Number.isFinite(arriveByConstraints.earliestPickupEtaMinutes) &&
+        etaPickupMinutes < arriveByConstraints.earliestPickupEtaMinutes
+      ) {
+        if (pickupIndex !== reservationTailPickupIndex) {
+          continue;
+        }
+        pickupTaskForCandidate = {
+          ...pickupTask,
+          notBeforeAt: new Date(
+            requestEvaluationNow.getTime() + arriveByConstraints.earliestPickupEtaMinutes * 60 * 1000
+          ).toISOString()
+        };
+        candidateRoute = insertTasks(
+          existingRoute,
+          pickupTaskForCandidate,
+          dropoffTask,
+          pickupIndex,
+          dropoffIndex
+        );
+        etaPickupMinutes = arriveByConstraints.earliestPickupEtaMinutes;
+      }
       if (etaPickupMinutes > maxWait) {
         continue;
       }
@@ -439,7 +595,8 @@ export function findBestInsertionPlan({ vehicle, request, serviceProfile, travel
         candidateRoute,
         newRequestId: request.id,
         travelMinutes,
-        serviceProfile
+        serviceProfile,
+        evaluationNow: requestEvaluationNow
       });
       if (detourMinutes > maxDetour) {
         continue;
@@ -456,7 +613,8 @@ export function findBestInsertionPlan({ vehicle, request, serviceProfile, travel
         route: candidateRoute,
         requestId: request.id,
         travelMinutes,
-        serviceProfile
+        serviceProfile,
+        evaluationNow: requestEvaluationNow
       });
       const directRideMinutes = travelMinutes(request.pickupPoint, request.dropoffPoint);
       const newRideDetourMinutes = Math.max(0, newRideMinutes - directRideMinutes);

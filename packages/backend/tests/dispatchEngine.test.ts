@@ -226,7 +226,58 @@ test("arrive-by preview allows pickup ETA beyond maxWait when desired dropoff is
 
   assert.equal(preview.status, "ASSIGNABLE");
   assert.equal(Number.isFinite(Number(preview.simulation?.etaPickupMinutes)), true);
-  assert.equal(Number(preview.simulation?.etaPickupMinutes) > 15, true);
+  assert.equal(Number(preview.simulation?.etaPickupMinutes) >= 120, true);
+});
+
+test("far-future reservation is handled as separate route without impacting active trip", async () => {
+  const repository = seedRepository();
+
+  const first = await createRideRequest({
+    repository,
+    tenantId: "tenant_default",
+    requesterId: "user_existing_trip",
+    pickup: { mode: "FIXED_STOP", stopId: "stop_a" },
+    dropoff: { mode: "FIXED_STOP", stopId: "stop_b" },
+    partySize: 1,
+    context: {
+      now: "2026-02-01T09:00:00+09:00"
+    }
+  });
+  assert.equal(first.status, "ASSIGNED");
+  assert.equal(first.rideRequest.assignment?.vehicleId, "veh_1");
+
+  const preview = await previewRideRequest({
+    repository,
+    tenantId: "tenant_default",
+    requesterId: "user_future_reservation",
+    pickup: { mode: "FIXED_STOP", stopId: "stop_a" },
+    dropoff: { mode: "FIXED_STOP", stopId: "stop_b" },
+    partySize: 1,
+    desiredDropoffAt: "2026-02-01T12:00:00+09:00",
+    context: {
+      now: "2026-02-01T09:00:00+09:00"
+    }
+  });
+
+  assert.equal(preview.status, "ASSIGNABLE");
+  assert.equal(Number(preview.simulation?.etaPickupMinutes) >= 120, true);
+
+  const existingDropoffIndex = preview.simulation?.routeAfter.findIndex(
+    (task) => task.requestId === first.rideRequest.id && task.type === "DROPOFF"
+  );
+  const newPickupIndex = preview.simulation?.routeAfter.findIndex(
+    (task) => task.requestLabel === "新規予約" && task.type === "PICKUP"
+  );
+  assert.equal(Number(existingDropoffIndex) >= 0, true);
+  assert.equal(Number(newPickupIndex) >= 0, true);
+  assert.equal(newPickupIndex > existingDropoffIndex, true);
+
+  const existingImpact = preview.simulation?.impactedRequests.find(
+    (impact) => impact.requestId === first.rideRequest.id
+  );
+  assert.ok(existingImpact);
+  assert.equal(existingImpact.pickupDeltaMinutes, 0);
+  assert.equal(existingImpact.dropoffDeltaMinutes, 0);
 });
 
 test("preview returns suggested dropoff time when planned dropoff exceeds desired time", async () => {

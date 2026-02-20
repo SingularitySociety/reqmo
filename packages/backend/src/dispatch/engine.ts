@@ -500,6 +500,15 @@ function buildRouteTimeline({
   return route.map((task, index) => {
     const segmentMinutes = safeTravelMinutes(current, task.point, travelMinutes);
     elapsed += segmentMinutes;
+    const notBeforeAt = normalizeDateInput(task?.notBeforeAt);
+    let waitBeforeTaskMinutes = 0;
+    if (notBeforeAt) {
+      const notBeforeEtaMinutes = (notBeforeAt.getTime() - now.getTime()) / (60 * 1000);
+      if (Number.isFinite(notBeforeEtaMinutes) && notBeforeEtaMinutes > elapsed) {
+        waitBeforeTaskMinutes = notBeforeEtaMinutes - elapsed;
+        elapsed = notBeforeEtaMinutes;
+      }
+    }
     onboard += task.loadChange ?? 0;
     current = task.point;
 
@@ -510,6 +519,7 @@ function buildRouteTimeline({
       point: task.point,
       loadChange: task.loadChange ?? 0,
       segmentMinutes: roundMinutes(segmentMinutes),
+      waitBeforeTaskMinutes: roundMinutes(waitBeforeTaskMinutes),
       etaMinutes: roundMinutes(elapsed),
       etaAt: new Date(now.getTime() + elapsed * 60 * 1000).toISOString(),
       onboardAfterTask: onboard
@@ -777,7 +787,8 @@ const INSERTION_REJECTION_KEYS = [
   "CAPACITY",
   "MAX_WAIT",
   "MAX_DETOUR",
-  "MAX_ADDITIONAL_STOPS"
+  "MAX_ADDITIONAL_STOPS",
+  "RESERVATION_WINDOW"
 ];
 
 function createInsertionRejectionCounts() {
@@ -786,7 +797,8 @@ function createInsertionRejectionCounts() {
     CAPACITY: 0,
     MAX_WAIT: 0,
     MAX_DETOUR: 0,
-    MAX_ADDITIONAL_STOPS: 0
+    MAX_ADDITIONAL_STOPS: 0,
+    RESERVATION_WINDOW: 0
   };
 }
 
@@ -948,6 +960,12 @@ function buildCountermeasureCandidates({
       "既存ルート構成では降車前に連続乗車が発生します。先行予約完了後に再試算するか、乗車地点・時刻の変更を検討してください。"
     );
   }
+  if (rejectionCounts.RESERVATION_WINDOW > 0) {
+    pushCandidateSuggestion(
+      candidates,
+      "未来予約の時間窓に合わせるため既存便との同時挿入を避けています。予約時刻に近い便として扱えるよう時刻設定を確認してください。"
+    );
+  }
   if (!candidates.length) {
     pushCandidateSuggestion(
       candidates,
@@ -1013,7 +1031,15 @@ function buildNoFeasibleDiagnostics({
       maxWaitMinutes: normalizeNonNegative(serviceProfile?.dispatchPolicy?.maxWaitMinutes, 0),
       maxDetourMinutes: normalizeNonNegative(serviceProfile?.poolingPolicy?.maxDetourMinutes, 0),
       maxAdditionalStops: normalizeNonNegativeInteger(serviceProfile?.poolingPolicy?.maxAdditionalStops, 0),
-      maxOnboardPerVehicle: normalizeNonNegativeInteger(serviceProfile?.poolingPolicy?.maxOnboardPerVehicle, 0)
+      maxOnboardPerVehicle: normalizeNonNegativeInteger(serviceProfile?.poolingPolicy?.maxOnboardPerVehicle, 0),
+      futureReservationSeparationMinutes: normalizeNonNegative(
+        serviceProfile?.dispatchPolicy?.futureReservationSeparationMinutes,
+        60
+      ),
+      arriveByEarlyPickupToleranceMinutes: normalizeNonNegative(
+        serviceProfile?.dispatchPolicy?.arriveByEarlyPickupToleranceMinutes,
+        10
+      )
     },
     observed: {
       minEtaPickupMinutes: roundMinutes(minEtaPickupMinutes),
@@ -1451,6 +1477,13 @@ export async function listRideRequestDispatchOptions({
       continue;
     }
 
+    const timelineBefore = buildRouteTimeline({
+      vehicle,
+      route: Array.isArray(vehicle.route) ? vehicle.route : [],
+      now,
+      travelMinutes: travelEstimator.travelMinutes,
+      serviceProfile
+    });
     const timelineAfter = buildRouteTimeline({
       vehicle,
       route: plan.route ?? [],
@@ -1458,6 +1491,7 @@ export async function listRideRequestDispatchOptions({
       travelMinutes: travelEstimator.travelMinutes,
       serviceProfile
     });
+    const beforeSummary = summarizeTimelineByRequest(timelineBefore);
     const afterSummary = summarizeTimelineByRequest(timelineAfter);
     const requestSummary = afterSummary.get(rideRequest.id) ?? {};
     const pickupAt = requestSummary.pickupEtaAt ?? null;
@@ -1466,6 +1500,12 @@ export async function listRideRequestDispatchOptions({
       desiredDropoffDate && dropoffAt
         ? roundMinutes((new Date(dropoffAt).getTime() - desiredDropoffDate.getTime()) / (60 * 1000))
         : null;
+    const impacts = buildImpactSummary({
+      beforeSummary,
+      afterSummary,
+      rideRequest,
+      requestLookup
+    });
 
     options.push({
       optionId: `vehicle:${vehicle.id}`,
@@ -1477,6 +1517,7 @@ export async function listRideRequestDispatchOptions({
       plannedPickupAt: pickupAt,
       plannedDropoffAt: dropoffAt,
       desiredDropoffDeltaMinutes: dropoffDeltaMinutes,
+      impactedRequests: impacts,
       routeAfter: decorateTimeline({
         timeline: timelineAfter,
         rideRequest,

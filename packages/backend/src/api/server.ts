@@ -9,6 +9,7 @@ import {
   cancelRideRequest,
   createRideRequest,
   createVehicle,
+  listRideRequestOptions,
   listPhoneRideOptions,
   previewRideRequest,
   createPhoneRideRequest,
@@ -376,10 +377,32 @@ export function createReqmoServer({
           channel: body.channel,
           requestType: body.requestType ?? null,
           desiredDropoffAt: body.desiredDropoffAt ?? body.desiredPickupAt ?? null,
+          preferredVehicleId: body.preferredVehicleId ?? null,
           context: requestContext
         });
         await flushRepository(repository);
 
+        return jsonResponse(res, 200, result);
+      }
+
+      if (req.method === "POST" && pathname === "/api/ride-requests/options") {
+        const body = await parseJsonBody(req);
+        const rideInput = toRideInput(body);
+        const result = await listRideRequestOptions({
+          repository,
+          serviceProfileId: body.serviceProfileId ?? activeServiceProfileId,
+          tenantId: body.tenantId ?? "tenant_default",
+          requesterId: body.requesterId ?? null,
+          pickup: rideInput.pickup,
+          dropoff: rideInput.dropoff,
+          partySize: body.partySize ?? 1,
+          passenger: normalizePassenger(body.passenger),
+          channel: body.channel,
+          requestType: body.requestType ?? null,
+          desiredDropoffAt: body.desiredDropoffAt ?? body.desiredPickupAt ?? null,
+          optionLimit: body.optionLimit ?? 5,
+          context: requestContext
+        });
         return jsonResponse(res, 200, result);
       }
 

@@ -108,6 +108,90 @@ test("api ride-request endpoints preserve desired time window fields", async () 
   assert.equal(requests[0].timeWindow?.requestType, "ARRIVE_BY");
 });
 
+test("api ride-request options can propose multiple strategies and confirm selected option", async () => {
+  const repository = new InMemoryRepository({
+    stops: [
+      { id: "stop_a", name: "Stop A", lat: 33.0, lng: 132.9 },
+      { id: "stop_b", name: "Stop B", lat: 33.01, lng: 132.905 }
+    ],
+    vehicles: [
+      {
+        id: "veh_1",
+        status: "ACTIVE",
+        capacity: 4,
+        onboardCount: 0,
+        currentLocation: { lat: 33.0, lng: 132.9 },
+        route: []
+      },
+      {
+        id: "veh_2",
+        status: "ACTIVE",
+        capacity: 4,
+        onboardCount: 0,
+        currentLocation: { lat: 33.005, lng: 132.901 },
+        route: []
+      }
+    ],
+    serviceProfiles: [createDefaultServiceProfile()]
+  });
+  const { server } = createReqmoServer({ repository });
+
+  const desiredDropoffAt = new Date(Date.now() + 120 * 60 * 1000).toISOString();
+  const optionsResponse = await invokeServer({
+    server,
+    method: "POST",
+    url: "/api/ride-requests/options",
+    body: {
+      pickup: { mode: "FIXED_STOP", stopId: "stop_a" },
+      dropoff: { mode: "FIXED_STOP", stopId: "stop_b" },
+      partySize: 1,
+      desiredDropoffAt,
+      optionLimit: 6
+    }
+  });
+
+  assert.equal(optionsResponse.statusCode, 200);
+  const optionsPayload = JSON.parse(optionsResponse.payload);
+  assert.equal(optionsPayload.status, "ASSIGNABLE");
+  assert.equal(Array.isArray(optionsPayload.options), true);
+  assert.equal(optionsPayload.options.length > 0, true);
+  assert.equal(
+    optionsPayload.options.some((option) => option.strategyKey === "FASTEST"),
+    true
+  );
+  assert.equal(
+    optionsPayload.options.some((option) => option.strategyKey === "REQUESTED_TIME"),
+    true
+  );
+
+  const selectedOption =
+    optionsPayload.options.find((option) => option.strategyKey === "REQUESTED_TIME") ??
+    optionsPayload.options[0];
+  const createResponse = await invokeServer({
+    server,
+    method: "POST",
+    url: "/api/ride-requests",
+    body: {
+      pickup: { mode: "FIXED_STOP", stopId: "stop_a" },
+      dropoff: { mode: "FIXED_STOP", stopId: "stop_b" },
+      partySize: 1,
+      desiredDropoffAt: selectedOption.desiredDropoffAt,
+      requestType: selectedOption.requestType,
+      preferredVehicleId: selectedOption.vehicleId
+    }
+  });
+
+  assert.equal(createResponse.statusCode, 200);
+  const createPayload = JSON.parse(createResponse.payload);
+  assert.equal(createPayload.status, "ASSIGNED");
+  assert.equal(createPayload.rideRequest.assignment?.vehicleId, selectedOption.vehicleId);
+  assert.equal(createPayload.rideRequest.timeWindow?.requestType, selectedOption.requestType);
+  assert.equal(
+    createPayload.rideRequest.timeWindow?.desiredDropoffAt ?? null,
+    selectedOption.desiredDropoffAt ?? null
+  );
+});
+
 test("api can reset ride requests and clear vehicle routes", async () => {
   const repository = new InMemoryRepository({
     stops: [{ id: "shimanto_stop_1", name: "Shimanto Stop", lat: 32.99, lng: 132.93 }],

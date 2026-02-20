@@ -68,6 +68,44 @@ function normalizePreferredVehicleId(value) {
   return normalized || null;
 }
 
+function normalizeOptionLimit(value, fallback = 5) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return fallback;
+  }
+  return Math.min(Math.max(Math.trunc(numeric), 1), 10);
+}
+
+function buildPreviewRideRequest({
+  tenantId,
+  requesterId,
+  channel,
+  pickup,
+  dropoff,
+  partySize,
+  passenger,
+  serviceProfile,
+  timeWindow = null
+}) {
+  return {
+    id: generatePreviewRequestId(),
+    tenantId,
+    requesterId,
+    channel,
+    pickup,
+    dropoff,
+    partySize,
+    passenger,
+    status: "PREVIEW",
+    dispatchMeta: {
+      primaryAlgorithm: serviceProfile.dispatchPolicy.algorithmPrimary,
+      fallbackAlgorithm: serviceProfile.dispatchPolicy.algorithmFallback,
+      serviceProfileId: serviceProfile.id
+    },
+    ...(timeWindow ? { timeWindow } : {})
+  };
+}
+
 function normalizeVehicleTaskType(value) {
   if (typeof value !== "string") {
     return null;
@@ -175,8 +213,7 @@ export async function previewRideRequest({
 
   return previewRideRequestDispatch({
     repository,
-    rideRequest: {
-      id: generatePreviewRequestId(),
+    rideRequest: buildPreviewRideRequest({
       tenantId,
       requesterId,
       channel,
@@ -184,17 +221,158 @@ export async function previewRideRequest({
       dropoff,
       partySize,
       passenger,
-      status: "PREVIEW",
-      dispatchMeta: {
-        primaryAlgorithm: serviceProfile.dispatchPolicy.algorithmPrimary,
-        fallbackAlgorithm: serviceProfile.dispatchPolicy.algorithmFallback,
-        serviceProfileId: serviceProfile.id
-      },
-      ...(timeWindow ? { timeWindow } : {})
-    },
+      serviceProfile,
+      timeWindow
+    }),
     serviceProfile,
     context
   });
+}
+
+export async function listRideRequestOptions({
+  repository,
+  tenantId,
+  requesterId,
+  pickup,
+  dropoff,
+  partySize = 1,
+  passenger = null,
+  channel = CHANNELS.PASSENGER_APP,
+  serviceProfileId,
+  requestType = null,
+  desiredDropoffAt = null,
+  desiredPickupAt = null,
+  optionLimit = 5,
+  context = {}
+}) {
+  const serviceProfile = repository.getServiceProfile(serviceProfileId);
+  if (!serviceProfile) {
+    throw new Error("No active service profile configured");
+  }
+  const requestedTimeWindow = resolveRequestTimeWindow({
+    requestType,
+    desiredDropoffAt,
+    desiredPickupAt
+  });
+  const normalizedLimit = normalizeOptionLimit(optionLimit, 5);
+  const requestedDesiredDropoffAt = requestedTimeWindow?.desiredDropoffAt ?? null;
+
+  const strategies = [
+    {
+      key: "FASTEST",
+      label: "今すぐ向かう",
+      description: "最短で乗車できる案",
+      timeWindow: {
+        requestType: "ASAP",
+        scheduledAt: null,
+        desiredDropoffAt: null
+      }
+    }
+  ];
+
+  if (requestedDesiredDropoffAt) {
+    strategies.push({
+      key: "REQUESTED_TIME",
+      label: "希望時刻に近づける",
+      description: "希望降車時刻を優先する案",
+      timeWindow: {
+        requestType: "ARRIVE_BY",
+        scheduledAt: null,
+        desiredDropoffAt: requestedDesiredDropoffAt
+      }
+    });
+  }
+
+  const strategyResults = [];
+  for (const strategy of strategies) {
+    const previewRequest = buildPreviewRideRequest({
+      tenantId,
+      requesterId,
+      channel,
+      pickup,
+      dropoff,
+      partySize,
+      passenger,
+      serviceProfile,
+      timeWindow: strategy.timeWindow
+    });
+    const result = await listRideRequestDispatchOptions({
+      repository,
+      rideRequest: previewRequest,
+      serviceProfile,
+      context,
+      desiredDropoffAt: strategy.timeWindow.desiredDropoffAt,
+      optionLimit: normalizedLimit
+    });
+    strategyResults.push({
+      strategy,
+      result,
+      options:
+        result.status === "ASSIGNABLE"
+          ? result.options.map((option) => ({
+              ...option,
+              optionId: `${strategy.key}:${option.optionId}`,
+              strategyKey: strategy.key,
+              strategyLabel: strategy.label,
+              strategyDescription: strategy.description,
+              requestType: strategy.timeWindow.requestType,
+              desiredDropoffAt: strategy.timeWindow.desiredDropoffAt
+            }))
+          : []
+    });
+  }
+
+  const buckets = strategyResults.map((entry) => [...entry.options]);
+  const options = [];
+  const seen = new Set();
+  while (options.length < normalizedLimit) {
+    let added = false;
+    for (const bucket of buckets) {
+      if (!bucket.length) {
+        continue;
+      }
+      const option = bucket.shift();
+      const signature = [
+        option.vehicleId ?? "",
+        option.plannedPickupAt ?? "",
+        option.plannedDropoffAt ?? ""
+      ].join("|");
+      if (seen.has(signature)) {
+        continue;
+      }
+      seen.add(signature);
+      options.push(option);
+      added = true;
+      if (options.length >= normalizedLimit) {
+        break;
+      }
+    }
+    if (!added) {
+      break;
+    }
+  }
+
+  if (options.length) {
+    return {
+      status: "ASSIGNABLE",
+      desiredDropoffAt: requestedDesiredDropoffAt,
+      options
+    };
+  }
+
+  const rejected =
+    strategyResults.find((entry) => entry.result.status === "REJECTED" && entry.result.diagnostics) ??
+    strategyResults.find((entry) => entry.result.status === "REJECTED") ??
+    null;
+
+  return {
+    status: "REJECTED",
+    reason: rejected?.result?.reason ?? "NO_FEASIBLE_VEHICLE",
+    diagnostics: rejected?.result?.diagnostics ?? null,
+    resolvedLocations: rejected?.result?.resolvedLocations ?? null,
+    desiredDropoffAt: requestedDesiredDropoffAt,
+    options: []
+  };
 }
 
 export async function createRideRequest({
@@ -210,6 +388,7 @@ export async function createRideRequest({
   requestType = null,
   desiredDropoffAt = null,
   desiredPickupAt = null,
+  preferredVehicleId = null,
   context = {}
 }) {
   const serviceProfile = repository.getServiceProfile(serviceProfileId);
@@ -221,6 +400,7 @@ export async function createRideRequest({
     desiredDropoffAt,
     desiredPickupAt
   });
+  const allowedVehicleId = normalizePreferredVehicleId(preferredVehicleId);
 
   const request = repository.createRideRequest({
     tenantId,
@@ -240,7 +420,13 @@ export async function createRideRequest({
     ...(timeWindow ? { timeWindow } : {})
   });
 
-  return dispatchRideRequest({ repository, rideRequest: request, serviceProfile, context });
+  return dispatchRideRequest({
+    repository,
+    rideRequest: request,
+    serviceProfile,
+    context,
+    allowedVehicleIds: allowedVehicleId ? [allowedVehicleId] : null
+  });
 }
 
 export async function cancelRideRequest({
@@ -585,11 +771,11 @@ export async function listPhoneRideOptions({
     desiredDropoffAt: normalizedDesiredDropoffAt
   });
   const linkedUser = callerE164 ? repository.findUserByPhone(callerE164) : null;
+  const normalizedOptionLimit = normalizeOptionLimit(optionLimit, 5);
 
   return listRideRequestDispatchOptions({
     repository,
-    rideRequest: {
-      id: generatePreviewRequestId(),
+    rideRequest: buildPreviewRideRequest({
       tenantId,
       requesterId: linkedUser?.id ?? null,
       channel: CHANNELS.PHONE_OPERATOR,
@@ -597,22 +783,17 @@ export async function listPhoneRideOptions({
       dropoff,
       partySize,
       passenger: resolvedPassenger,
-      status: "PREVIEW",
-      dispatchMeta: {
-        primaryAlgorithm: serviceProfile.dispatchPolicy.algorithmPrimary,
-        fallbackAlgorithm: serviceProfile.dispatchPolicy.algorithmFallback,
-        serviceProfileId: serviceProfile.id
-      },
+      serviceProfile,
       timeWindow: {
         requestType: resolvedRequestType,
         scheduledAt: null,
         desiredDropoffAt: normalizedDesiredDropoffAt
       }
-    },
+    }),
     serviceProfile,
     context,
     desiredDropoffAt: normalizedDesiredDropoffAt,
-    optionLimit
+    optionLimit: normalizedOptionLimit
   });
 }
 

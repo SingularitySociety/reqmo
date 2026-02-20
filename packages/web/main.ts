@@ -304,6 +304,7 @@ const PREVIEW_REJECTION_LABELS = {
   MAX_WAIT: "乗車までの待ち時間上限を超える",
   MAX_DETOUR: "既存予約への迂回遅延上限を超える",
   MAX_ADDITIONAL_STOPS: "追加停留所数の上限を超える",
+  RESERVATION_WINDOW: "未来予約は時間帯を分けて別便として扱う",
   OFFICE_BREAK_POLICY: "事務所・休憩ポリシーに合致しない"
 };
 
@@ -312,7 +313,8 @@ const PREVIEW_REJECTION_ORDER = [
   "CAPACITY",
   "MAX_WAIT",
   "MAX_DETOUR",
-  "MAX_ADDITIONAL_STOPS"
+  "MAX_ADDITIONAL_STOPS",
+  "RESERVATION_WINDOW"
 ];
 
 function previewRejectionCodeLabel(code) {
@@ -467,6 +469,8 @@ createApp({
     const vehicles = ref([]);
     const requests = ref([]);
     const dispatchPreview = ref(null);
+    const dispatchOptions = ref([]);
+    const selectedDispatchOptionId = ref("");
     const previewDialogOpen = ref(false);
     const resetRequestsDialogOpen = ref(false);
     const previewPayload = ref(null);
@@ -1470,6 +1474,16 @@ createApp({
       }))
     );
 
+    const selectedDispatchOption = computed(() =>
+      dispatchOptions.value.find((option) => option.optionId === selectedDispatchOptionId.value) ?? null
+    );
+    const selectedDispatchStrategyLabel = computed(() => {
+      const label =
+        typeof selectedDispatchOption.value?.strategyLabel === "string"
+          ? selectedDispatchOption.value.strategyLabel.trim()
+          : "";
+      return label;
+    });
     const previewSimulation = computed(() => dispatchPreview.value?.simulation ?? null);
     const hasAssignablePreview = computed(() => dispatchPreview.value?.status === "ASSIGNABLE");
     const previewStatusLabel = computed(() => statusLabel(dispatchPreview.value?.status));
@@ -2745,8 +2759,44 @@ createApp({
       };
     }
 
+    function clearDispatchOptions() {
+      dispatchOptions.value = [];
+      selectedDispatchOptionId.value = "";
+    }
+
+    function buildDispatchPreviewFromOption(option) {
+      if (!option || typeof option !== "object") {
+        return null;
+      }
+      return {
+        status: "ASSIGNABLE",
+        simulation: {
+          vehicleId: option.vehicleId ?? "-",
+          score: option.score ?? null,
+          detourMinutes: option.detourMinutes ?? null,
+          etaPickupMinutes: option.etaPickupMinutes ?? null,
+          etaDropoffMinutes: option.etaDropoffMinutes ?? null,
+          plannedPickupAt: option.plannedPickupAt ?? null,
+          plannedDropoffAt: option.plannedDropoffAt ?? null,
+          routeAfter: Array.isArray(option.routeAfter) ? option.routeAfter : [],
+          impactedRequests: Array.isArray(option.impactedRequests) ? option.impactedRequests : []
+        }
+      };
+    }
+
+    function applySelectedDispatchOption() {
+      const option = selectedDispatchOption.value;
+      if (!option) {
+        dispatchPreview.value = null;
+        return;
+      }
+      dispatchPreview.value = buildDispatchPreviewFromOption(option);
+      refreshLeafletMap({ focusSelected: true });
+    }
+
     function clearDispatchPreview() {
       dispatchPreview.value = null;
+      clearDispatchOptions();
       previewDialogOpen.value = false;
       previewPayload.value = null;
       previewDirty.value = false;
@@ -2759,13 +2809,28 @@ createApp({
 
       try {
         const payload = buildDispatchPayload();
-        const preview = await apiPost("/api/ride-requests/preview", payload);
-        dispatchPreview.value = preview;
+        const result = await apiPost("/api/ride-requests/options", payload);
         previewDialogOpen.value = true;
         previewPayload.value = payload;
         previewDirty.value = false;
-        refreshLeafletMap({ focusSelected: true });
+
+        if (result.status !== "ASSIGNABLE" || !Array.isArray(result.options) || !result.options.length) {
+          clearDispatchOptions();
+          dispatchPreview.value = {
+            status: "REJECTED",
+            reason: result.reason ?? "NO_FEASIBLE_VEHICLE",
+            diagnostics: result.diagnostics ?? null
+          };
+          refreshLeafletMap({ focusSelected: true });
+          return;
+        }
+
+        dispatchOptions.value = result.options;
+        selectedDispatchOptionId.value = result.options[0].optionId;
+        applySelectedDispatchOption();
       } catch (error) {
+        clearDispatchOptions();
+        dispatchPreview.value = null;
         errorMessage.value = error.message;
       } finally {
         loading.value = false;
@@ -2775,7 +2840,7 @@ createApp({
     async function confirmDispatchRequest() {
       errorMessage.value = "";
       if (!hasAssignablePreview.value || !previewPayload.value) {
-        errorMessage.value = "先に最適経路を試算してください。";
+        errorMessage.value = "先に候補を算出してください。";
         return;
       }
       if (previewDirty.value) {
@@ -2783,12 +2848,20 @@ createApp({
         return;
       }
 
+      const selectedOption = selectedDispatchOption.value;
+      if (!selectedOption) {
+        errorMessage.value = "候補が未選択です。再試算して候補を選んでください。";
+        return;
+      }
+
       loading.value = true;
       try {
-        const payload = { ...previewPayload.value };
-        if (previewDropoffSuggestion.value?.suggestedDropoffAt) {
-          payload.desiredDropoffAt = previewDropoffSuggestion.value.suggestedDropoffAt;
-        }
+        const payload = {
+          ...previewPayload.value,
+          preferredVehicleId: selectedOption.vehicleId ?? null,
+          requestType: selectedOption.requestType ?? "ARRIVE_BY",
+          desiredDropoffAt: selectedOption.desiredDropoffAt ?? null
+        };
         await apiPost("/api/ride-requests", payload);
         clearDispatchPreview();
         await refreshAll();
@@ -3108,6 +3181,13 @@ createApp({
       { deep: true }
     );
 
+    watch(selectedDispatchOptionId, () => {
+      if (!dispatchOptions.value.length) {
+        return;
+      }
+      applySelectedDispatchOption();
+    });
+
     watch(
       dispatchPreview,
       () => {
@@ -3193,6 +3273,9 @@ createApp({
       serviceProfile,
       form,
       callForm,
+      dispatchOptions,
+      selectedDispatchOptionId,
+      selectedDispatchStrategyLabel,
       callRideOptions,
       selectedCallOptionId,
       callDesiredDropoffAt,
@@ -3579,7 +3662,43 @@ createApp({
             入力内容が変更されています。再試算してから追加してください。
           </div>
 
+          <div v-if="dispatchOptions.length" class="rq-form-section rq-call-options-panel mb-2">
+            <div class="rq-preview-subtitle">予約候補（選択）</div>
+            <div class="rq-call-options-list">
+              <label
+                v-for="option in dispatchOptions"
+                :key="option.optionId"
+                class="rq-call-option-item"
+                :class="{ 'is-selected': selectedDispatchOptionId === option.optionId }"
+              >
+                <input
+                  type="radio"
+                  name="dispatch-option"
+                  :value="option.optionId"
+                  v-model="selectedDispatchOptionId"
+                />
+                <div class="rq-call-option-body">
+                  <div class="rq-call-option-top">
+                    <span class="rq-call-option-vehicle">{{ option.strategyLabel }} / {{ option.vehicleId }}</span>
+                    <span class="rq-call-option-pickup">乗車 {{ formatTimeLabel(option.plannedPickupAt) }}</span>
+                  </div>
+                  <div class="rq-call-option-meta">
+                    <span>降車 {{ formatTimeLabel(option.plannedDropoffAt) }}</span>
+                    <span v-if="option.desiredDropoffDeltaMinutes !== null">
+                      希望降車との差 {{ formatSignedMinutes(option.desiredDropoffDeltaMinutes) }}
+                    </span>
+                    <span v-else>{{ option.strategyDescription || '最短案内' }}</span>
+                  </div>
+                </div>
+              </label>
+            </div>
+          </div>
+
           <div class="rq-preview-kpis">
+            <div class="rq-preview-kpi">
+              <span class="rq-preview-kpi-label">案内方針</span>
+              <span class="rq-preview-kpi-value">{{ selectedDispatchStrategyLabel || '候補' }}</span>
+            </div>
             <div class="rq-preview-kpi">
               <span class="rq-preview-kpi-label">担当車両</span>
               <span class="rq-preview-kpi-value">{{ previewSimulation.vehicleId }}</span>
@@ -3929,7 +4048,7 @@ createApp({
         </div>
 
         <v-btn color="primary" block prepend-icon="mdi-calculator-variant-outline" :loading="loading" size="small" density="comfortable" @click="previewDispatchRequest" class="rq-submit-btn rq-action-btn">
-          最適経路を試算
+          候補を試算
         </v-btn>
 
       </div>
