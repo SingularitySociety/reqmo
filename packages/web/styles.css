@@ -188,6 +188,12 @@ html, body, #app {
   color: var(--rq-ink-muted) !important;
 }
 
+.rq-analytics-link {
+  font-size: 0.74rem !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.02em;
+}
+
 /* ===== エラーバー ===== */
 .rq-error-bar {
   display: flex;

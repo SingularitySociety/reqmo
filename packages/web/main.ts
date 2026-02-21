@@ -4108,6 +4108,17 @@ createApp({
         <div class="rq-clock-date">{{ currentDateLabel }}</div>
       </div>
       <v-btn
+        color="primary"
+        variant="tonal"
+        size="small"
+        density="comfortable"
+        prepend-icon="mdi-chart-box-outline"
+        class="rq-analytics-link"
+        href="/analytics/"
+      >
+        Analytics
+      </v-btn>
+      <v-btn
         icon="mdi-refresh"
         variant="text"
         :loading="loading"
