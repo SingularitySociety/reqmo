@@ -26,6 +26,7 @@ import {
 } from "./functions.ts";
 import { createRoutingContextFromEnv } from "../routing/service.ts";
 import { reverseGeocodePoint } from "../location/reverseGeocode.ts";
+import { getHighsRuntimeDiagnostics } from "../dispatch/highs.ts";
 
 function jsonResponse(res, status, body) {
   const payload = JSON.stringify(body);
@@ -311,10 +312,17 @@ export function createReqmoServer({
       const pathname = parsedUrl.pathname;
 
       if (req.method === "GET" && req.url === "/api/health") {
+        const activeProfile = repository.getServiceProfile(activeServiceProfileId);
         return jsonResponse(res, 200, {
           ok: true,
           service: "reqmo-backend",
-          seedSource: seeded.source
+          seedSource: seeded.source,
+          activeServiceProfileId,
+          dispatchPolicy: {
+            algorithmPrimary: activeProfile?.dispatchPolicy?.algorithmPrimary ?? null,
+            algorithmFallback: activeProfile?.dispatchPolicy?.algorithmFallback ?? null
+          },
+          highs: getHighsRuntimeDiagnostics()
         });
       }
 

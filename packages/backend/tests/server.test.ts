@@ -18,6 +18,25 @@ test("server bootstrap seeds repository for standalone operation", () => {
   assert.equal(typeof server.listen, "function");
 });
 
+test("api health exposes dispatch profile and highs diagnostics", async () => {
+  const { server, serviceProfileId } = createReqmoServer();
+  const response = await invokeServer({
+    server,
+    method: "GET",
+    url: "/api/health",
+    body: {}
+  });
+
+  assert.equal(response.statusCode, 200);
+  const payload = JSON.parse(response.payload);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.activeServiceProfileId, serviceProfileId);
+  assert.equal(typeof payload.dispatchPolicy?.algorithmPrimary, "string");
+  assert.equal(typeof payload.dispatchPolicy?.algorithmFallback, "string");
+  assert.equal(typeof payload.highs?.disabledByEnv, "boolean");
+  assert.equal(typeof payload.highs?.loadAttempted, "boolean");
+});
+
 test("server bootstrap does not inject demo stops when repository already has stops", () => {
   const repository = new InMemoryRepository({
     stops: [{ id: "shimanto_stop_1", name: "Shimanto Stop", lat: 32.99, lng: 132.93 }],

@@ -1,5 +1,6 @@
 const DEFAULT_TIME_LIMIT_SECONDS = 0.5;
 const MAX_TIME_LIMIT_SECONDS = 10;
+const MAX_ERROR_MESSAGE_LENGTH = 240;
 
 function normalizeNonNegative(value, fallback = 0) {
   const numeric = Number(value);
@@ -91,18 +92,69 @@ function isHighsSolverDisabledByEnv() {
   return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
 }
 
+function trimErrorMessage(message) {
+  if (typeof message !== "string") {
+    return "unknown";
+  }
+  return message.slice(0, MAX_ERROR_MESSAGE_LENGTH);
+}
+
+function normalizeErrorMessage(error) {
+  if (error instanceof Error) {
+    return trimErrorMessage(error.message || error.name || "Error");
+  }
+  return trimErrorMessage(String(error ?? "unknown"));
+}
+
+const highsRuntimeDiagnostics = {
+  disabledByEnv: false,
+  loadAttempted: false,
+  loadSucceeded: false,
+  loadError: null,
+  lastLoadedAt: null,
+  solveAttemptedCount: 0,
+  solveSuccessCount: 0,
+  solveErrorCount: 0,
+  lastSolveError: null
+};
+
+let hasLoggedLoadFailure = false;
 let highsModulePromise = null;
 
 async function loadHighsSolver() {
-  if (isHighsSolverDisabledByEnv()) {
+  const disabledByEnv = isHighsSolverDisabledByEnv();
+  highsRuntimeDiagnostics.disabledByEnv = disabledByEnv;
+  if (disabledByEnv) {
     return null;
   }
   if (!highsModulePromise) {
+    highsRuntimeDiagnostics.loadAttempted = true;
     highsModulePromise = import("highs-solver")
-      .then((module) => module)
-      .catch(() => null);
+      .then((module) => {
+        highsRuntimeDiagnostics.loadSucceeded = true;
+        highsRuntimeDiagnostics.loadError = null;
+        highsRuntimeDiagnostics.lastLoadedAt = new Date().toISOString();
+        return module;
+      })
+      .catch((error) => {
+        highsRuntimeDiagnostics.loadSucceeded = false;
+        highsRuntimeDiagnostics.loadError = normalizeErrorMessage(error);
+        if (!hasLoggedLoadFailure) {
+          hasLoggedLoadFailure = true;
+          console.error(
+            `[dispatch-highs] failed to load highs-solver (${process.platform}/${process.arch} node=${process.version}): ${highsRuntimeDiagnostics.loadError}`
+          );
+        }
+        return null;
+      });
   }
   return highsModulePromise;
+}
+
+export function getHighsRuntimeDiagnostics() {
+  return {
+    ...highsRuntimeDiagnostics
+  };
 }
 
 export async function selectCandidateByHighs({
@@ -112,12 +164,17 @@ export async function selectCandidateByHighs({
   if (!Array.isArray(candidates) || candidates.length === 0) {
     return null;
   }
+  highsRuntimeDiagnostics.solveAttemptedCount += 1;
 
   const highs = await loadHighsSolver();
   if (!highs || typeof highs.solve !== "function") {
+    highsRuntimeDiagnostics.lastSolveError = highsRuntimeDiagnostics.loadError ?? "highs unavailable";
+    highsRuntimeDiagnostics.solveErrorCount += 1;
     return null;
   }
   if (candidates.length === 1) {
+    highsRuntimeDiagnostics.solveSuccessCount += 1;
+    highsRuntimeDiagnostics.lastSolveError = null;
     return candidates[0];
   }
 
@@ -125,17 +182,27 @@ export async function selectCandidateByHighs({
     Number(highs?.ColumnType?.INTEGER) || 1;
   const model = buildSingleSelectionModel(candidates, integerColumnType);
 
-  const solution = await highs.solve(model, {
-    options: {
-      output_flag: false,
-      log_to_console: false,
-      time_limit: resolveTimeLimitSeconds(timeLimitSeconds),
-      mip_rel_gap: 0
-    }
-  });
+  let solution;
+  try {
+    solution = await highs.solve(model, {
+      options: {
+        output_flag: false,
+        log_to_console: false,
+        time_limit: resolveTimeLimitSeconds(timeLimitSeconds),
+        mip_rel_gap: 0
+      }
+    });
+  } catch (error) {
+    highsRuntimeDiagnostics.lastSolveError = normalizeErrorMessage(error);
+    highsRuntimeDiagnostics.solveErrorCount += 1;
+    console.error(`[dispatch-highs] solve failed: ${highsRuntimeDiagnostics.lastSolveError}`);
+    return null;
+  }
 
   const columns = solution?.primal?.columns;
   if (!columns || typeof columns.length !== "number") {
+    highsRuntimeDiagnostics.lastSolveError = "missing primal columns";
+    highsRuntimeDiagnostics.solveErrorCount += 1;
     return null;
   }
 
@@ -144,5 +211,13 @@ export async function selectCandidateByHighs({
     selectedIndex = 0;
   }
 
-  return candidates[selectedIndex] ?? null;
+  const selected = candidates[selectedIndex] ?? null;
+  if (selected) {
+    highsRuntimeDiagnostics.solveSuccessCount += 1;
+    highsRuntimeDiagnostics.lastSolveError = null;
+  } else {
+    highsRuntimeDiagnostics.solveErrorCount += 1;
+    highsRuntimeDiagnostics.lastSolveError = "selected candidate was null";
+  }
+  return selected;
 }
