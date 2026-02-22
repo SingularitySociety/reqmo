@@ -514,6 +514,33 @@ function statusLabel(status) {
   return STATUS_LABELS[normalized] ?? normalized;
 }
 
+const DISPATCH_ALGORITHM_LABELS = {
+  INSERTION: "INSERTION（局所挿入）",
+  GREEDY: "GREEDY（貪欲）",
+  HIGHS: "HIGHS（MIP選択）"
+};
+
+function dispatchAlgorithmLabel(value) {
+  const normalized =
+    typeof value === "string" ? value.trim().toUpperCase() : "";
+  if (!normalized) {
+    return "-";
+  }
+  return DISPATCH_ALGORITHM_LABELS[normalized] ?? normalized;
+}
+
+function dispatchAlgorithmPhaseLabel(value) {
+  const normalized =
+    typeof value === "string" ? value.trim().toUpperCase() : "";
+  if (normalized === "COMPLEX_OR") {
+    return "複雑案件OR";
+  }
+  if (normalized === "FALLBACK") {
+    return "フォールバック";
+  }
+  return "";
+}
+
 const LOCATION_INPUT_OPTIONS = [
   {
     title: "バス停を指定",
@@ -1931,6 +1958,12 @@ createApp({
     const previewDropoffClock = computed(
       () => formatDateTimeLabel(previewSimulation.value?.plannedDropoffAt)
     );
+    const previewAlgorithmLabel = computed(
+      () => dispatchAlgorithmLabel(previewSimulation.value?.selectedAlgorithm)
+    );
+    const previewAlgorithmPhaseLabel = computed(
+      () => dispatchAlgorithmPhaseLabel(previewSimulation.value?.algorithmPhase)
+    );
     const previewRouteDateKey = computed(() => {
       const baseTimeValue =
         selectedDispatchOption.value?.plannedPickupAt ??
@@ -2756,7 +2789,9 @@ createApp({
         return;
       }
 
-      const resolvedCacheKey = cacheKey || buildRouteCacheKey(normalized);
+      const cachePoints =
+        keepCurrentPointOnCachedRoute && normalized.length > 2 ? normalized.slice(1) : normalized;
+      const resolvedCacheKey = cacheKey || buildRouteCacheKey(cachePoints);
       const cached = routeGeometryCache.get(resolvedCacheKey);
       let drawPoints = normalized;
       if (cached?.status === "ready" && Array.isArray(cached.polyline) && cached.polyline.length > 1) {
@@ -2765,7 +2800,12 @@ createApp({
           if (reused) {
             drawPoints = reused;
           } else {
-            void requestRouteGeometry(resolvedCacheKey, normalized);
+            const connector = normalizeRoutePoints([normalized[0], cached.polyline[0]]);
+            if (connector.length > 1) {
+              drawPoints = normalizeRoutePoints([...connector, ...cached.polyline.slice(1)]);
+            } else {
+              drawPoints = cached.polyline;
+            }
           }
         } else {
           drawPoints = cached.polyline;
@@ -3249,6 +3289,10 @@ createApp({
         status: "ASSIGNABLE",
         simulation: {
           vehicleId: option.vehicleId ?? "-",
+          selectedAlgorithm: option.selectedAlgorithm ?? null,
+          algorithmPhase: option.algorithmPhase ?? null,
+          primaryAlgorithm: option.primaryAlgorithm ?? null,
+          fallbackAlgorithm: option.fallbackAlgorithm ?? null,
           score: option.score ?? null,
           detourMinutes: option.detourMinutes ?? null,
           etaPickupMinutes: option.etaPickupMinutes ?? null,
@@ -3792,6 +3836,8 @@ createApp({
       previewVehicleLabel,
       previewPickupClock,
       previewDropoffClock,
+      previewAlgorithmLabel,
+      previewAlgorithmPhaseLabel,
       previewDropoffSuggestion,
       previewRejectDiagnostics,
       previewRejectSummary,
@@ -3836,6 +3882,8 @@ createApp({
       hasNextPanelDate,
       visibleRequestDateSections,
       statusLabel,
+      dispatchAlgorithmLabel,
+      dispatchAlgorithmPhaseLabel,
       selectRequest,
       selectVehicleRouteStep,
       movePanelDate,
@@ -4214,6 +4262,12 @@ createApp({
                     </div>
                     <div class="rq-call-option-meta">
                       <span>降車 {{ formatDateTimeLabel(option.plannedDropoffAt) }}</span>
+                      <span>
+                        計算 {{ dispatchAlgorithmLabel(option.selectedAlgorithm) }}
+                        <template v-if="dispatchAlgorithmPhaseLabel(option.algorithmPhase)">
+                          ({{ dispatchAlgorithmPhaseLabel(option.algorithmPhase) }})
+                        </template>
+                      </span>
                       <span v-if="option.desiredDropoffDeltaMinutes !== null">
                         希望降車との差 {{ formatSignedMinutes(option.desiredDropoffDeltaMinutes) }}
                       </span>
@@ -4229,6 +4283,15 @@ createApp({
             <div class="rq-preview-kpi">
               <span class="rq-preview-kpi-label">案内方針</span>
               <span class="rq-preview-kpi-value">{{ selectedDispatchStrategyLabel || '候補' }}</span>
+            </div>
+            <div class="rq-preview-kpi">
+              <span class="rq-preview-kpi-label">計算アルゴリズム</span>
+              <span class="rq-preview-kpi-value">
+                {{ previewAlgorithmLabel }}
+                <template v-if="previewAlgorithmPhaseLabel">
+                  ({{ previewAlgorithmPhaseLabel }})
+                </template>
+              </span>
             </div>
             <div class="rq-preview-kpi">
               <span class="rq-preview-kpi-label">担当車両</span>
@@ -4824,6 +4887,12 @@ createApp({
                   </div>
                   <div class="rq-call-option-meta">
                     <span>降車 {{ formatDateTimeLabel(option.plannedDropoffAt) }}</span>
+                    <span>
+                      計算 {{ dispatchAlgorithmLabel(option.selectedAlgorithm) }}
+                      <template v-if="dispatchAlgorithmPhaseLabel(option.algorithmPhase)">
+                        ({{ dispatchAlgorithmPhaseLabel(option.algorithmPhase) }})
+                      </template>
+                    </span>
                     <span v-if="option.desiredDropoffDeltaMinutes !== null">
                       希望降車との差 {{ formatSignedMinutes(option.desiredDropoffDeltaMinutes) }}
                     </span>

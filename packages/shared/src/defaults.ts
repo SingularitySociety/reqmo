@@ -59,13 +59,21 @@ export function createDefaultServiceProfile(overrides = {}) {
       dropoffServiceMinutes: 0,
       arriveByEarlyPickupToleranceMinutes: 10,
       futureReservationSeparationMinutes: 60,
+      highs: {
+        timeLimitSec: 0.5,
+        enabledForComplex: true,
+        minExistingRouteTasks: 4,
+        minCandidateCount: 10,
+        minActiveVehicles: 2
+      },
       weights: {
         pickupDelay: 0.4,
         detour: 0.25,
         deadhead: 0.2,
         rideTimeDetour: 0.1,
         lateness: 0.15,
-        dropoffPriority: 0
+        dropoffPriority: 0,
+        existingDelaySum: 0
       }
     },
     farePolicy: {

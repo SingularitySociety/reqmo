@@ -91,10 +91,38 @@ function isHighsSolverDisabledByEnv() {
   return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
 }
 
+function isHighsSolverForceEnabledByEnv() {
+  const raw = String(process.env.REQMO_FORCE_HIGHS_SOLVER ?? "").trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
+function isLikelyUnsupportedNativeRuntime() {
+  if (process.platform !== "linux") {
+    return false;
+  }
+  if (isHighsSolverForceEnabledByEnv()) {
+    return false;
+  }
+  try {
+    const report = process.report?.getReport?.();
+    const glibcVersion = report?.header?.glibcVersionRuntime;
+    // musl-based runtimes (e.g. Alpine) often fail to load highs native addon prebuilds.
+    if (!glibcVersion) {
+      return true;
+    }
+  } catch (_error) {
+    // Ignore report parsing failure and continue.
+  }
+  return false;
+}
+
 let highsModulePromise = null;
 
 async function loadHighsSolver() {
   if (isHighsSolverDisabledByEnv()) {
+    return null;
+  }
+  if (isLikelyUnsupportedNativeRuntime()) {
     return null;
   }
   if (!highsModulePromise) {
@@ -112,13 +140,13 @@ export async function selectCandidateByHighs({
   if (!Array.isArray(candidates) || candidates.length === 0) {
     return null;
   }
-  if (candidates.length === 1) {
-    return candidates[0];
-  }
 
   const highs = await loadHighsSolver();
   if (!highs || typeof highs.solve !== "function") {
     return null;
+  }
+  if (candidates.length === 1) {
+    return candidates[0];
   }
 
   const integerColumnType =

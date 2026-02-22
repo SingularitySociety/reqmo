@@ -88,6 +88,8 @@ test("dispatch assigns nearest feasible vehicle", async () => {
 
   assert.equal(result.status, "ASSIGNED");
   assert.equal(result.rideRequest.assignment.vehicleId, "veh_1");
+  assert.equal(result.simulation?.selectedAlgorithm, "INSERTION");
+  assert.equal(result.simulation?.algorithmPhase, "PRIMARY");
 });
 
 test("dispatch works when HIGHS is configured as primary algorithm", async () => {
@@ -115,6 +117,8 @@ test("dispatch works when HIGHS is configured as primary algorithm", async () =>
 
   assert.equal(result.status, "ASSIGNED");
   assert.equal(result.rideRequest.assignment?.vehicleId, "veh_1");
+  assert.equal(result.simulation?.selectedAlgorithm, "HIGHS");
+  assert.equal(result.simulation?.algorithmPhase, "PRIMARY");
 });
 
 test("dispatch falls back when HIGHS solver is disabled", async () => {
@@ -145,6 +149,54 @@ test("dispatch falls back when HIGHS solver is disabled", async () => {
 
     assert.equal(result.status, "ASSIGNED");
     assert.equal(result.rideRequest.assignment?.vehicleId, "veh_1");
+    assert.equal(result.simulation?.selectedAlgorithm, "INSERTION");
+    assert.equal(result.simulation?.algorithmPhase, "FALLBACK");
+  } finally {
+    if (previous === undefined) {
+      delete process.env.REQMO_DISABLE_HIGHS_SOLVER;
+    } else {
+      process.env.REQMO_DISABLE_HIGHS_SOLVER = previous;
+    }
+  }
+});
+
+test("dispatch prioritizes HIGHS when complex reservation policy is triggered", async () => {
+  const previous = process.env.REQMO_DISABLE_HIGHS_SOLVER;
+  delete process.env.REQMO_DISABLE_HIGHS_SOLVER;
+  try {
+    const repository = seedRepository();
+    const baseProfile = createDefaultServiceProfile();
+    const profile = createDefaultServiceProfile({
+      id: "complex_or_profile",
+      dispatchPolicy: {
+        ...baseProfile.dispatchPolicy,
+        algorithmPrimary: "INSERTION",
+        algorithmFallback: "GREEDY",
+        highs: {
+          ...(baseProfile.dispatchPolicy.highs ?? {}),
+          enabledForComplex: true,
+          minExistingRouteTasks: 0,
+          minCandidateCount: 1,
+          minActiveVehicles: 1
+        }
+      }
+    });
+    upsertServiceProfile({ repository, profile });
+
+    const result = await createRideRequest({
+      repository,
+      tenantId: "tenant_default",
+      requesterId: "user_complex_or",
+      pickup: { mode: "FREE_POINT", point: { lat: 33.0002, lng: 132.9002 } },
+      dropoff: { mode: "FIXED_STOP", stopId: "stop_b" },
+      partySize: 1,
+      serviceProfileId: profile.id
+    });
+
+    assert.equal(result.status, "ASSIGNED");
+    assert.equal(result.rideRequest.assignment?.vehicleId, "veh_1");
+    assert.equal(result.simulation?.selectedAlgorithm, "HIGHS");
+    assert.equal(result.simulation?.algorithmPhase, "COMPLEX_OR");
   } finally {
     if (previous === undefined) {
       delete process.env.REQMO_DISABLE_HIGHS_SOLVER;
@@ -1066,6 +1118,129 @@ test("dispatch prefers dropoff-first plan when dropoffPriority is enabled", asyn
   assert.ok(dropoffR1WithPriority >= 0);
   assert.ok(pickupNewWithPriority >= 0);
   assert.equal(dropoffR1WithPriority < pickupNewWithPriority, true);
+});
+
+test("A/B tuning (dropoffPriority + tighter maxDetour) reduces existing dropoff delay", async () => {
+  const repository = new InMemoryRepository();
+  const baseProfile = createDefaultServiceProfile();
+  const profileA = createDefaultServiceProfile({
+    id: "ab_profile_a",
+    dispatchPolicy: {
+      ...baseProfile.dispatchPolicy,
+      weights: {
+        ...baseProfile.dispatchPolicy.weights,
+        dropoffPriority: 0,
+        existingDelaySum: 0
+      }
+    },
+    poolingPolicy: {
+      ...baseProfile.poolingPolicy,
+      maxDetourMinutes: 10
+    }
+  });
+  const profileB = createDefaultServiceProfile({
+    id: "ab_profile_b",
+    dispatchPolicy: {
+      ...baseProfile.dispatchPolicy,
+      weights: {
+        ...baseProfile.dispatchPolicy.weights,
+        dropoffPriority: 1.5,
+        existingDelaySum: 0.6
+      }
+    },
+    poolingPolicy: {
+      ...baseProfile.poolingPolicy,
+      maxDetourMinutes: 7
+    }
+  });
+  upsertServiceProfile({ repository, profile: profileA });
+  upsertServiceProfile({ repository, profile: profileB });
+
+  repository.addVehicle({
+    id: "veh_1",
+    status: "ACTIVE",
+    capacity: 4,
+    onboardCount: 0,
+    currentLocation: { lat: 33, lng: 132.9 },
+    route: [
+      {
+        type: "PICKUP",
+        requestId: "r1",
+        point: { lat: 33.00123234077136, lng: 132.9027022653273 },
+        loadChange: 1
+      },
+      {
+        type: "DROPOFF",
+        requestId: "r1",
+        point: { lat: 33.004617000194514, lng: 132.90038125198956 },
+        loadChange: -1
+      },
+      {
+        type: "PICKUP",
+        requestId: "r2",
+        point: { lat: 33.00265903659541, lng: 132.90487605641985 },
+        loadChange: 2
+      },
+      {
+        type: "DROPOFF",
+        requestId: "r2",
+        point: { lat: 33.0020492158169, lng: 132.9001024799698 },
+        loadChange: -2
+      }
+    ]
+  });
+
+  const input = {
+    tenantId: "tenant_default",
+    requesterId: "user_ab_tuning",
+    pickup: {
+      mode: "FREE_POINT",
+      point: { lat: 33.00405860618066, lng: 132.90040670554254 }
+    },
+    dropoff: {
+      mode: "FREE_POINT",
+      point: { lat: 33.00488278887875, lng: 132.90207485043206 }
+    },
+    partySize: 1
+  };
+
+  const previewA = await previewRideRequest({
+    repository,
+    serviceProfileId: profileA.id,
+    ...input
+  });
+  const previewB = await previewRideRequest({
+    repository,
+    serviceProfileId: profileB.id,
+    ...input
+  });
+
+  assert.equal(previewA.status, "ASSIGNABLE");
+  assert.equal(previewB.status, "ASSIGNABLE");
+
+  const countConsecutivePickupPairs = (route) =>
+    route.reduce((count, task, index) => {
+      if (index === 0) {
+        return count;
+      }
+      return route[index - 1].type === "PICKUP" && task.type === "PICKUP"
+        ? count + 1
+        : count;
+    }, 0);
+
+  const consecutivePairsA = countConsecutivePickupPairs(previewA.simulation.routeAfter);
+  const consecutivePairsB = countConsecutivePickupPairs(previewB.simulation.routeAfter);
+  assert.equal(consecutivePairsB < consecutivePairsA, true);
+
+  const dropoffDelayOfR1 = (preview) =>
+    Number(
+      (preview.simulation?.impactedRequests ?? []).find((impact) => impact.requestId === "r1")
+        ?.dropoffDeltaMinutes ?? 0
+    );
+
+  const r1DelayA = dropoffDelayOfR1(previewA);
+  const r1DelayB = dropoffDelayOfR1(previewB);
+  assert.equal(r1DelayB <= r1DelayA, true);
 });
 
 test("dispatch interleaves overlapping requests without completing the newer request first", async () => {
