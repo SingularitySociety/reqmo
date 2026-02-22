@@ -577,6 +577,13 @@ function findOption(options, value) {
   return options.find((option) => option.value === value) ?? null;
 }
 
+function normalizeStopSearchText(value) {
+  if (value === null || value === undefined) {
+    return "";
+  }
+  return String(value).normalize("NFKC").toLowerCase().trim();
+}
+
 createApp({
   setup() {
     const drawerOpen = ref(false);
@@ -701,8 +708,22 @@ createApp({
 
     const availableStops = computed(() => stops.value.map((stop) => ({
       title: `${stop.name} (${stop.id})`,
-      value: stop.id
+      value: stop.id,
+      searchText: `${stop.name} ${stop.id}`
     })));
+
+    function filterStopItem(value, query, item) {
+      const normalizedQuery = normalizeStopSearchText(query);
+      if (!normalizedQuery) {
+        return true;
+      }
+      const normalizedValue = normalizeStopSearchText(value);
+      const normalizedExtra = normalizeStopSearchText(item?.raw?.searchText);
+      return (
+        normalizedValue.includes(normalizedQuery) ||
+        normalizedExtra.includes(normalizedQuery)
+      );
+    }
 
     const locationInputOptions = LOCATION_INPUT_OPTIONS;
     const locationPolicyOptions = LOCATION_POLICY_OPTIONS;
@@ -4405,14 +4426,20 @@ createApp({
           <div v-if="mapSelectionField === 'pickup'" class="rq-inline-help mb-1">
             地図をクリックすると、{{ form.pickupMode === 'FIXED_STOP' ? '最寄りのバス停' : '地点座標' }}を設定します。
           </div>
-          <v-select
+          <v-autocomplete
             v-if="form.pickupMode==='FIXED_STOP'"
             :items="availableStops"
             v-model="form.pickupStopId"
+            item-title="title"
+            item-value="value"
+            :custom-filter="filterStopItem"
             density="compact"
             variant="outlined"
             hide-details
-            placeholder="バス停を選択"
+            placeholder="バス停を指定"
+            no-data-text="一致するバス停がありません"
+            auto-select-first
+            clearable
           />
           <div v-else>
             <v-text-field
@@ -4480,14 +4507,20 @@ createApp({
           <div v-if="mapSelectionField === 'dropoff'" class="rq-inline-help mb-1">
             地図をクリックすると、{{ form.dropoffMode === 'FIXED_STOP' ? '最寄りのバス停' : '地点座標' }}を設定します。
           </div>
-          <v-select
+          <v-autocomplete
             v-if="form.dropoffMode==='FIXED_STOP'"
             :items="availableStops"
             v-model="form.dropoffStopId"
+            item-title="title"
+            item-value="value"
+            :custom-filter="filterStopItem"
             density="compact"
             variant="outlined"
             hide-details
-            placeholder="バス停を選択"
+            placeholder="バス停を指定"
+            no-data-text="一致するバス停がありません"
+            auto-select-first
+            clearable
           />
           <div v-else>
             <v-text-field
@@ -4724,13 +4757,39 @@ createApp({
           <div class="rq-form-label">
             <v-icon size="14" color="#0f766e">mdi-map-marker-up</v-icon>乗車バス停
           </div>
-          <v-select :items="availableStops" v-model="callForm.pickupStopId" density="compact" variant="outlined" hide-details />
+          <v-autocomplete
+            :items="availableStops"
+            v-model="callForm.pickupStopId"
+            item-title="title"
+            item-value="value"
+            :custom-filter="filterStopItem"
+            density="compact"
+            variant="outlined"
+            hide-details
+            placeholder="バス停を指定"
+            no-data-text="一致するバス停がありません"
+            auto-select-first
+            clearable
+          />
         </div>
         <div class="rq-form-section">
           <div class="rq-form-label">
             <v-icon size="14" color="#ea580c">mdi-map-marker-down</v-icon>降車バス停
           </div>
-          <v-select :items="availableStops" v-model="callForm.dropoffStopId" density="compact" variant="outlined" hide-details />
+          <v-autocomplete
+            :items="availableStops"
+            v-model="callForm.dropoffStopId"
+            item-title="title"
+            item-value="value"
+            :custom-filter="filterStopItem"
+            density="compact"
+            variant="outlined"
+            hide-details
+            placeholder="バス停を指定"
+            no-data-text="一致するバス停がありません"
+            auto-select-first
+            clearable
+          />
         </div>
         <v-btn color="secondary" block variant="tonal" prepend-icon="mdi-format-list-bulleted-square" :loading="loading" size="small" density="comfortable" @click="fetchPhoneRideOptions" class="rq-action-btn">
           降車時刻ベースで候補取得

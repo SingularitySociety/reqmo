@@ -66,6 +66,14 @@ function seedRepositoryWithOnboardDropoff({
   };
 }
 
+function plannedRideMinutes(rideRequest) {
+  const pickupAt = Date.parse(rideRequest?.assignment?.plannedPickupAt ?? "");
+  const dropoffAt = Date.parse(rideRequest?.assignment?.plannedDropoffAt ?? "");
+  assert.equal(Number.isFinite(pickupAt), true);
+  assert.equal(Number.isFinite(dropoffAt), true);
+  return (dropoffAt - pickupAt) / (60 * 1000);
+}
+
 test("dispatch assigns nearest feasible vehicle", async () => {
   const repository = seedRepository();
 
@@ -696,6 +704,136 @@ test("dispatch can backtrack slightly to pick up another customer en route", asy
     impactedExisting.dropoffDeltaMinutes <= createDefaultServiceProfile().poolingPolicy.maxDetourMinutes,
     true
   );
+});
+
+test("arrive-by reservations prioritize lower in-vehicle detour for the newer rider", async () => {
+  const now = "2026-02-22T14:35:00+09:00";
+  const satoDropoffAt = "2026-02-22T15:05:00+09:00";
+  const suzukiDropoffAt = "2026-02-22T15:00:00+09:00";
+
+  const stops = {
+    a: { lat: 33.10848974888167, lng: 132.9 },
+    b: { lat: 33.1, lng: 132.9 },
+    c: { lat: 33.06440584605662, lng: 132.9 },
+    d: { lat: 33.06000027403387, lng: 132.9 }
+  };
+  const vehiclePoint = { lat: 33.107419605806626, lng: 132.9 };
+
+  const singleSatoRepo = new InMemoryRepository();
+  singleSatoRepo.addVehicle({
+    id: "veh_1",
+    status: "ACTIVE",
+    capacity: 4,
+    onboardCount: 0,
+    currentLocation: vehiclePoint,
+    route: []
+  });
+  singleSatoRepo.addStop({ id: "stop_a", name: "安並団地入口", ...stops.a });
+  singleSatoRepo.addStop({ id: "stop_d", name: "サンリバー四万十", ...stops.d });
+
+  const singleSato = await createRideRequest({
+    repository: singleSatoRepo,
+    tenantId: "tenant_default",
+    requesterId: "user_sato_single",
+    passenger: { name: "佐藤さん" },
+    pickup: { mode: "FIXED_STOP", stopId: "stop_a" },
+    dropoff: { mode: "FIXED_STOP", stopId: "stop_d" },
+    partySize: 1,
+    desiredDropoffAt: satoDropoffAt,
+    context: { now }
+  });
+  assert.equal(singleSato.status, "ASSIGNED");
+  const singleSatoRideMinutes = plannedRideMinutes(singleSato.rideRequest);
+  assert.equal(singleSatoRideMinutes > 12 && singleSatoRideMinutes < 13.5, true);
+
+  const singleSuzukiRepo = new InMemoryRepository();
+  singleSuzukiRepo.addVehicle({
+    id: "veh_1",
+    status: "ACTIVE",
+    capacity: 4,
+    onboardCount: 0,
+    currentLocation: vehiclePoint,
+    route: []
+  });
+  singleSuzukiRepo.addStop({ id: "stop_b", name: "京町五丁目", ...stops.b });
+  singleSuzukiRepo.addStop({ id: "stop_c", name: "中村駅", ...stops.c });
+
+  const singleSuzuki = await createRideRequest({
+    repository: singleSuzukiRepo,
+    tenantId: "tenant_default",
+    requesterId: "user_suzuki_single",
+    passenger: { name: "鈴木さん" },
+    pickup: { mode: "FIXED_STOP", stopId: "stop_b" },
+    dropoff: { mode: "FIXED_STOP", stopId: "stop_c" },
+    partySize: 1,
+    desiredDropoffAt: suzukiDropoffAt,
+    context: { now }
+  });
+  assert.equal(singleSuzuki.status, "ASSIGNED");
+  const singleSuzukiRideMinutes = plannedRideMinutes(singleSuzuki.rideRequest);
+  assert.equal(singleSuzukiRideMinutes > 9 && singleSuzukiRideMinutes < 10.5, true);
+
+  const combinedRepo = new InMemoryRepository();
+  combinedRepo.addVehicle({
+    id: "veh_1",
+    status: "ACTIVE",
+    capacity: 4,
+    onboardCount: 0,
+    currentLocation: vehiclePoint,
+    route: []
+  });
+  combinedRepo.addStop({ id: "stop_a", name: "安並団地入口", ...stops.a });
+  combinedRepo.addStop({ id: "stop_b", name: "京町五丁目", ...stops.b });
+  combinedRepo.addStop({ id: "stop_c", name: "中村駅", ...stops.c });
+  combinedRepo.addStop({ id: "stop_d", name: "サンリバー四万十", ...stops.d });
+
+  const satoCombined = await createRideRequest({
+    repository: combinedRepo,
+    tenantId: "tenant_default",
+    requesterId: "user_sato_combined",
+    passenger: { name: "佐藤さん" },
+    pickup: { mode: "FIXED_STOP", stopId: "stop_a" },
+    dropoff: { mode: "FIXED_STOP", stopId: "stop_d" },
+    partySize: 1,
+    desiredDropoffAt: satoDropoffAt,
+    context: { now }
+  });
+  assert.equal(satoCombined.status, "ASSIGNED");
+
+  const suzukiCombined = await createRideRequest({
+    repository: combinedRepo,
+    tenantId: "tenant_default",
+    requesterId: "user_suzuki_combined",
+    passenger: { name: "鈴木さん" },
+    pickup: { mode: "FIXED_STOP", stopId: "stop_b" },
+    dropoff: { mode: "FIXED_STOP", stopId: "stop_c" },
+    partySize: 1,
+    desiredDropoffAt: suzukiDropoffAt,
+    context: { now }
+  });
+
+  assert.equal(suzukiCombined.status, "ASSIGNED");
+  assert.deepEqual(
+    suzukiCombined.simulation.routeAfter.map(
+      (task) => `${task.requestLabel}:${task.type}:${task.locationLabel}`
+    ),
+    [
+      "佐藤さん:PICKUP:安並団地入口",
+      "新規予約:PICKUP:京町五丁目",
+      "新規予約:DROPOFF:中村駅",
+      "佐藤さん:DROPOFF:サンリバー四万十"
+    ]
+  );
+
+  const combinedSuzukiRideMinutes = plannedRideMinutes(suzukiCombined.rideRequest);
+  assert.equal(combinedSuzukiRideMinutes <= singleSuzukiRideMinutes + 0.5, true);
+
+  const impactedSato = suzukiCombined.simulation.impactedRequests.find(
+    (impact) => impact.requestId === satoCombined.rideRequest.id
+  );
+  assert.ok(impactedSato);
+  assert.equal(Math.abs(Number(impactedSato.pickupDeltaMinutes ?? 0)) <= 0.01, true);
+  assert.equal(Math.abs(Number(impactedSato.dropoffDeltaMinutes ?? 0)) <= 0.01, true);
 });
 
 test("dispatch can accept feasible plans that include consecutive pickups", async () => {

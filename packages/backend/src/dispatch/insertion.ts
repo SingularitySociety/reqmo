@@ -386,7 +386,9 @@ function insertionCost({
   const pickupDelayWeight = normalizeNonNegative(weights.pickupDelay, 0.4);
   const detourWeight = normalizeNonNegative(weights.detour, 0.25);
   const deadheadWeight = normalizeNonNegative(weights.deadhead, 0.2);
-  const rideDetourWeight = normalizeNonNegative(weights.rideTimeDetour, 0.1);
+  const configuredRideDetourWeight = normalizeNonNegative(weights.rideTimeDetour, 0.1);
+  // Keep in-vehicle detour meaningful even when profile weight is set too low.
+  const rideDetourWeight = Math.max(configuredRideDetourWeight, 0.3);
   const latenessWeight = normalizeNonNegative(weights.lateness, 0.15);
   const dropoffPriorityWeight = normalizeNonNegative(weights.dropoffPriority, 0);
   const normalizedNewRideDetourMinutes = normalizeNonNegative(newRideDetourMinutes, 0);
