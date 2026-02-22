@@ -91,38 +91,10 @@ function isHighsSolverDisabledByEnv() {
   return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
 }
 
-function isHighsSolverForceEnabledByEnv() {
-  const raw = String(process.env.REQMO_FORCE_HIGHS_SOLVER ?? "").trim().toLowerCase();
-  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
-}
-
-function isLikelyUnsupportedNativeRuntime() {
-  if (process.platform !== "linux") {
-    return false;
-  }
-  if (isHighsSolverForceEnabledByEnv()) {
-    return false;
-  }
-  try {
-    const report = process.report?.getReport?.();
-    const glibcVersion = report?.header?.glibcVersionRuntime;
-    // musl-based runtimes (e.g. Alpine) often fail to load highs native addon prebuilds.
-    if (!glibcVersion) {
-      return true;
-    }
-  } catch (_error) {
-    // Ignore report parsing failure and continue.
-  }
-  return false;
-}
-
 let highsModulePromise = null;
 
 async function loadHighsSolver() {
   if (isHighsSolverDisabledByEnv()) {
-    return null;
-  }
-  if (isLikelyUnsupportedNativeRuntime()) {
     return null;
   }
   if (!highsModulePromise) {
