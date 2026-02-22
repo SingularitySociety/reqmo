@@ -3251,7 +3251,9 @@ createApp({
         form.value.desiredDate,
         `${form.value.desiredHour}:${form.value.desiredMinute}`
       );
+      const serviceProfileId = serviceProfile.value?.id ?? summary.value.serviceProfileId ?? null;
       return {
+        serviceProfileId,
         pickup: buildLocation(
           form.value.pickupMode,
           form.value.pickupStopId,
@@ -3487,8 +3489,10 @@ createApp({
         callForm.value.desiredDate,
         `${callForm.value.desiredHour}:${callForm.value.desiredMinute}`
       );
+      const serviceProfileId = serviceProfile.value?.id ?? summary.value.serviceProfileId ?? null;
 
       return {
+        serviceProfileId,
         callerRaw: callForm.value.callerRaw,
         pickup: { mode: "FIXED_STOP", stopId: callForm.value.pickupStopId },
         dropoff: { mode: "FIXED_STOP", stopId: callForm.value.dropoffStopId },

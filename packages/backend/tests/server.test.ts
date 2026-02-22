@@ -32,6 +32,73 @@ test("server bootstrap does not inject demo stops when repository already has st
   assert.equal(stopIds.includes("stop_b"), false);
 });
 
+test("server defaults active profile to shimanto_weekday_v1 when present", async () => {
+  const baseProfile = createDefaultServiceProfile();
+  const insertionProfile = createDefaultServiceProfile({
+    id: "legacy_profile",
+    dispatchPolicy: {
+      ...baseProfile.dispatchPolicy,
+      algorithmPrimary: "INSERTION",
+      algorithmFallback: "INSERTION"
+    }
+  });
+  const shimantoProfile = createDefaultServiceProfile({
+    id: "shimanto_weekday_v1",
+    dispatchPolicy: {
+      ...baseProfile.dispatchPolicy,
+      algorithmPrimary: "GREEDY",
+      algorithmFallback: "GREEDY"
+    }
+  });
+  const repository = new InMemoryRepository({
+    stops: [
+      { id: "stop_a", name: "Stop A", lat: 33.0, lng: 132.9 },
+      { id: "stop_b", name: "Stop B", lat: 33.01, lng: 132.905 }
+    ],
+    vehicles: [
+      {
+        id: "veh_1",
+        status: "ACTIVE",
+        capacity: 4,
+        onboardCount: 0,
+        currentLocation: { lat: 33.0, lng: 132.9 },
+        route: []
+      }
+    ],
+    serviceProfiles: [insertionProfile, shimantoProfile]
+  });
+  const { server } = createReqmoServer({ repository });
+
+  const profileResponse = await invokeServer({
+    server,
+    method: "GET",
+    url: "/api/service-profiles",
+    body: {}
+  });
+  assert.equal(profileResponse.statusCode, 200);
+  const profilePayload = JSON.parse(profileResponse.payload);
+  assert.equal(profilePayload.activeServiceProfileId, "shimanto_weekday_v1");
+
+  const optionsResponse = await invokeServer({
+    server,
+    method: "POST",
+    url: "/api/ride-requests/options",
+    body: {
+      pickup: { mode: "FIXED_STOP", stopId: "stop_a" },
+      dropoff: { mode: "FIXED_STOP", stopId: "stop_b" },
+      partySize: 1,
+      desiredDropoffAt: buildNextLocalDateAt(12, 0).toISOString(),
+      optionLimit: 1
+    }
+  });
+  assert.equal(optionsResponse.statusCode, 200);
+  const optionsPayload = JSON.parse(optionsResponse.payload);
+  assert.equal(optionsPayload.status, "ASSIGNABLE");
+  assert.equal(Array.isArray(optionsPayload.options), true);
+  assert.equal(optionsPayload.options.length > 0, true);
+  assert.equal(optionsPayload.options[0].primaryAlgorithm, "GREEDY");
+});
+
 function invokeServer({ server, method, url, body }) {
   return new Promise((resolve) => {
     const req = Readable.from([]);

@@ -190,6 +190,44 @@ export function seedConfiguredData(repository, options = {}) {
   };
 }
 
+function normalizeOptionalId(value) {
+  if (typeof value !== "string") {
+    return "";
+  }
+  return value.trim();
+}
+
+function resolveActiveServiceProfileId({
+  repository,
+  requestedServiceProfileId,
+  seededProfileId
+}) {
+  const profiles = repository.listServiceProfiles();
+  const profileIds = new Set(profiles.map((profile) => profile.id));
+
+  const requestedId = normalizeOptionalId(requestedServiceProfileId);
+  if (requestedId && profileIds.has(requestedId)) {
+    return requestedId;
+  }
+
+  const seededId = normalizeOptionalId(seededProfileId);
+  if (seededId && seededId !== "weekday_default_v1" && profileIds.has(seededId)) {
+    return seededId;
+  }
+
+  if (profileIds.has("shimanto_weekday_v1")) {
+    return "shimanto_weekday_v1";
+  }
+
+  if (seededId && profileIds.has(seededId)) {
+    return seededId;
+  }
+
+  const fallbackSeededId = seededId || null;
+  const fallbackRequestedId = requestedId || null;
+  return profiles[0]?.id ?? fallbackSeededId ?? fallbackRequestedId;
+}
+
 function toRideInput(body) {
   function parseLocationTitle(value) {
     const title = typeof value === "string" ? value.trim() : "";
@@ -251,7 +289,11 @@ export function createReqmoServer({
   routing = createRoutingContextFromEnv()
 } = {}) {
   const seeded = seedConfiguredData(repository, seedOptions);
-  const activeServiceProfileId = serviceProfileId ?? seeded.profileId;
+  const activeServiceProfileId = resolveActiveServiceProfileId({
+    repository,
+    requestedServiceProfileId: serviceProfileId,
+    seededProfileId: seeded.profileId
+  });
   const requestContext = {
     routing
   };
