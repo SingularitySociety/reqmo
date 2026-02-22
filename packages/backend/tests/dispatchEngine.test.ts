@@ -90,6 +90,70 @@ test("dispatch assigns nearest feasible vehicle", async () => {
   assert.equal(result.rideRequest.assignment.vehicleId, "veh_1");
 });
 
+test("dispatch works when HIGHS is configured as primary algorithm", async () => {
+  const repository = seedRepository();
+  const baseProfile = createDefaultServiceProfile();
+  const highsProfile = createDefaultServiceProfile({
+    id: "highs_primary_profile",
+    dispatchPolicy: {
+      ...baseProfile.dispatchPolicy,
+      algorithmPrimary: "HIGHS",
+      algorithmFallback: "INSERTION"
+    }
+  });
+  upsertServiceProfile({ repository, profile: highsProfile });
+
+  const result = await createRideRequest({
+    repository,
+    tenantId: "tenant_default",
+    requesterId: "user_highs_primary",
+    pickup: { mode: "FREE_POINT", point: { lat: 33.0002, lng: 132.9002 } },
+    dropoff: { mode: "FIXED_STOP", stopId: "stop_b" },
+    partySize: 1,
+    serviceProfileId: highsProfile.id
+  });
+
+  assert.equal(result.status, "ASSIGNED");
+  assert.equal(result.rideRequest.assignment?.vehicleId, "veh_1");
+});
+
+test("dispatch falls back when HIGHS solver is disabled", async () => {
+  const previous = process.env.REQMO_DISABLE_HIGHS_SOLVER;
+  process.env.REQMO_DISABLE_HIGHS_SOLVER = "1";
+  try {
+    const repository = seedRepository();
+    const baseProfile = createDefaultServiceProfile();
+    const highsProfile = createDefaultServiceProfile({
+      id: "highs_disabled_profile",
+      dispatchPolicy: {
+        ...baseProfile.dispatchPolicy,
+        algorithmPrimary: "HIGHS",
+        algorithmFallback: "INSERTION"
+      }
+    });
+    upsertServiceProfile({ repository, profile: highsProfile });
+
+    const result = await createRideRequest({
+      repository,
+      tenantId: "tenant_default",
+      requesterId: "user_highs_disabled",
+      pickup: { mode: "FREE_POINT", point: { lat: 33.0002, lng: 132.9002 } },
+      dropoff: { mode: "FIXED_STOP", stopId: "stop_b" },
+      partySize: 1,
+      serviceProfileId: highsProfile.id
+    });
+
+    assert.equal(result.status, "ASSIGNED");
+    assert.equal(result.rideRequest.assignment?.vehicleId, "veh_1");
+  } finally {
+    if (previous === undefined) {
+      delete process.env.REQMO_DISABLE_HIGHS_SOLVER;
+    } else {
+      process.env.REQMO_DISABLE_HIGHS_SOLVER = previous;
+    }
+  }
+});
+
 test("dispatch reflects configured cruise speed and pickup service time in ETA", async () => {
   const repository = seedRepository();
   const baseProfile = createDefaultServiceProfile();

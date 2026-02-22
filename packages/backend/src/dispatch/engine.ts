@@ -4,6 +4,7 @@ import {
   findBestInsertionAcrossVehicles,
   findBestInsertionPlan
 } from "./insertion.ts";
+import { selectCandidateByHighs } from "./highs.ts";
 import { resolveRideRequestLocations } from "../location/resolver.ts";
 import { estimateTravelMinutes } from "../../../shared/src/geo.ts";
 import { createTravelEstimator } from "../routing/service.ts";
@@ -11,13 +12,25 @@ import { createTravelEstimator } from "../routing/service.ts";
 const DEFAULT_CRUISE_SPEED_KMH = 25;
 const DEFAULT_ARRIVE_BY_EARLY_PICKUP_TOLERANCE_MINUTES = 10;
 const DEFAULT_OPERATION_TIME_ZONE = "Asia/Tokyo";
+const DISPATCH_ALGORITHMS = new Set(["INSERTION", "GREEDY", "HIGHS"]);
+
+function normalizeDispatchAlgorithm(value, fallback) {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+  const normalized = value.trim().toUpperCase();
+  if (!DISPATCH_ALGORITHMS.has(normalized)) {
+    return fallback;
+  }
+  return normalized;
+}
 
 function selectAlgorithm(serviceProfile) {
-  return serviceProfile.dispatchPolicy.algorithmPrimary ?? "INSERTION";
+  return normalizeDispatchAlgorithm(serviceProfile?.dispatchPolicy?.algorithmPrimary, "INSERTION");
 }
 
 function selectFallbackAlgorithm(serviceProfile) {
-  return serviceProfile.dispatchPolicy.algorithmFallback ?? "GREEDY";
+  return normalizeDispatchAlgorithm(serviceProfile?.dispatchPolicy?.algorithmFallback, "GREEDY");
 }
 
 function buildDispatchRequest(rideRequest, resolvedLocations, now = new Date()) {
@@ -971,32 +984,62 @@ function collectDispatchTravelPoints({ vehicles, requestForDispatch }) {
   return points;
 }
 
-function chooseBestPlan({ requestForDispatch, vehicles, serviceProfile, travelMinutes }) {
-  const primary = selectAlgorithm(serviceProfile);
-  const fallback = selectFallbackAlgorithm(serviceProfile);
+function resolveHighsTimeLimitSeconds(serviceProfile) {
+  const configured = Number(serviceProfile?.dispatchPolicy?.highs?.timeLimitSec);
+  if (!Number.isFinite(configured) || configured <= 0) {
+    return 0.5;
+  }
+  return Math.min(Math.max(configured, 0.05), 10);
+}
 
-  let bestPlan = null;
-  if (primary === "INSERTION") {
-    bestPlan = findBestInsertionAcrossVehicles({
+function collectInsertionCandidatesAcrossVehicles({
+  requestForDispatch,
+  vehicles,
+  serviceProfile,
+  travelMinutes
+}) {
+  const limit = normalizeNonNegativeInteger(
+    serviceProfile?.dispatchPolicy?.candidateVehicleLimit,
+    30
+  );
+  let inspected = 0;
+  const candidates = [];
+
+  for (const vehicle of vehicles) {
+    if (inspected >= limit) {
+      break;
+    }
+    const plan = findBestInsertionPlan({
+      vehicle,
       request: requestForDispatch,
-      vehicles,
       serviceProfile,
       travelMinutes
     });
-  } else {
-    bestPlan = findGreedyVehicle({
+    inspected += 1;
+    if (plan) {
+      candidates.push(plan);
+    }
+  }
+
+  return candidates;
+}
+
+async function findBestPlanByAlgorithm({
+  algorithm,
+  requestForDispatch,
+  vehicles,
+  serviceProfile,
+  travelMinutes
+}) {
+  if (algorithm === "INSERTION") {
+    return findBestInsertionAcrossVehicles({
       request: requestForDispatch,
       vehicles,
       serviceProfile,
       travelMinutes
     });
   }
-
-  if (bestPlan) {
-    return bestPlan;
-  }
-
-  if (fallback === "GREEDY") {
+  if (algorithm === "GREEDY") {
     return findGreedyVehicle({
       request: requestForDispatch,
       vehicles,
@@ -1004,8 +1047,48 @@ function chooseBestPlan({ requestForDispatch, vehicles, serviceProfile, travelMi
       travelMinutes
     });
   }
-  return findBestInsertionAcrossVehicles({
-    request: requestForDispatch,
+  if (algorithm !== "HIGHS") {
+    return null;
+  }
+
+  const insertionCandidates = collectInsertionCandidatesAcrossVehicles({
+    requestForDispatch,
+    vehicles,
+    serviceProfile,
+    travelMinutes
+  });
+  if (!insertionCandidates.length) {
+    return null;
+  }
+
+  try {
+    return await selectCandidateByHighs({
+      candidates: insertionCandidates,
+      timeLimitSeconds: resolveHighsTimeLimitSeconds(serviceProfile)
+    });
+  } catch (_error) {
+    return null;
+  }
+}
+
+async function chooseBestPlan({ requestForDispatch, vehicles, serviceProfile, travelMinutes }) {
+  const primary = selectAlgorithm(serviceProfile);
+  const fallback = selectFallbackAlgorithm(serviceProfile);
+
+  const primaryPlan = await findBestPlanByAlgorithm({
+    algorithm: primary,
+    requestForDispatch,
+    vehicles,
+    serviceProfile,
+    travelMinutes
+  });
+  if (primaryPlan) {
+    return primaryPlan;
+  }
+
+  return findBestPlanByAlgorithm({
+    algorithm: fallback,
+    requestForDispatch,
     vehicles,
     serviceProfile,
     travelMinutes
@@ -1431,7 +1514,7 @@ async function evaluateDispatchPlan({
       travelMinutes: travelEstimator.travelMinutes
     });
   }
-  let bestPlan = chooseBestPlan({
+  let bestPlan = await chooseBestPlan({
     requestForDispatch,
     vehicles,
     serviceProfile,
@@ -1492,7 +1575,7 @@ async function evaluateDispatchPlan({
       let fallbackVehicle = null;
 
       for (const candidateVehicle of vehicles) {
-        const candidatePlan = chooseBestPlan({
+        const candidatePlan = await chooseBestPlan({
           requestForDispatch,
           vehicles: [candidateVehicle],
           serviceProfile,
@@ -1714,7 +1797,7 @@ export async function listRideRequestDispatchOptions({
   let firstPolicyRejected = null;
 
   for (const vehicle of vehicles) {
-    const plan = chooseBestPlan({
+    const plan = await chooseBestPlan({
       requestForDispatch,
       vehicles: [vehicle],
       serviceProfile,

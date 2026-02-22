@@ -105,8 +105,8 @@
       "properties": {
         "maxWaitMinutes": { "type": "number", "minimum": 1 },
         "candidateVehicleLimit": { "type": "integer", "minimum": 1 },
-        "algorithmPrimary": { "enum": ["GREEDY", "INSERTION"] },
-        "algorithmFallback": { "enum": ["GREEDY", "INSERTION"] },
+        "algorithmPrimary": { "enum": ["GREEDY", "INSERTION", "HIGHS"] },
+        "algorithmFallback": { "enum": ["GREEDY", "INSERTION", "HIGHS"] },
         "reoptimizationIntervalSec": { "type": "integer", "minimum": 1 },
         "cruiseSpeedKmh": { "type": "number", "exclusiveMinimum": 0 },
         "pickupServiceMinutes": { "type": "number", "minimum": 0 },

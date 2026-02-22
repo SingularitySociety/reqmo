@@ -43,6 +43,23 @@ Dispatch scoring weights are controlled by `serviceProfile.dispatchPolicy.weight
 - スコア計算の実装は `packages/backend/src/dispatch/insertion.ts` です。
 - 新規挿入時の過度な連れ回し抑制のため、`rideTimeDetour` は実効値として `max(configuredRideTimeDetourWeight, 0.3)` を使用します。
 
+## Experimental: HIGHS Dispatch Selector
+
+You can set `serviceProfile.dispatchPolicy.algorithmPrimary` (or fallback) to `HIGHS`.
+
+- `HIGHS` evaluates insertion candidates and selects one via an MIP "choose-one" model using `highs-solver`.
+- If `highs-solver` is unavailable or fails, dispatch safely falls back to the configured fallback algorithm.
+- Optional tuning: `serviceProfile.dispatchPolicy.highs.timeLimitSec` (default `0.5`).
+- To force-disable HiGHS at runtime: `REQMO_DISABLE_HIGHS_SOLVER=true`.
+
+日本語:
+
+- `serviceProfile.dispatchPolicy.algorithmPrimary`（またはfallback）に `HIGHS` を設定できます。
+- `HIGHS` は挿入候補を作り、`highs-solver` のMIP（1件選択）で候補を選びます。
+- `highs-solver` が利用不可・失敗時は、設定済みのフォールバックアルゴリズムへ安全に退避します。
+- 任意設定: `serviceProfile.dispatchPolicy.highs.timeLimitSec`（既定 `0.5` 秒）。
+- 実行時にHiGHSを無効化する場合: `REQMO_DISABLE_HIGHS_SOLVER=true`。
+
 Repository adapter:
 
 - `REPOSITORY_ADAPTER=memory` (default)
