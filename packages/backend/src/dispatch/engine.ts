@@ -1075,6 +1075,22 @@ function collectInsertionCandidatesAcrossVehicles({
   return candidates;
 }
 
+function selectBestInsertionCandidate(candidates) {
+  if (!Array.isArray(candidates) || !candidates.length) {
+    return null;
+  }
+  let best = null;
+  for (const candidate of candidates) {
+    if (!candidate) {
+      continue;
+    }
+    if (!best || Number(candidate.score) < Number(best.score)) {
+      best = candidate;
+    }
+  }
+  return best;
+}
+
 async function findBestPlanByAlgorithm({
   algorithm,
   requestForDispatch,
@@ -1113,13 +1129,29 @@ async function findBestPlanByAlgorithm({
   }
 
   try {
-    return await selectCandidateByHighs({
+    const selectedByHighs = await selectCandidateByHighs({
       candidates: insertionCandidates,
       timeLimitSeconds: resolveHighsTimeLimitSeconds(serviceProfile)
     });
+    if (selectedByHighs) {
+      return {
+        ...selectedByHighs,
+        selectedAlgorithm: "HIGHS"
+      };
+    }
   } catch (_error) {
+    // Fallback below.
+  }
+
+  const insertionFallback = selectBestInsertionCandidate(insertionCandidates);
+  if (!insertionFallback) {
     return null;
   }
+  return {
+    ...insertionFallback,
+    selectedAlgorithm: "INSERTION",
+    algorithmPhase: "FALLBACK"
+  };
 }
 
 function annotatePlanWithDispatchAlgorithm({
@@ -1134,8 +1166,8 @@ function annotatePlanWithDispatchAlgorithm({
   }
   return {
     ...plan,
-    selectedAlgorithm,
-    algorithmPhase,
+    selectedAlgorithm: plan.selectedAlgorithm ?? selectedAlgorithm,
+    algorithmPhase: plan.algorithmPhase ?? algorithmPhase,
     primaryAlgorithm,
     fallbackAlgorithm
   };

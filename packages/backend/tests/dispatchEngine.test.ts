@@ -160,6 +160,45 @@ test("dispatch falls back when HIGHS solver is disabled", async () => {
   }
 });
 
+test("dispatch can fall back to insertion even when both primary/fallback are HIGHS", async () => {
+  const previous = process.env.REQMO_DISABLE_HIGHS_SOLVER;
+  process.env.REQMO_DISABLE_HIGHS_SOLVER = "1";
+  try {
+    const repository = seedRepository();
+    const baseProfile = createDefaultServiceProfile();
+    const profile = createDefaultServiceProfile({
+      id: "highs_only_profile",
+      dispatchPolicy: {
+        ...baseProfile.dispatchPolicy,
+        algorithmPrimary: "HIGHS",
+        algorithmFallback: "HIGHS"
+      }
+    });
+    upsertServiceProfile({ repository, profile });
+
+    const result = await createRideRequest({
+      repository,
+      tenantId: "tenant_default",
+      requesterId: "user_highs_only_fallback",
+      pickup: { mode: "FREE_POINT", point: { lat: 33.0002, lng: 132.9002 } },
+      dropoff: { mode: "FIXED_STOP", stopId: "stop_b" },
+      partySize: 1,
+      serviceProfileId: profile.id
+    });
+
+    assert.equal(result.status, "ASSIGNED");
+    assert.equal(result.rideRequest.assignment?.vehicleId, "veh_1");
+    assert.equal(result.simulation?.selectedAlgorithm, "INSERTION");
+    assert.equal(result.simulation?.algorithmPhase, "FALLBACK");
+  } finally {
+    if (previous === undefined) {
+      delete process.env.REQMO_DISABLE_HIGHS_SOLVER;
+    } else {
+      process.env.REQMO_DISABLE_HIGHS_SOLVER = previous;
+    }
+  }
+});
+
 test("dispatch prioritizes HIGHS when complex reservation policy is triggered", async () => {
   const previous = process.env.REQMO_DISABLE_HIGHS_SOLVER;
   delete process.env.REQMO_DISABLE_HIGHS_SOLVER;
