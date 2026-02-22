@@ -300,7 +300,27 @@ function taskEtasFromStart(startPoint, route, travelMinutes, serviceProfile, eva
   return etas;
 }
 
-function existingTaskDelayMinutes({
+function buildRequestPassengerCountIndex(route = []) {
+  const requestPassengerCounts = new Map();
+  for (const task of route) {
+    if (!task?.requestId) {
+      continue;
+    }
+    if (task?.type !== "PICKUP") {
+      continue;
+    }
+    const load = Number(task?.loadChange);
+    const passengerCount =
+      Number.isFinite(load) && Math.abs(Math.trunc(load)) > 0
+        ? Math.abs(Math.trunc(load))
+        : 1;
+    const previous = requestPassengerCounts.get(task.requestId) ?? 0;
+    requestPassengerCounts.set(task.requestId, Math.max(previous, passengerCount));
+  }
+  return requestPassengerCounts;
+}
+
+function existingTaskDelayMetrics({
   startPoint,
   existingRoute,
   candidateRoute,
@@ -310,7 +330,11 @@ function existingTaskDelayMinutes({
   evaluationNow = new Date()
 }) {
   if (!existingRoute.length) {
-    return 0;
+    return {
+      maxDelayMinutes: 0,
+      sumDelayMinutes: 0,
+      passengerWeightedSumDelayMinutes: 0
+    };
   }
 
   const baselineEtas = taskEtasFromStart(
@@ -320,10 +344,13 @@ function existingTaskDelayMinutes({
     serviceProfile,
     evaluationNow
   );
+  const requestPassengerCountIndex = buildRequestPassengerCountIndex(existingRoute);
   let current = startPoint;
   let elapsed = 0;
   let existingTaskIndex = 0;
   let maxDelay = 0;
+  let sumDelay = 0;
+  let passengerWeightedSumDelay = 0;
 
   for (const task of candidateRoute) {
     elapsed += travelMinutes(current, task.point);
@@ -333,14 +360,25 @@ function existingTaskDelayMinutes({
     if (task.requestId !== newRequestId) {
       const baselineEta = baselineEtas[existingTaskIndex];
       if (Number.isFinite(baselineEta)) {
-        maxDelay = Math.max(maxDelay, elapsed - baselineEta);
+        const delay = Math.max(0, elapsed - baselineEta);
+        const passengerCount = Math.max(
+          1,
+          requestPassengerCountIndex.get(task.requestId) ?? 1
+        );
+        maxDelay = Math.max(maxDelay, delay);
+        sumDelay += delay;
+        passengerWeightedSumDelay += delay * passengerCount;
       }
       existingTaskIndex += 1;
     }
     elapsed += taskServiceMinutes(task, serviceProfile);
   }
 
-  return Math.max(0, maxDelay);
+  return {
+    maxDelayMinutes: Math.max(0, maxDelay),
+    sumDelayMinutes: Math.max(0, sumDelay),
+    passengerWeightedSumDelayMinutes: Math.max(0, passengerWeightedSumDelay)
+  };
 }
 
 function requestRideMinutes({
@@ -377,6 +415,7 @@ function requestRideMinutes({
 function insertionCost({
   etaPickupMinutes,
   detourMinutes,
+  existingDelaySumMinutes = 0,
   deadheadMinutes,
   newRideDetourMinutes = 0,
   consecutivePickupPairs = 0,
@@ -389,13 +428,16 @@ function insertionCost({
   const configuredRideDetourWeight = normalizeNonNegative(weights.rideTimeDetour, 0.1);
   // Keep in-vehicle detour meaningful even when profile weight is set too low.
   const rideDetourWeight = Math.max(configuredRideDetourWeight, 0.3);
+  const existingDelaySumWeight = normalizeNonNegative(weights.existingDelaySum, 0);
   const latenessWeight = normalizeNonNegative(weights.lateness, 0.15);
   const dropoffPriorityWeight = normalizeNonNegative(weights.dropoffPriority, 0);
   const normalizedNewRideDetourMinutes = normalizeNonNegative(newRideDetourMinutes, 0);
+  const normalizedExistingDelaySumMinutes = normalizeNonNegative(existingDelaySumMinutes, 0);
   const normalizedConsecutivePickupPairs = normalizeNonNegative(consecutivePickupPairs, 0);
   return (
     pickupDelayWeight * etaPickupMinutes +
     detourWeight * detourMinutes +
+    existingDelaySumWeight * normalizedExistingDelaySumMinutes +
     deadheadWeight * deadheadMinutes +
     rideDetourWeight * normalizedNewRideDetourMinutes +
     latenessWeight * Math.max(0, etaPickupMinutes - serviceProfile.dispatchPolicy.maxWaitMinutes) +
@@ -620,7 +662,7 @@ export function analyzeInsertionCandidateFailures({
         continue;
       }
 
-      const detourMinutes = existingTaskDelayMinutes({
+      const detourMetrics = existingTaskDelayMetrics({
         startPoint: vehicle.currentLocation,
         existingRoute,
         candidateRoute,
@@ -629,6 +671,7 @@ export function analyzeInsertionCandidateFailures({
         serviceProfile,
         evaluationNow: requestEvaluationNow
       });
+      const detourMinutes = detourMetrics.maxDelayMinutes;
       if (minDetourMinutes === null || detourMinutes < minDetourMinutes) {
         minDetourMinutes = detourMinutes;
       }
@@ -753,7 +796,7 @@ export function findBestInsertionPlan({ vehicle, request, serviceProfile, travel
         continue;
       }
 
-      const detourMinutes = existingTaskDelayMinutes({
+      const detourMetrics = existingTaskDelayMetrics({
         startPoint: vehicle.currentLocation,
         existingRoute,
         candidateRoute,
@@ -762,6 +805,7 @@ export function findBestInsertionPlan({ vehicle, request, serviceProfile, travel
         serviceProfile,
         evaluationNow: requestEvaluationNow
       });
+      const detourMinutes = detourMetrics.maxDelayMinutes;
       if (detourMinutes > maxDetour) {
         continue;
       }
@@ -786,6 +830,7 @@ export function findBestInsertionPlan({ vehicle, request, serviceProfile, travel
       const score = insertionCost({
         etaPickupMinutes,
         detourMinutes,
+        existingDelaySumMinutes: detourMetrics.passengerWeightedSumDelayMinutes,
         deadheadMinutes,
         newRideDetourMinutes,
         consecutivePickupPairs,
@@ -798,6 +843,7 @@ export function findBestInsertionPlan({ vehicle, request, serviceProfile, travel
           route: candidateRoute,
           etaPickupMinutes,
           detourMinutes,
+          detourSumMinutes: detourMetrics.passengerWeightedSumDelayMinutes,
           score
         };
       }

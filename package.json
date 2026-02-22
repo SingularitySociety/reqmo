@@ -1,5 +1,8 @@
 {
   "name": "reqmo-core",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "dependencies": {
+    "highs-solver": "^0.10.3"
+  }
 }

@@ -66,6 +66,13 @@ function invokeServer({ server, method, url, body }) {
   });
 }
 
+function buildNextLocalDateAt(hour, minute = 0) {
+  const date = new Date();
+  date.setDate(date.getDate() + 1);
+  date.setHours(hour, minute, 0, 0);
+  return date;
+}
+
 test("api accepts JSON payload from pre-parsed req.body", async () => {
   const { server } = createReqmoServer();
   const response = await invokeServer({
@@ -351,8 +358,8 @@ test("api ride-request options suggest post-break pickup when desired time is wi
   });
   const { server } = createReqmoServer({ repository });
 
-  const desiredDropoffAt = "2026-02-23T11:20:00+09:00";
-  const breakEndAt = new Date("2026-02-23T12:00:00+09:00");
+  const desiredDropoffAt = buildNextLocalDateAt(11, 20).toISOString();
+  const breakEndAt = buildNextLocalDateAt(12, 0);
 
   const response = await invokeServer({
     server,
@@ -490,7 +497,7 @@ test("api ride-request options reject future reservation when 13:00 office depar
       pickup: { mode: "FIXED_STOP", stopId: "stop_far" },
       dropoff: { mode: "FIXED_STOP", stopId: "stop_far_drop" },
       partySize: 1,
-      desiredDropoffAt: "2026-02-23T13:05:00+09:00",
+      desiredDropoffAt: buildNextLocalDateAt(13, 5).toISOString(),
       optionLimit: 5
     }
   });
