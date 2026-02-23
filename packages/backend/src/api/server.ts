@@ -27,6 +27,20 @@ import {
 import { createRoutingContextFromEnv } from "../routing/service.ts";
 import { reverseGeocodePoint } from "../location/reverseGeocode.ts";
 import { getHighsRuntimeDiagnostics } from "../dispatch/highs.ts";
+import {
+  buildLineHelpMessage,
+  buildLineWelcomeMessages,
+  buildMiniAppUrlWithLineUser,
+  buildReservationSummaryText,
+  ensureLineUserIdentity,
+  linkLineUserByPhone,
+  listLineUserRideRequests,
+  parseLineMessageCommand,
+  parseLineWebhookPayload,
+  resolveLineConfig,
+  sendLineReplyMessage,
+  verifyLineWebhookSignature
+} from "../line/service.ts";
 
 function jsonResponse(res, status, body) {
   const payload = JSON.stringify(body);
@@ -40,7 +54,7 @@ function jsonResponse(res, status, body) {
 function writeCorsHeaders(res, origin = "*") {
   res.setHeader("Access-Control-Allow-Origin", origin);
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type,X-Line-Signature");
 }
 
 async function parseJsonBody(req) {
@@ -73,6 +87,65 @@ async function parseJsonBody(req) {
   }
   const raw = Buffer.concat(chunks).toString("utf-8");
   return JSON.parse(raw);
+}
+
+async function parseRawBody(req) {
+  if (req && typeof req === "object") {
+    if (Buffer.isBuffer(req.rawBody)) {
+      return req.rawBody;
+    }
+    if (typeof req.rawBody === "string") {
+      return Buffer.from(req.rawBody, "utf-8");
+    }
+    if (typeof req.body === "string") {
+      return Buffer.from(req.body, "utf-8");
+    }
+    if (req.body && typeof req.body === "object") {
+      return Buffer.from(JSON.stringify(req.body), "utf-8");
+    }
+  }
+
+  const chunks = [];
+  for await (const chunk of req) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+  }
+  if (!chunks.length) {
+    return Buffer.from("", "utf-8");
+  }
+  return Buffer.concat(chunks);
+}
+
+function readRequestHeader(req, name) {
+  if (!req || typeof req !== "object") {
+    return "";
+  }
+  const headers = req.headers ?? {};
+  const direct = headers[name];
+  if (typeof direct === "string") {
+    return direct;
+  }
+  if (Array.isArray(direct)) {
+    return direct[0] ?? "";
+  }
+  const normalized = headers[name.toLowerCase()];
+  if (typeof normalized === "string") {
+    return normalized;
+  }
+  if (Array.isArray(normalized)) {
+    return normalized[0] ?? "";
+  }
+  return "";
+}
+
+function resolveRequestBaseUrl(req) {
+  const host = readRequestHeader(req, "x-forwarded-host") || readRequestHeader(req, "host");
+  if (!host) {
+    return "";
+  }
+  const forwardedProto = readRequestHeader(req, "x-forwarded-proto");
+  const protocol = forwardedProto ? forwardedProto.split(",")[0].trim() : "https";
+  const normalizedProtocol = protocol === "http" || protocol === "https" ? protocol : "https";
+  return `${normalizedProtocol}://${host}`;
 }
 
 async function flushRepository(repository) {
@@ -282,6 +355,347 @@ function normalizePassenger(passengerInput) {
   };
 }
 
+function resolveLinePublicConfig(req) {
+  const config = resolveLineConfig({
+    requestBaseUrl: resolveRequestBaseUrl(req)
+  });
+  return {
+    liffId: config.liffId,
+    miniAppUrl: config.miniAppUrl,
+    friendAddUrl: config.friendAddUrl,
+    officialAccountId: config.officialAccountId,
+    botEnabled: config.botEnabled
+  };
+}
+
+function resolveLineUserIdFromEvent(event) {
+  const userId =
+    event?.source && typeof event.source === "object"
+      ? event.source.userId
+      : null;
+  return typeof userId === "string" ? userId.trim() : "";
+}
+
+function resolveRidePrimaryTime(rideRequest) {
+  return (
+    rideRequest?.assignment?.plannedPickupAt ??
+    rideRequest?.timeWindow?.desiredPickupAt ??
+    rideRequest?.timeWindow?.desiredDropoffAt ??
+    rideRequest?.createdAt ??
+    null
+  );
+}
+
+function resolveRideStatusLabel(status) {
+  const normalized = typeof status === "string" ? status.trim().toUpperCase() : "";
+  const labels = {
+    REQUESTED: "受付済み",
+    ASSIGNED: "配車確定",
+    PICKUP_PENDING: "迎車中",
+    PICKED_UP: "乗車中",
+    ONBOARD: "乗車中",
+    IN_PROGRESS: "運行中",
+    COMPLETED: "完了",
+    CANCELLED: "取消"
+  };
+  return labels[normalized] ?? (normalized || "不明");
+}
+
+function resolveLocationLabelForResponse(repository, location) {
+  if (!location || typeof location !== "object") {
+    return "未設定";
+  }
+  if (location.mode === "FIXED_STOP" && typeof location.stopId === "string") {
+    const stop = typeof repository.findStopById === "function"
+      ? repository.findStopById(location.stopId)
+      : null;
+    return stop?.name ?? location.stopId;
+  }
+  if (location.mode === "FREE_POINT") {
+    if (typeof location.title === "string" && location.title.trim()) {
+      return location.title.trim();
+    }
+    const point = location.point;
+    if (
+      point &&
+      Number.isFinite(Number(point.lat)) &&
+      Number.isFinite(Number(point.lng))
+    ) {
+      return `${Number(point.lat).toFixed(5)},${Number(point.lng).toFixed(5)}`;
+    }
+  }
+  return typeof location.title === "string" && location.title.trim()
+    ? location.title.trim()
+    : "未設定";
+}
+
+function serializeLineReservation(repository, rideRequest) {
+  return {
+    id: rideRequest.id,
+    status: rideRequest.status,
+    statusLabel: resolveRideStatusLabel(rideRequest.status),
+    pickupLabel: resolveLocationLabelForResponse(repository, rideRequest.pickup),
+    dropoffLabel: resolveLocationLabelForResponse(repository, rideRequest.dropoff),
+    primaryTimeAt: resolveRidePrimaryTime(rideRequest),
+    desiredPickupAt: rideRequest?.timeWindow?.desiredPickupAt ?? null,
+    desiredDropoffAt: rideRequest?.timeWindow?.desiredDropoffAt ?? null,
+    plannedPickupAt: rideRequest?.assignment?.plannedPickupAt ?? null,
+    plannedDropoffAt: rideRequest?.assignment?.plannedDropoffAt ?? null
+  };
+}
+
+function buildLineMiniAppSession({
+  repository,
+  lineUserId,
+  displayName = null
+}) {
+  const { user, identity } = ensureLineUserIdentity({
+    repository,
+    lineUserId,
+    displayName,
+    source: "LINE_MINIAPP"
+  });
+  const reservations = listLineUserRideRequests({
+    repository,
+    userId: user.id,
+    limit: 5
+  });
+  return {
+    lineUserId,
+    user: {
+      id: user.id,
+      name: user.name ?? null
+    },
+    identity: {
+      source: identity.source ?? null,
+      verified: identity.verified === true,
+      displayName: identity.displayName ?? null,
+      lastSeenAt: identity.lastSeenAt ?? null
+    },
+    reservations: reservations.map((rideRequest) => serializeLineReservation(repository, rideRequest)),
+    summaryText: buildReservationSummaryText({
+      repository,
+      requests: reservations,
+      displayName: user.name ?? identity.displayName ?? ""
+    })
+  };
+}
+
+function resolveDefaultCountryCode(repository, serviceProfileId) {
+  const profile = typeof repository?.getServiceProfile === "function"
+    ? repository.getServiceProfile(serviceProfileId)
+    : null;
+  const policyCode =
+    typeof profile?.telephonyPolicy?.defaultCountryCode === "string"
+      ? profile.telephonyPolicy.defaultCountryCode.trim()
+      : "";
+  if (policyCode) {
+    return policyCode;
+  }
+  const configs = typeof repository?.listTelephonyConfigs === "function"
+    ? repository.listTelephonyConfigs()
+    : [];
+  const fallbackCode =
+    typeof configs?.[0]?.defaultCountryCode === "string"
+      ? configs[0].defaultCountryCode.trim()
+      : "";
+  return fallbackCode || "+81";
+}
+
+function buildLineQuickReplyForReservation({ miniAppUrl }) {
+  const items = [
+    {
+      type: "action",
+      action: {
+        type: "message",
+        label: "予約確認",
+        text: "予約確認"
+      }
+    }
+  ];
+  if (miniAppUrl) {
+    items.push({
+      type: "action",
+      action: {
+        type: "uri",
+        label: "ミニアプリ",
+        uri: miniAppUrl
+      }
+    });
+  }
+  return {
+    items
+  };
+}
+
+async function handleLineWebhookEvent({
+  repository,
+  serviceProfileId,
+  config,
+  event
+}) {
+  const replyToken = typeof event?.replyToken === "string" ? event.replyToken.trim() : "";
+  if (!replyToken) {
+    return {
+      status: "SKIPPED",
+      reason: "MISSING_REPLY_TOKEN"
+    };
+  }
+
+  const lineUserId = resolveLineUserIdFromEvent(event);
+  if (!lineUserId) {
+    return {
+      status: "SKIPPED",
+      reason: "MISSING_LINE_USER_ID"
+    };
+  }
+
+  const miniAppUrl = buildMiniAppUrlWithLineUser(config.miniAppUrl, lineUserId);
+
+  if (event.type === "follow") {
+    ensureLineUserIdentity({
+      repository,
+      lineUserId,
+      source: "LINE_FOLLOW"
+    });
+    await sendLineReplyMessage({
+      channelAccessToken: config.channelAccessToken,
+      replyToken,
+      messages: buildLineWelcomeMessages({ miniAppUrl })
+    });
+    return {
+      status: "REPLIED",
+      type: "follow"
+    };
+  }
+
+  if (event.type !== "message" || event?.message?.type !== "text") {
+    return {
+      status: "SKIPPED",
+      reason: "UNSUPPORTED_EVENT"
+    };
+  }
+
+  const text = typeof event.message.text === "string" ? event.message.text : "";
+  const command = parseLineMessageCommand(text);
+  const { user, identity } = ensureLineUserIdentity({
+    repository,
+    lineUserId,
+    source: "LINE_CHAT"
+  });
+
+  if (command.type === "RESERVATION") {
+    const requests = listLineUserRideRequests({
+      repository,
+      userId: user.id,
+      limit: 3
+    });
+    await sendLineReplyMessage({
+      channelAccessToken: config.channelAccessToken,
+      replyToken,
+      messages: [
+        {
+          type: "text",
+          text: buildReservationSummaryText({
+            repository,
+            requests,
+            displayName: user.name ?? identity.displayName ?? ""
+          }),
+          quickReply: buildLineQuickReplyForReservation({ miniAppUrl })
+        }
+      ]
+    });
+    return {
+      status: "REPLIED",
+      type: "reservation"
+    };
+  }
+
+  if (command.type === "LINK_PHONE") {
+    const linked = linkLineUserByPhone({
+      repository,
+      lineUserId,
+      phoneNumber: command.phoneNumber,
+      defaultCountryCode: resolveDefaultCountryCode(repository, serviceProfileId),
+      displayName: user.name ?? identity.displayName ?? null
+    });
+    if (linked.status === "NOT_FOUND") {
+      await sendLineReplyMessage({
+        channelAccessToken: config.channelAccessToken,
+        replyToken,
+        messages: [
+          {
+            type: "text",
+            text: `電話番号(${command.phoneNumber})に紐づく利用者が見つかりませんでした。窓口で登録後に再度お試しください。`
+          }
+        ]
+      });
+      return {
+        status: "REPLIED",
+        type: "link-not-found"
+      };
+    }
+    const requests = listLineUserRideRequests({
+      repository,
+      userId: linked.user.id,
+      limit: 3
+    });
+    await sendLineReplyMessage({
+      channelAccessToken: config.channelAccessToken,
+      replyToken,
+      messages: [
+        {
+          type: "text",
+          text:
+            `電話番号を連携しました (${linked.normalizedPhoneE164})\n` +
+            buildReservationSummaryText({
+              repository,
+              requests,
+              displayName: linked.user.name ?? identity.displayName ?? ""
+            }),
+          quickReply: buildLineQuickReplyForReservation({ miniAppUrl })
+        }
+      ]
+    });
+    return {
+      status: "REPLIED",
+      type: "link-success"
+    };
+  }
+
+  if (command.type === "OPEN_MINIAPP") {
+    await sendLineReplyMessage({
+      channelAccessToken: config.channelAccessToken,
+      replyToken,
+      messages: [
+        {
+          type: "text",
+          text: miniAppUrl ? `ミニアプリはこちらです。\n${miniAppUrl}` : "ミニアプリURLが未設定です。"
+        }
+      ]
+    });
+    return {
+      status: "REPLIED",
+      type: "open-miniapp"
+    };
+  }
+
+  await sendLineReplyMessage({
+    channelAccessToken: config.channelAccessToken,
+    replyToken,
+    messages: [
+      {
+        type: "text",
+        text: buildLineHelpMessage({ miniAppUrl })
+      }
+    ]
+  });
+  return {
+    status: "REPLIED",
+    type: command.type === "HELP" ? "help" : "fallback"
+  };
+}
+
 export function createReqmoServer({
   repository = new InMemoryRepository(),
   serviceProfileId,
@@ -323,6 +737,140 @@ export function createReqmoServer({
             algorithmFallback: activeProfile?.dispatchPolicy?.algorithmFallback ?? null
           },
           highs: getHighsRuntimeDiagnostics()
+        });
+      }
+
+      if (req.method === "GET" && pathname === "/api/line/public-config") {
+        return jsonResponse(res, 200, {
+          status: "OK",
+          config: resolveLinePublicConfig(req)
+        });
+      }
+
+      if (req.method === "GET" && pathname === "/api/line/miniapp/session") {
+        const lineUserId = (parsedUrl.searchParams.get("lineUserId") ?? "").trim();
+        if (!lineUserId) {
+          throw new Error("lineUserId is required");
+        }
+        const displayName = (parsedUrl.searchParams.get("displayName") ?? "").trim() || null;
+        const session = buildLineMiniAppSession({
+          repository,
+          lineUserId,
+          displayName
+        });
+        await flushRepository(repository);
+        return jsonResponse(res, 200, {
+          status: "OK",
+          ...session,
+          config: resolveLinePublicConfig(req)
+        });
+      }
+
+      if (req.method === "POST" && pathname === "/api/line/miniapp/link-phone") {
+        const body = await parseJsonBody(req);
+        const lineUserId = typeof body.lineUserId === "string" ? body.lineUserId.trim() : "";
+        if (!lineUserId) {
+          throw new Error("lineUserId is required");
+        }
+        const displayName =
+          typeof body.displayName === "string" && body.displayName.trim()
+            ? body.displayName.trim()
+            : null;
+        const linked = linkLineUserByPhone({
+          repository,
+          lineUserId,
+          phoneNumber: body.phoneNumber,
+          defaultCountryCode: resolveDefaultCountryCode(repository, activeServiceProfileId),
+          displayName
+        });
+
+        if (linked.status === "NOT_FOUND") {
+          return jsonResponse(res, 404, {
+            status: "NOT_FOUND",
+            lineUserId,
+            normalizedPhoneE164: linked.normalizedPhoneE164
+          });
+        }
+
+        const reservations = listLineUserRideRequests({
+          repository,
+          userId: linked.user.id,
+          limit: 5
+        });
+        await flushRepository(repository);
+        return jsonResponse(res, 200, {
+          status: "LINKED",
+          lineUserId,
+          normalizedPhoneE164: linked.normalizedPhoneE164,
+          user: {
+            id: linked.user.id,
+            name: linked.user.name ?? null
+          },
+          identity: {
+            source: linked.identity?.source ?? null,
+            verified: linked.identity?.verified === true,
+            displayName: linked.identity?.displayName ?? null,
+            lastSeenAt: linked.identity?.lastSeenAt ?? null
+          },
+          reservations: reservations.map((rideRequest) =>
+            serializeLineReservation(repository, rideRequest)
+          ),
+          summaryText: buildReservationSummaryText({
+            repository,
+            requests: reservations,
+            displayName: linked.user.name ?? linked.identity?.displayName ?? ""
+          }),
+          config: resolveLinePublicConfig(req)
+        });
+      }
+
+      if (req.method === "POST" && pathname === "/api/line/webhook") {
+        const config = resolveLineConfig({
+          requestBaseUrl: resolveRequestBaseUrl(req)
+        });
+        if (!config.channelSecret || !config.channelAccessToken) {
+          return jsonResponse(res, 503, {
+            error: "LINE bot is not configured"
+          });
+        }
+
+        const rawBody = await parseRawBody(req);
+        const signature = readRequestHeader(req, "x-line-signature");
+        const verified = verifyLineWebhookSignature({
+          channelSecret: config.channelSecret,
+          rawBody,
+          signature
+        });
+        if (!verified) {
+          return jsonResponse(res, 401, {
+            error: "Invalid LINE signature"
+          });
+        }
+
+        const payload = parseLineWebhookPayload(rawBody);
+        const results = [];
+        for (const event of payload.events) {
+          try {
+            const result = await handleLineWebhookEvent({
+              repository,
+              serviceProfileId: activeServiceProfileId,
+              config,
+              event
+            });
+            results.push(result);
+          } catch (error) {
+            results.push({
+              status: "ERROR",
+              reason: error instanceof Error ? error.message : "Unknown error"
+            });
+          }
+        }
+
+        await flushRepository(repository);
+        return jsonResponse(res, 200, {
+          status: "OK",
+          handledEvents: results.length,
+          results
         });
       }
 

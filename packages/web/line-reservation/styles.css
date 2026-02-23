@@ -1,0 +1,277 @@
+:root {
+  --lr-bg-top: #f3fef3;
+  --lr-bg-bottom: #e6f2fb;
+  --lr-surface: rgba(255, 255, 255, 0.92);
+  --lr-border: rgba(15, 89, 52, 0.12);
+  --lr-text: #0f172a;
+  --lr-muted: #475569;
+  --lr-primary: #00b900;
+  --lr-primary-dark: #0b7a2a;
+  --lr-secondary: #0369a1;
+  --lr-danger: #b42318;
+  --lr-radius: 16px;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  color: var(--lr-text);
+  font-family: "Noto Sans JP", sans-serif;
+  background:
+    radial-gradient(circle at 0% 0%, rgba(0, 185, 0, 0.12), transparent 52%),
+    radial-gradient(circle at 100% 100%, rgba(3, 105, 161, 0.14), transparent 54%),
+    linear-gradient(165deg, var(--lr-bg-top), var(--lr-bg-bottom));
+}
+
+.lr-shell {
+  width: min(960px, 100% - 32px);
+  margin: 30px auto 42px;
+  display: grid;
+  gap: 16px;
+}
+
+.lr-hero,
+.lr-card {
+  border-radius: var(--lr-radius);
+  border: 1px solid var(--lr-border);
+  background: var(--lr-surface);
+  backdrop-filter: blur(5px);
+  box-shadow: 0 20px 40px rgba(15, 23, 42, 0.08);
+}
+
+.lr-hero {
+  padding: 24px;
+}
+
+.lr-eyebrow {
+  margin: 0 0 6px;
+  color: var(--lr-secondary);
+  letter-spacing: 0.04em;
+  font-size: 12px;
+  font-family: "M PLUS 1p", sans-serif;
+  text-transform: uppercase;
+}
+
+.lr-hero h1 {
+  margin: 0;
+  font-family: "M PLUS 1p", sans-serif;
+  font-size: clamp(28px, 3.4vw, 38px);
+  line-height: 1.1;
+}
+
+.lr-description {
+  margin: 14px 0 0;
+  color: var(--lr-muted);
+  line-height: 1.6;
+}
+
+.lr-actions {
+  margin-top: 18px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.lr-button {
+  border: 0;
+  border-radius: 999px;
+  padding: 11px 16px;
+  font-family: "M PLUS 1p", sans-serif;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  text-decoration: none;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.2s ease, opacity 0.2s ease;
+}
+
+.lr-button:hover {
+  transform: translateY(-1px);
+}
+
+.lr-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+  transform: none;
+}
+
+.lr-button-primary {
+  background: linear-gradient(135deg, var(--lr-primary), var(--lr-primary-dark));
+  color: #fff;
+  box-shadow: 0 12px 20px rgba(11, 122, 42, 0.28);
+}
+
+.lr-button-secondary {
+  background: linear-gradient(135deg, #0284c7, #0369a1);
+  color: #fff;
+  box-shadow: 0 10px 18px rgba(3, 105, 161, 0.22);
+}
+
+.lr-button-ghost {
+  background: #fff;
+  border: 1px solid rgba(2, 132, 199, 0.22);
+  color: #075985;
+}
+
+.lr-status {
+  margin: 12px 0 0;
+  min-height: 22px;
+  color: var(--lr-muted);
+  font-size: 13px;
+}
+
+.lr-status[data-tone="ok"] {
+  color: #0f766e;
+}
+
+.lr-status[data-tone="warn"] {
+  color: #b45309;
+}
+
+.lr-status[data-tone="error"] {
+  color: var(--lr-danger);
+}
+
+.lr-card {
+  padding: 18px;
+}
+
+.lr-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.lr-card h2 {
+  margin: 0;
+  font-size: 17px;
+  font-family: "M PLUS 1p", sans-serif;
+}
+
+.lr-link-button {
+  border: 0;
+  background: transparent;
+  color: var(--lr-secondary);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.lr-note {
+  margin: 10px 0 0;
+  color: var(--lr-muted);
+  line-height: 1.6;
+  font-size: 14px;
+}
+
+.lr-meta {
+  margin: 14px 0 0;
+  display: grid;
+  gap: 12px;
+}
+
+.lr-meta div {
+  display: grid;
+  gap: 4px;
+}
+
+.lr-meta dt {
+  font-size: 12px;
+  color: var(--lr-muted);
+}
+
+.lr-meta dd {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  word-break: break-word;
+}
+
+.lr-inline-form {
+  margin-top: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.lr-inline-form input {
+  flex: 1 1 260px;
+  min-width: 180px;
+  border-radius: 12px;
+  border: 1px solid rgba(15, 23, 42, 0.2);
+  padding: 11px 12px;
+  font-size: 14px;
+}
+
+.lr-inline-form input:focus {
+  outline: none;
+  border-color: rgba(3, 105, 161, 0.5);
+  box-shadow: 0 0 0 3px rgba(3, 105, 161, 0.14);
+}
+
+.lr-summary {
+  margin: 10px 0 12px;
+  color: var(--lr-muted);
+  white-space: pre-line;
+  line-height: 1.55;
+  font-size: 14px;
+}
+
+.lr-reservation-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 10px;
+}
+
+.lr-reservation-item {
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 13px;
+  background: #fff;
+  padding: 12px;
+}
+
+.lr-reservation-title {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.lr-reservation-meta {
+  margin: 0;
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+  color: #334155;
+}
+
+@media (max-width: 640px) {
+  .lr-shell {
+    width: min(960px, 100% - 20px);
+    margin-top: 18px;
+  }
+
+  .lr-hero,
+  .lr-card {
+    padding: 16px;
+  }
+
+  .lr-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .lr-button {
+    text-align: center;
+  }
+}

@@ -6,6 +6,7 @@ export * from "./dispatch/engine.ts";
 export * from "./dispatch/insertion.ts";
 export * from "./dispatch/greedy.ts";
 export * from "./routing/service.ts";
+export * from "./line/service.ts";
 export * from "./telephony/phoneNumber.ts";
 export * from "./telephony/adapters.ts";
 export * from "./telephony/service.ts";

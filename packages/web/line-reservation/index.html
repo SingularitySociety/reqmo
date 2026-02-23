@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>しまんとバス LINE予約確認</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=M+PLUS+1p:wght@500;700&family=Noto+Sans+JP:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link href="./styles.css" rel="stylesheet" />
+  </head>
+  <body>
+    <main class="lr-shell">
+      <section class="lr-hero">
+        <p class="lr-eyebrow">Shimanto LINE Reservation</p>
+        <h1>LINEで予約を確認</h1>
+        <p class="lr-description">
+          QRやリンクから友だち追加後、チャットで「予約確認」と送るか、ミニアプリで最新予約を確認できます。
+        </p>
+        <div class="lr-actions">
+          <a id="add-friend-button" class="lr-button lr-button-primary" href="#" target="_blank" rel="noopener">
+            友だち追加
+          </a>
+          <a id="open-miniapp-button" class="lr-button lr-button-secondary" href="#" target="_blank" rel="noopener">
+            ミニアプリを開く
+          </a>
+          <button id="liff-login-button" class="lr-button lr-button-ghost" type="button">
+            LINEログイン
+          </button>
+        </div>
+        <p id="status-message" class="lr-status" aria-live="polite"></p>
+      </section>
+
+      <section class="lr-card">
+        <header class="lr-card-header">
+          <h2>LINE連携状態</h2>
+          <button id="refresh-session-button" class="lr-link-button" type="button">更新</button>
+        </header>
+        <dl class="lr-meta">
+          <div>
+            <dt>LINE User ID</dt>
+            <dd id="line-user-id">未取得</dd>
+          </div>
+          <div>
+            <dt>連携ユーザー</dt>
+            <dd id="linked-user-name">未連携</dd>
+          </div>
+        </dl>
+      </section>
+
+      <section class="lr-card">
+        <header class="lr-card-header">
+          <h2>電話番号で連携</h2>
+        </header>
+        <p class="lr-note">
+          既存の電話予約利用者に紐づける場合は、電話番号を入力してください。
+          チャットでも「連携 08012345678」で実行できます。
+        </p>
+        <form id="link-phone-form" class="lr-inline-form">
+          <input
+            id="phone-input"
+            type="tel"
+            inputmode="tel"
+            autocomplete="tel"
+            placeholder="08012345678"
+            required
+          />
+          <button class="lr-button lr-button-primary" type="submit">連携する</button>
+        </form>
+      </section>
+
+      <section class="lr-card">
+        <header class="lr-card-header">
+          <h2>予約一覧</h2>
+        </header>
+        <p id="summary-text" class="lr-summary">予約情報を読み込み中です。</p>
+        <ul id="reservation-list" class="lr-reservation-list"></ul>
+      </section>
+    </main>
+
+    <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+    <script src="./main.js"></script>
+  </body>
+</html>

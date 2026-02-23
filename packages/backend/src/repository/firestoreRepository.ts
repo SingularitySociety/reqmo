@@ -7,6 +7,7 @@ const COLLECTIONS = [
   "rideRequests",
   "trips",
   "phoneIdentities",
+  "lineIdentities",
   "callEvents",
   "serviceProfiles",
   "farePolicies",
@@ -48,6 +49,7 @@ export class FirestoreRepository extends InMemoryRepository {
       rideRequests,
       trips,
       phoneIdentities,
+      lineIdentities,
       callEvents,
       serviceProfiles,
       farePolicies,
@@ -60,6 +62,7 @@ export class FirestoreRepository extends InMemoryRepository {
       tenantRef.collection("rideRequests").get(),
       tenantRef.collection("trips").get(),
       tenantRef.collection("phoneIdentities").get(),
+      tenantRef.collection("lineIdentities").get(),
       tenantRef.collection("callEvents").get(),
       tenantRef.collection("serviceProfiles").get(),
       tenantRef.collection("farePolicies").get(),
@@ -75,6 +78,10 @@ export class FirestoreRepository extends InMemoryRepository {
       trips: trips.docs.map((doc) => ({ id: doc.id, ...doc.data() })),
       phoneIdentities: phoneIdentities.docs.map((doc) => ({
         normalizedPhoneE164: doc.id,
+        ...doc.data()
+      })),
+      lineIdentities: lineIdentities.docs.map((doc) => ({
+        lineUserId: doc.id,
         ...doc.data()
       })),
       callEvents: callEvents.docs.map((doc) => ({ id: doc.id, ...doc.data() })),
@@ -225,6 +232,12 @@ export class FirestoreRepository extends InMemoryRepository {
   linkPhoneIdentity({ userId, normalizedPhoneE164, source = "OPERATOR_REGISTERED", verified = false }) {
     const next = super.linkPhoneIdentity({ userId, normalizedPhoneE164, source, verified });
     this.writeDocument("phoneIdentities", normalizedPhoneE164, next);
+    return next;
+  }
+
+  linkLineIdentity({ userId, lineUserId, source = "LINE_MINIAPP", verified = true, displayName = null }) {
+    const next = super.linkLineIdentity({ userId, lineUserId, source, verified, displayName });
+    this.writeDocument("lineIdentities", next.lineUserId, next);
     return next;
   }
 

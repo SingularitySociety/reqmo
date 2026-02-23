@@ -8,6 +8,7 @@ export class InMemoryRepository {
     this.rideRequests = new Map();
     this.trips = new Map();
     this.phoneIdentities = new Map();
+    this.lineIdentities = new Map();
     this.callEvents = new Map();
     this.serviceProfiles = new Map();
     this.farePolicies = new Map();
@@ -47,6 +48,11 @@ export class InMemoryRepository {
     if (seed.phoneIdentities) {
       seed.phoneIdentities.forEach((identity) => {
         this.phoneIdentities.set(identity.normalizedPhoneE164, { ...identity });
+      });
+    }
+    if (seed.lineIdentities) {
+      seed.lineIdentities.forEach((identity) => {
+        this.lineIdentities.set(identity.lineUserId, { ...identity });
       });
     }
   }
@@ -239,6 +245,55 @@ export class InMemoryRepository {
       return null;
     }
     return this.users.get(identity.userId) ?? null;
+  }
+
+  linkLineIdentity({
+    userId,
+    lineUserId,
+    source = "LINE_MINIAPP",
+    verified = true,
+    displayName = null
+  }) {
+    const key = typeof lineUserId === "string" ? lineUserId.trim() : "";
+    if (!key) {
+      throw new Error("lineUserId is required");
+    }
+    const now = new Date().toISOString();
+    const current = this.lineIdentities.get(key);
+    const normalizedDisplayName =
+      typeof displayName === "string" && displayName.trim() ? displayName.trim() : null;
+    const next = {
+      id: current?.id ?? this.nextId("line"),
+      userId,
+      lineUserId: key,
+      source,
+      verified,
+      displayName: normalizedDisplayName ?? current?.displayName ?? null,
+      lastSeenAt: now,
+      blockStatus: current?.blockStatus ?? "ACTIVE"
+    };
+    this.lineIdentities.set(key, next);
+    return next;
+  }
+
+  getLineIdentity(lineUserId) {
+    const key = typeof lineUserId === "string" ? lineUserId.trim() : "";
+    if (!key) {
+      return null;
+    }
+    return this.lineIdentities.get(key) ?? null;
+  }
+
+  findUserByLine(lineUserId) {
+    const identity = this.getLineIdentity(lineUserId);
+    if (!identity || identity.blockStatus === "BLOCKED") {
+      return null;
+    }
+    return this.users.get(identity.userId) ?? null;
+  }
+
+  listLineIdentities() {
+    return Array.from(this.lineIdentities.values());
   }
 
   saveCallEvent(callEvent) {
