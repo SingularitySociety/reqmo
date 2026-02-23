@@ -3,6 +3,6 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "highs-solver": "^0.10.3"
+    "highs-solver": "0.9.1"
   }
 }

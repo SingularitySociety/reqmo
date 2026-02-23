@@ -49,9 +49,10 @@ function selectHighestColumnIndex(values) {
 function buildSingleSelectionModel(candidates, integerColumnType) {
   const candidateCount = candidates.length;
   const rowCount = 1;
-  const offsets = new Int32Array(rowCount + 1);
+  // Keep offsets length equal to rowCount for compatibility across
+  // highs-solver versions (0.9.x and 0.10.x).
+  const offsets = new Int32Array(rowCount);
   offsets[0] = 0;
-  offsets[1] = candidateCount;
 
   const indices = new Int32Array(candidateCount);
   const values = new Float64Array(candidateCount);
