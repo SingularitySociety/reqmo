@@ -2,6 +2,8 @@ const API_BASE =
   window.location.protocol === "file:" ? "http://localhost:18787" : "";
 
 const elements = {
+  guestHeroDescription: document.getElementById("guest-hero-description"),
+  memberHeroDescription: document.getElementById("member-hero-description"),
   guestEntryPanel: document.getElementById("guest-entry-panel"),
   friendAddQrImage: document.getElementById("friend-add-qr-image"),
   friendAddFallbackLink: document.getElementById("friend-add-fallback-link"),
@@ -286,6 +288,8 @@ function clearPreview() {
 function renderGuestEntry() {
   const isGuest = !state.lineUserId;
   setSectionVisibility(elements.guestEntryPanel, isGuest);
+  setSectionVisibility(elements.guestHeroDescription, isGuest);
+  setSectionVisibility(elements.memberHeroDescription, !isGuest);
   if (!isGuest) {
     return;
   }
