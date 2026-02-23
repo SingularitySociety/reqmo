@@ -448,6 +448,14 @@ function resolveDesiredSummary(reservation) {
   };
 }
 
+function resolvePickupScheduledAt(reservation) {
+  return reservation?.plannedPickupAt || reservation?.desiredPickupAt || reservation?.primaryTimeAt || null;
+}
+
+function resolveDropoffScheduledAt(reservation) {
+  return reservation?.plannedDropoffAt || reservation?.desiredDropoffAt || reservation?.primaryTimeAt || null;
+}
+
 function renderReservations(reservations) {
   if (!elements.reservationList) {
     return;
@@ -479,8 +487,8 @@ function renderReservations(reservations) {
     const dropoffLabel = escapeHtml(reservation.dropoffLabel || "未設定");
     const desiredLabel = escapeHtml(desired.label);
     const desiredAt = escapeHtml(formatDateTime(desired.at));
-    const plannedPickup = escapeHtml(formatDateTime(reservation?.plannedPickupAt || null));
-    const plannedDropoff = escapeHtml(formatDateTime(reservation?.plannedDropoffAt || null));
+    const plannedPickup = escapeHtml(formatDateTime(resolvePickupScheduledAt(reservation)));
+    const plannedDropoff = escapeHtml(formatDateTime(resolveDropoffScheduledAt(reservation)));
 
     item.innerHTML = `
       <div class="lr-reservation-head">

@@ -164,17 +164,21 @@ function resolveRequestSortTime(request) {
   );
 }
 
-function resolveRequestTimeLabel(request) {
-  if (request?.assignment?.plannedPickupAt) {
-    return `乗車予定 ${formatDateTime(request.assignment.plannedPickupAt)}`;
-  }
-  if (request?.timeWindow?.desiredPickupAt) {
-    return `希望乗車 ${formatDateTime(request.timeWindow.desiredPickupAt)}`;
-  }
-  if (request?.timeWindow?.desiredDropoffAt) {
-    return `希望降車 ${formatDateTime(request.timeWindow.desiredDropoffAt)}`;
-  }
-  return `受付 ${formatDateTime(request?.createdAt)}`;
+function resolveRequestPickupAt(request) {
+  return (
+    request?.assignment?.plannedPickupAt ??
+    request?.timeWindow?.desiredPickupAt ??
+    request?.createdAt ??
+    null
+  );
+}
+
+function resolveRequestDropoffAt(request) {
+  return (
+    request?.assignment?.plannedDropoffAt ??
+    request?.timeWindow?.desiredDropoffAt ??
+    null
+  );
 }
 
 function resolveStatusLabel(status) {
@@ -1015,14 +1019,16 @@ export function listLineUserRideRequests({
 }
 
 export function buildLineRideSummaryLines({ repository, rideRequest, index }) {
-  const rideLabel = `${index + 1}. ${resolveRequestTimeLabel(rideRequest)}`;
+  const pickupTimeLabel = `乗車予定 ${formatDateTime(resolveRequestPickupAt(rideRequest))}`;
+  const dropoffTimeLabel = `降車予定 ${formatDateTime(resolveRequestDropoffAt(rideRequest))}`;
+  const rideLabel = `${index + 1}. ${pickupTimeLabel}`;
   const routeLabel = `${resolveLocationLabel(repository, rideRequest.pickup)} -> ${resolveLocationLabel(
     repository,
     rideRequest.dropoff
   )}`;
   const statusLabel = `状態: ${resolveStatusLabel(rideRequest.status)}`;
   const requestIdLabel = `予約ID: ${rideRequest.id}`;
-  return [rideLabel, routeLabel, statusLabel, requestIdLabel];
+  return [rideLabel, dropoffTimeLabel, routeLabel, statusLabel, requestIdLabel];
 }
 
 export function buildReservationSummaryText({
