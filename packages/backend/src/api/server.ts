@@ -359,6 +359,28 @@ function normalizePassenger(passengerInput) {
   };
 }
 
+function buildLineMiniAppPassenger({
+  user,
+  registration,
+  passengerInput
+}) {
+  const provided = normalizePassenger(passengerInput) ?? {};
+  const fallbackName = typeof user?.name === "string" ? user.name.trim() : "";
+  const fallbackPhone =
+    typeof registration?.normalizedPhoneE164 === "string"
+      ? registration.normalizedPhoneE164.trim()
+      : "";
+  const resolvedName = fallbackName || (typeof provided.name === "string" ? provided.name.trim() : "");
+  const resolvedPhone = fallbackPhone || (typeof provided.phoneNumber === "string" ? provided.phoneNumber.trim() : "");
+  if (!resolvedName && !resolvedPhone) {
+    return null;
+  }
+  return {
+    ...(resolvedName ? { name: resolvedName } : {}),
+    ...(resolvedPhone ? { phoneNumber: resolvedPhone } : {})
+  };
+}
+
 function normalizeLineMiniAppStopId(value, fieldName) {
   const stopId = typeof value === "string" ? value.trim() : "";
   if (!stopId) {
@@ -1314,13 +1336,11 @@ export function createReqmoServer({
           pickup: { mode: "FIXED_STOP", stopId: reservationInput.pickupStopId },
           dropoff: { mode: "FIXED_STOP", stopId: reservationInput.dropoffStopId },
           partySize: reservationInput.partySize,
-          passenger:
-            normalizePassenger(body.passenger) ??
-            (user.name
-              ? {
-                  name: user.name
-                }
-              : null),
+          passenger: buildLineMiniAppPassenger({
+            user,
+            registration,
+            passengerInput: body.passenger
+          }),
           channel: "PASSENGER_APP",
           requestType: reservationInput.desiredMode === "PICKUP" ? "DEPART_AT" : "ARRIVE_BY",
           desiredPickupAt: reservationInput.desiredMode === "PICKUP" ? reservationInput.desiredAt : null,
@@ -1382,13 +1402,11 @@ export function createReqmoServer({
           pickup: { mode: "FIXED_STOP", stopId: reservationInput.pickupStopId },
           dropoff: { mode: "FIXED_STOP", stopId: reservationInput.dropoffStopId },
           partySize: reservationInput.partySize,
-          passenger:
-            normalizePassenger(body.passenger) ??
-            (user.name
-              ? {
-                  name: user.name
-                }
-              : null),
+          passenger: buildLineMiniAppPassenger({
+            user,
+            registration,
+            passengerInput: body.passenger
+          }),
           channel: "PASSENGER_APP",
           requestType: reservationInput.desiredMode === "PICKUP" ? "DEPART_AT" : "ARRIVE_BY",
           desiredPickupAt:

@@ -238,6 +238,7 @@ test("line miniapp reservation can be created with stop and desired time", async
   assert.equal(created[0].requesterId, identity?.userId ?? null);
   assert.equal(created[0].pickup?.stopId, "stop_a");
   assert.equal(created[0].dropoff?.stopId, "stop_b");
+  assert.equal(created[0]?.passenger?.phoneNumber, "+818012345678");
   assert.equal(Boolean(created[0]?.timeWindow?.desiredPickupAt), true);
 });
 
