@@ -106,6 +106,10 @@
               <option value="">選択してください</option>
             </select>
           </label>
+          <label class="lr-field">
+            <span>乗車人数</span>
+            <input id="party-size-input" type="number" min="1" step="1" value="1" required />
+          </label>
           <fieldset class="lr-fieldset">
             <legend>希望時刻の基準</legend>
             <label>
@@ -135,6 +139,7 @@
           <dl class="lr-preview-meta">
             <div><dt>乗車バス停</dt><dd id="preview-pickup-label">-</dd></div>
             <div><dt>降車バス停</dt><dd id="preview-dropoff-label">-</dd></div>
+            <div><dt>乗車人数</dt><dd id="preview-party-size">-</dd></div>
             <div><dt>希望時刻の基準</dt><dd id="preview-desired-mode">-</dd></div>
             <div><dt>入力した希望時刻</dt><dd id="preview-desired-at">-</dd></div>
             <div><dt>予想乗車時刻</dt><dd id="preview-pickup-at">-</dd></div>

@@ -25,6 +25,7 @@ const elements = {
   createReservationForm: document.getElementById("create-reservation-form"),
   pickupStopSelect: document.getElementById("pickup-stop-select"),
   dropoffStopSelect: document.getElementById("dropoff-stop-select"),
+  partySizeInput: document.getElementById("party-size-input"),
   desiredDateInput: document.getElementById("desired-date-input"),
   desiredTimeInput: document.getElementById("desired-time-input"),
   createReservationButton: document.getElementById("create-reservation-button"),
@@ -32,6 +33,7 @@ const elements = {
   reservationPreviewPanel: document.getElementById("reservation-preview-panel"),
   previewPickupLabel: document.getElementById("preview-pickup-label"),
   previewDropoffLabel: document.getElementById("preview-dropoff-label"),
+  previewPartySize: document.getElementById("preview-party-size"),
   previewDesiredMode: document.getElementById("preview-desired-mode"),
   previewDesiredAt: document.getElementById("preview-desired-at"),
   previewPickupAt: document.getElementById("preview-pickup-at"),
@@ -214,6 +216,9 @@ function setDefaultDesiredDateTime() {
   if (!elements.desiredTimeInput.value) {
     elements.desiredTimeInput.value = toTimeInputText(baseline);
   }
+  if (elements.partySizeInput && !elements.partySizeInput.value) {
+    elements.partySizeInput.value = "1";
+  }
 }
 
 function resolveDesiredMode() {
@@ -312,6 +317,7 @@ function setReservationFormEnabled(enabled) {
   const controls = [
     elements.pickupStopSelect,
     elements.dropoffStopSelect,
+    elements.partySizeInput,
     elements.desiredDateInput,
     elements.desiredTimeInput,
     elements.createReservationButton,
@@ -554,6 +560,10 @@ function renderPreviewPanel(preview) {
   if (elements.previewDropoffLabel) {
     elements.previewDropoffLabel.textContent = preview.dropoffLabel || "-";
   }
+  if (elements.previewPartySize) {
+    const partySize = Number(state.pendingReservationInput?.partySize);
+    elements.previewPartySize.textContent = Number.isInteger(partySize) && partySize > 0 ? `${partySize}人` : "1人";
+  }
   if (elements.previewDesiredMode) {
     elements.previewDesiredMode.textContent = formatDesiredModeLabel(preview.desiredMode);
   }
@@ -769,6 +779,10 @@ function collectReservationInput() {
   if (elements.pickupStopSelect.value === elements.dropoffStopSelect.value) {
     throw new Error("乗車バス停と降車バス停は別の停留所を選択してください。");
   }
+  const parsedPartySize = Number(elements.partySizeInput?.value);
+  if (!Number.isInteger(parsedPartySize) || parsedPartySize < 1) {
+    throw new Error("乗車人数は1以上の整数で入力してください。");
+  }
   const desiredAt = buildDesiredAtIso(
     elements.desiredDateInput?.value || "",
     elements.desiredTimeInput?.value || ""
@@ -782,6 +796,7 @@ function collectReservationInput() {
     displayName: state.displayName || "",
     pickupStopId: elements.pickupStopSelect.value,
     dropoffStopId: elements.dropoffStopSelect.value,
+    partySize: parsedPartySize,
     desiredMode: resolveDesiredMode(),
     desiredAt,
   };
