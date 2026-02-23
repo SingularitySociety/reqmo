@@ -14,6 +14,8 @@ const elements = {
   statusMessage: document.getElementById("status-message"),
   lineUserId: document.getElementById("line-user-id"),
   linkedUserName: document.getElementById("linked-user-name"),
+  linkedPhoneNumber: document.getElementById("linked-phone-number"),
+  linePhoneRegistrationMessage: document.getElementById("line-phone-registration-message"),
   registrationStatusText: document.getElementById("registration-status-text"),
   registerUserForm: document.getElementById("register-user-form"),
   registerNameInput: document.getElementById("register-name-input"),
@@ -393,18 +395,30 @@ function renderIdentity() {
   if (elements.lineUserId) {
     elements.lineUserId.textContent = state.lineUserId || "未取得";
   }
-  if (!elements.linkedUserName) {
-    return;
+  if (elements.linkedUserName) {
+    if (state.session?.user?.name) {
+      elements.linkedUserName.textContent = state.session.user.name;
+    } else if (state.displayName) {
+      elements.linkedUserName.textContent = state.displayName;
+    } else {
+      elements.linkedUserName.textContent = "未連携";
+    }
   }
-  if (state.session?.user?.name) {
-    elements.linkedUserName.textContent = state.session.user.name;
-    return;
+
+  const normalizedPhone = (state.session?.registration?.normalizedPhoneE164 || "").trim();
+  const hasPhone = Boolean(state.session?.registration?.hasPhone) && Boolean(normalizedPhone);
+  if (elements.linkedPhoneNumber) {
+    elements.linkedPhoneNumber.textContent = hasPhone ? normalizedPhone : "未登録";
+    elements.linkedPhoneNumber.dataset.tone = hasPhone ? "ok" : "warn";
   }
-  if (state.displayName) {
-    elements.linkedUserName.textContent = state.displayName;
-    return;
+  if (elements.linePhoneRegistrationMessage) {
+    const shouldWarn = Boolean(state.lineUserId) && !hasPhone;
+    elements.linePhoneRegistrationMessage.hidden = !shouldWarn;
+    elements.linePhoneRegistrationMessage.dataset.tone = shouldWarn ? "warn" : "info";
+    elements.linePhoneRegistrationMessage.textContent = shouldWarn
+      ? "電話番号が未登録です。利用者登録（必須）から電話番号を登録してください。"
+      : "";
   }
-  elements.linkedUserName.textContent = "未連携";
 }
 
 function isReservationCancellable(reservation) {

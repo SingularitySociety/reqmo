@@ -233,6 +233,14 @@ body {
   word-break: break-word;
 }
 
+.lr-meta dd[data-tone="ok"] {
+  color: #0f766e;
+}
+
+.lr-meta dd[data-tone="warn"] {
+  color: #b45309;
+}
+
 .lr-inline-form {
   margin-top: 12px;
   display: flex;
