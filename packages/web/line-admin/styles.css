@@ -1,0 +1,243 @@
+:root {
+  --la-bg-top: #eef8ff;
+  --la-bg-bottom: #eefdf4;
+  --la-surface: rgba(255, 255, 255, 0.95);
+  --la-border: rgba(15, 23, 42, 0.14);
+  --la-text: #0f172a;
+  --la-muted: #475569;
+  --la-primary: #0369a1;
+  --la-primary-dark: #0f4c81;
+  --la-ok: #0f766e;
+  --la-warn: #b45309;
+  --la-error: #b42318;
+  --la-radius: 14px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  color: var(--la-text);
+  font-family: "Noto Sans JP", sans-serif;
+  background:
+    radial-gradient(circle at 10% 0%, rgba(3, 105, 161, 0.12), transparent 40%),
+    radial-gradient(circle at 100% 100%, rgba(15, 118, 110, 0.1), transparent 52%),
+    linear-gradient(165deg, var(--la-bg-top), var(--la-bg-bottom));
+}
+
+.la-shell {
+  width: min(1100px, 100% - 26px);
+  margin: 24px auto 40px;
+  display: grid;
+  gap: 14px;
+}
+
+.la-hero,
+.la-card {
+  border: 1px solid var(--la-border);
+  border-radius: var(--la-radius);
+  background: var(--la-surface);
+  box-shadow: 0 14px 30px rgba(15, 23, 42, 0.08);
+}
+
+.la-hero {
+  padding: 20px;
+}
+
+.la-eyebrow {
+  margin: 0 0 6px;
+  color: var(--la-primary);
+  font-family: "M PLUS 1p", sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 12px;
+}
+
+.la-hero h1 {
+  margin: 0;
+  font-size: clamp(24px, 3vw, 36px);
+  font-family: "M PLUS 1p", sans-serif;
+}
+
+.la-description {
+  margin: 10px 0 0;
+  color: var(--la-muted);
+  line-height: 1.6;
+}
+
+.la-status {
+  margin: 12px 0 0;
+  min-height: 22px;
+  font-size: 13px;
+  color: var(--la-muted);
+}
+
+.la-status[data-tone="ok"] {
+  color: var(--la-ok);
+}
+
+.la-status[data-tone="warn"] {
+  color: var(--la-warn);
+}
+
+.la-status[data-tone="error"] {
+  color: var(--la-error);
+}
+
+.la-card {
+  padding: 16px;
+}
+
+.la-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.la-card h2 {
+  margin: 0;
+  font-size: 18px;
+  font-family: "M PLUS 1p", sans-serif;
+}
+
+.la-link-button {
+  border: 0;
+  background: transparent;
+  color: var(--la-primary);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.la-table-wrap {
+  margin-top: 10px;
+  overflow: auto;
+}
+
+.la-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 880px;
+  font-size: 13px;
+}
+
+.la-table th,
+.la-table td {
+  padding: 10px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.1);
+  text-align: left;
+  vertical-align: top;
+}
+
+.la-table th {
+  color: var(--la-muted);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.la-badge {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.la-badge-ok {
+  color: #065f46;
+  background: rgba(16, 185, 129, 0.18);
+}
+
+.la-badge-warn {
+  color: #92400e;
+  background: rgba(251, 191, 36, 0.24);
+}
+
+.la-mini-button {
+  border: 1px solid rgba(3, 105, 161, 0.25);
+  background: #fff;
+  color: #075985;
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.la-form-grid {
+  margin-top: 10px;
+  display: grid;
+  gap: 10px;
+}
+
+.la-field {
+  display: grid;
+  gap: 4px;
+  color: var(--la-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.la-field input {
+  border: 1px solid rgba(15, 23, 42, 0.18);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 14px;
+  color: var(--la-text);
+  background: #fff;
+}
+
+.la-field input:focus {
+  outline: none;
+  border-color: rgba(3, 105, 161, 0.5);
+  box-shadow: 0 0 0 3px rgba(3, 105, 161, 0.12);
+}
+
+.la-actions {
+  margin-top: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.la-button {
+  border: 0;
+  border-radius: 999px;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-family: "M PLUS 1p", sans-serif;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.la-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.la-button-primary {
+  color: #fff;
+  background: linear-gradient(135deg, var(--la-primary), var(--la-primary-dark));
+}
+
+.la-button-ghost {
+  color: #0f172a;
+  background: #fff;
+  border: 1px solid rgba(15, 23, 42, 0.2);
+}
+
+@media (max-width: 720px) {
+  .la-shell {
+    width: min(1100px, 100% - 16px);
+    margin-top: 14px;
+  }
+
+  .la-hero,
+  .la-card {
+    padding: 12px;
+  }
+}

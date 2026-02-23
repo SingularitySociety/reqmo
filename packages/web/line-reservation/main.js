@@ -9,8 +9,10 @@ const elements = {
   statusMessage: document.getElementById("status-message"),
   lineUserId: document.getElementById("line-user-id"),
   linkedUserName: document.getElementById("linked-user-name"),
-  phoneForm: document.getElementById("link-phone-form"),
-  phoneInput: document.getElementById("phone-input"),
+  registrationStatusText: document.getElementById("registration-status-text"),
+  registerUserForm: document.getElementById("register-user-form"),
+  registerNameInput: document.getElementById("register-name-input"),
+  registerPhoneInput: document.getElementById("register-phone-input"),
   createReservationForm: document.getElementById("create-reservation-form"),
   pickupStopSelect: document.getElementById("pickup-stop-select"),
   dropoffStopSelect: document.getElementById("dropoff-stop-select"),
@@ -33,6 +35,7 @@ const state = {
   displayName: "",
   session: null,
   stops: [],
+  initialMode: "",
 };
 
 function getErrorMessage(error) {
@@ -82,6 +85,18 @@ function addLineUserIdQuery(url, lineUserId) {
   const base = new URL(url, window.location.origin);
   if (lineUserId) {
     base.searchParams.set("lineUserId", lineUserId);
+  }
+  return base.toString();
+}
+
+function addModeQuery(url, mode) {
+  if (!url) {
+    return "";
+  }
+  const base = new URL(url, window.location.origin);
+  const normalizedMode = typeof mode === "string" ? mode.trim() : "";
+  if (normalizedMode) {
+    base.searchParams.set("mode", normalizedMode);
   }
   return base.toString();
 }
@@ -193,6 +208,72 @@ function resolveDesiredMode() {
   return value === "DROPOFF" ? "DROPOFF" : "PICKUP";
 }
 
+function resolveInitialModeFromQuery() {
+  const query = new URLSearchParams(window.location.search);
+  const mode = (query.get("mode") || "").trim().toLowerCase();
+  return mode;
+}
+
+function setReservationFormEnabled(enabled) {
+  const controls = [
+    elements.pickupStopSelect,
+    elements.dropoffStopSelect,
+    elements.desiredDateInput,
+    elements.desiredTimeInput,
+    elements.createReservationButton,
+  ];
+  controls.forEach((control) => {
+    if (!control) {
+      return;
+    }
+    control.disabled = !enabled;
+  });
+}
+
+function renderRegistrationStatus() {
+  const registration = state.session?.registration || null;
+  const isRegistered = Boolean(registration?.isRegistered);
+  const hasName = Boolean(registration?.hasName);
+  const hasPhone = Boolean(registration?.hasPhone);
+
+  if (elements.registrationStatusText) {
+    if (!state.lineUserId) {
+      elements.registrationStatusText.textContent = "LINEログイン後に登録状態を確認できます。";
+      elements.registrationStatusText.dataset.tone = "warn";
+    } else if (isRegistered) {
+      const linkedPhone = registration?.normalizedPhoneE164 || "電話番号未取得";
+      elements.registrationStatusText.textContent = `登録済みです（${linkedPhone}）`;
+      elements.registrationStatusText.dataset.tone = "ok";
+    } else {
+      const missing = [];
+      if (!hasName) {
+        missing.push("名前");
+      }
+      if (!hasPhone) {
+        missing.push("電話番号");
+      }
+      elements.registrationStatusText.textContent = `未登録です。${missing.join("・")}を入力して登録してください。`;
+      elements.registrationStatusText.dataset.tone = "warn";
+    }
+  }
+
+  if (elements.registerNameInput) {
+    const currentName =
+      (state.session?.registration?.userName || state.session?.user?.name || state.displayName || "").trim();
+    if (currentName && !elements.registerNameInput.value) {
+      elements.registerNameInput.value = currentName;
+    }
+  }
+  if (elements.registerPhoneInput) {
+    const currentPhone = (state.session?.registration?.normalizedPhoneE164 || "").trim();
+    if (currentPhone && !elements.registerPhoneInput.value) {
+      elements.registerPhoneInput.value = currentPhone;
+    }
+  }
+
+  setReservationFormEnabled(Boolean(isRegistered));
+}
+
 async function apiGet(path) {
   const response = await fetch(`${API_BASE}${path}`);
   const raw = await response.text();
@@ -276,10 +357,12 @@ function renderReservations(reservations) {
 
 function renderSession(payload) {
   if (!payload) {
+    state.session = null;
     elements.summaryText.textContent =
       "LINEユーザー情報が未取得です。LINEアプリ内で開くか、チャットの「予約確認」から遷移してください。";
     renderReservations([]);
     renderIdentity();
+    renderRegistrationStatus();
     return;
   }
 
@@ -288,6 +371,7 @@ function renderSession(payload) {
     payload.summaryText || "予約情報を取得しました。";
   renderReservations(payload.reservations);
   renderIdentity();
+  renderRegistrationStatus();
 }
 
 function applyPublicConfig(config) {
@@ -298,9 +382,13 @@ function applyPublicConfig(config) {
     officialAccountId: config?.officialAccountId || "",
   };
   setButtonUrl(elements.addFriendButton, state.config.friendAddUrl);
+  const reservationUrl = addModeQuery(
+    addLineUserIdQuery(state.config.miniAppUrl, state.lineUserId),
+    "reserve"
+  );
   setButtonUrl(
     elements.openMiniAppButton,
-    addLineUserIdQuery(state.config.miniAppUrl, state.lineUserId)
+    reservationUrl
   );
   elements.liffLoginButton.disabled = !state.config.liffId;
 }
@@ -388,16 +476,17 @@ async function loadSession() {
   renderSession(payload);
   setButtonUrl(
     elements.openMiniAppButton,
-    addLineUserIdQuery(state.config.miniAppUrl, state.lineUserId)
+    addModeQuery(addLineUserIdQuery(state.config.miniAppUrl, state.lineUserId), "reserve")
   );
   setStatus("予約情報を更新しました。", "ok");
 }
 
-async function submitPhoneLink(event) {
+async function submitRegistration(event) {
   event.preventDefault();
-  const phoneNumber = elements.phoneInput.value.trim();
-  if (!phoneNumber) {
-    setStatus("電話番号を入力してください。", "warn");
+  const name = elements.registerNameInput?.value?.trim() || "";
+  const phoneNumber = elements.registerPhoneInput?.value?.trim() || "";
+  if (!name || !phoneNumber) {
+    setStatus("名前と電話番号を入力してください。", "warn");
     return;
   }
   if (!state.lineUserId) {
@@ -406,15 +495,16 @@ async function submitPhoneLink(event) {
   }
 
   try {
-    const payload = await apiPost("/api/line/miniapp/link-phone", {
+    const payload = await apiPost("/api/line/miniapp/register", {
       lineUserId: state.lineUserId,
+      name,
       phoneNumber,
       displayName: state.displayName || "",
     });
     renderSession(payload);
-    setStatus("電話番号連携が完了しました。", "ok");
+    setStatus("利用者登録が完了しました。", "ok");
   } catch (error) {
-    setStatus(`連携に失敗しました: ${getErrorMessage(error)}`, "error");
+    setStatus(`利用者登録に失敗しました: ${getErrorMessage(error)}`, "error");
   }
 }
 
@@ -429,6 +519,10 @@ async function submitCreateReservation(event) {
 
   if (!state.lineUserId) {
     setStatus("先にLINEログインを実行してください。", "warn");
+    return;
+  }
+  if (!state.session?.registration?.isRegistered) {
+    setCreateMessage("予約前に利用者登録（名前・電話番号）を完了してください。", "warn");
     return;
   }
   if (!elements.pickupStopSelect.value || !elements.dropoffStopSelect.value) {
@@ -476,15 +570,19 @@ async function submitCreateReservation(event) {
 }
 
 function registerEvents() {
-  elements.refreshSessionButton.addEventListener("click", () => {
-    loadSession().catch((error) => {
-      setStatus(`更新に失敗しました: ${getErrorMessage(error)}`, "error");
+  if (elements.refreshSessionButton) {
+    elements.refreshSessionButton.addEventListener("click", () => {
+      loadSession().catch((error) => {
+        setStatus(`更新に失敗しました: ${getErrorMessage(error)}`, "error");
+      });
     });
-  });
+  }
 
-  elements.phoneForm.addEventListener("submit", (event) => {
-    submitPhoneLink(event);
-  });
+  if (elements.registerUserForm) {
+    elements.registerUserForm.addEventListener("submit", (event) => {
+      submitRegistration(event);
+    });
+  }
 
   if (elements.createReservationForm) {
     elements.createReservationForm.addEventListener("submit", (event) => {
@@ -512,8 +610,10 @@ function registerEvents() {
 async function bootstrap() {
   registerEvents();
   setDefaultDesiredDateTime();
+  state.initialMode = resolveInitialModeFromQuery();
   state.lineUserId = resolveLineUserIdFromQuery();
   renderIdentity();
+  renderRegistrationStatus();
 
   try {
     await loadPublicConfig();
@@ -535,6 +635,12 @@ async function bootstrap() {
     await loadSession();
   } catch (error) {
     setStatus(`予約情報の取得に失敗しました: ${getErrorMessage(error)}`, "error");
+  }
+
+  if (state.initialMode === "register") {
+    setStatus("初回登録を完了してから予約をご利用ください。", "warn");
+  } else if (state.initialMode === "reserve" && !state.session?.registration?.isRegistered) {
+    setStatus("予約前に名前と電話番号の登録が必要です。", "warn");
   }
 }
 

@@ -172,6 +172,18 @@ body {
   font-size: 14px;
 }
 
+.lr-note[data-tone="ok"] {
+  color: #0f766e;
+}
+
+.lr-note[data-tone="warn"] {
+  color: #b45309;
+}
+
+.lr-note[data-tone="error"] {
+  color: var(--lr-danger);
+}
+
 .lr-meta {
   margin: 14px 0 0;
   display: grid;

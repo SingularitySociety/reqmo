@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>しまんとバス LINE利用者管理</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=M+PLUS+1p:wght@500;700&family=Noto+Sans+JP:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link href="./styles.css" rel="stylesheet" />
+  </head>
+  <body>
+    <main class="la-shell">
+      <section class="la-hero">
+        <p class="la-eyebrow">Shimanto LINE Admin</p>
+        <h1>LINE利用者管理</h1>
+        <p class="la-description">
+          予約利用者の名前・電話番号・LINE User IDを管理します。予約可否は「登録状態」で確認できます。
+        </p>
+        <p id="status-message" class="la-status" aria-live="polite"></p>
+      </section>
+
+      <section class="la-card">
+        <header class="la-card-header">
+          <h2>利用者一覧</h2>
+          <button id="refresh-users-button" class="la-link-button" type="button">更新</button>
+        </header>
+        <div class="la-table-wrap">
+          <table class="la-table">
+            <thead>
+              <tr>
+                <th>ユーザーID</th>
+                <th>名前</th>
+                <th>電話番号</th>
+                <th>LINE User ID</th>
+                <th>登録状態</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="users-table-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="la-card">
+        <header class="la-card-header">
+          <h2>利用者登録 / 更新</h2>
+        </header>
+        <form id="upsert-user-form" class="la-form-grid">
+          <label class="la-field">
+            <span>ユーザーID（更新時のみ）</span>
+            <input id="user-id-input" type="text" placeholder="user_000001" />
+          </label>
+          <label class="la-field">
+            <span>名前（必須）</span>
+            <input id="name-input" type="text" autocomplete="name" required />
+          </label>
+          <label class="la-field">
+            <span>電話番号（必須）</span>
+            <input id="phone-input" type="tel" inputmode="tel" autocomplete="tel" required />
+          </label>
+          <label class="la-field">
+            <span>LINE User ID（任意）</span>
+            <input id="line-user-id-input" type="text" placeholder="Uxxxxxxxx" />
+          </label>
+          <div class="la-actions">
+            <button id="save-user-button" class="la-button la-button-primary" type="submit">保存する</button>
+            <button id="reset-form-button" class="la-button la-button-ghost" type="button">フォームをクリア</button>
+          </div>
+        </form>
+      </section>
+    </main>
+
+    <script src="./main.js"></script>
+  </body>
+</html>

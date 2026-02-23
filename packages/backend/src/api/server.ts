@@ -27,8 +27,10 @@ import {
 import { createRoutingContextFromEnv } from "../routing/service.ts";
 import { reverseGeocodePoint } from "../location/reverseGeocode.ts";
 import { getHighsRuntimeDiagnostics } from "../dispatch/highs.ts";
+import { normalizePhoneNumber } from "../telephony/phoneNumber.ts";
 import {
   buildLineHelpMessage,
+  ensureLineRichMenuForUser,
   buildLineWelcomeMessages,
   buildMiniAppUrlWithLineUser,
   buildReservationSummaryText,
@@ -37,7 +39,9 @@ import {
   listLineUserRideRequests,
   parseLineMessageCommand,
   parseLineWebhookPayload,
+  registerLineMiniAppUser,
   resolveLineConfig,
+  resolveLineUserRegistrationStatus,
   sendLineReplyMessage,
   verifyLineWebhookSignature
 } from "../line/service.ts";
@@ -395,6 +399,67 @@ function resolveLineMiniAppTenantId(value) {
   return configured || "tenant_default";
 }
 
+function normalizeAdminUserName(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function resolveAdminUserLineIdentity(repository, userId) {
+  if (!userId) {
+    return null;
+  }
+  if (typeof repository?.listLineIdentities === "function") {
+    return repository.listLineIdentities().find((identity) => identity?.userId === userId) ?? null;
+  }
+  return null;
+}
+
+function resolveAdminUserPhoneIdentity(repository, userId) {
+  if (!userId) {
+    return null;
+  }
+  if (typeof repository?.findPhoneIdentityByUserId === "function") {
+    return repository.findPhoneIdentityByUserId(userId);
+  }
+  if (typeof repository?.listPhoneIdentities === "function") {
+    return repository.listPhoneIdentities().find((identity) => identity?.userId === userId) ?? null;
+  }
+  return null;
+}
+
+function serializeAdminUser(repository, user) {
+  const lineIdentity = resolveAdminUserLineIdentity(repository, user?.id ?? "");
+  const phoneIdentity = resolveAdminUserPhoneIdentity(repository, user?.id ?? "");
+  const hasName = Boolean(typeof user?.name === "string" && user.name.trim());
+  const hasPhone = Boolean(phoneIdentity?.normalizedPhoneE164);
+  return {
+    id: user?.id ?? "",
+    name: user?.name ?? null,
+    lineUserId: lineIdentity?.lineUserId ?? null,
+    lineDisplayName: lineIdentity?.displayName ?? null,
+    normalizedPhoneE164: phoneIdentity?.normalizedPhoneE164 ?? null,
+    registration: {
+      isRegistered: hasName && hasPhone,
+      hasName,
+      hasPhone
+    },
+    lastSeenAt:
+      lineIdentity?.lastSeenAt ??
+      phoneIdentity?.lastSeenAt ??
+      null
+  };
+}
+
+function buildAdminUsersPayload(repository) {
+  const users = typeof repository?.listUsers === "function" ? repository.listUsers() : [];
+  return users
+    .map((user) => serializeAdminUser(repository, user))
+    .sort((left, right) => {
+      const leftName = typeof left?.name === "string" ? left.name : "";
+      const rightName = typeof right?.name === "string" ? right.name : "";
+      return leftName.localeCompare(rightName, "ja-JP");
+    });
+}
+
 function resolveLinePublicConfig(req) {
   const config = resolveLineConfig({
     requestBaseUrl: resolveRequestBaseUrl(req)
@@ -500,6 +565,10 @@ function buildLineMiniAppSession({
     userId: user.id,
     limit: 5
   });
+  const registration = resolveLineUserRegistrationStatus({
+    repository,
+    lineUserId
+  });
   return {
     lineUserId,
     user: {
@@ -517,7 +586,8 @@ function buildLineMiniAppSession({
       repository,
       requests: reservations,
       displayName: user.name ?? identity.displayName ?? ""
-    })
+    }),
+    registration
   };
 }
 
@@ -543,16 +613,25 @@ function resolveDefaultCountryCode(repository, serviceProfileId) {
 }
 
 function buildLineQuickReplyForReservation({ miniAppUrl }) {
-  const items = [
-    {
+  const items = [];
+  if (miniAppUrl) {
+    items.push({
       type: "action",
       action: {
-        type: "message",
-        label: "予約確認",
-        text: "予約確認"
+        type: "uri",
+        label: "予約する",
+        uri: miniAppUrl
       }
+    });
+  }
+  items.push({
+    type: "action",
+    action: {
+      type: "message",
+      label: "予約確認",
+      text: "予約確認"
     }
-  ];
+  });
   if (miniAppUrl) {
     items.push({
       type: "action",
@@ -566,6 +645,65 @@ function buildLineQuickReplyForReservation({ miniAppUrl }) {
   return {
     items
   };
+}
+
+function buildLineQuickReplyForRegistration({ miniAppUrl }) {
+  const items = [];
+  if (miniAppUrl) {
+    items.push({
+      type: "action",
+      action: {
+        type: "uri",
+        label: "初回登録",
+        uri: miniAppUrl
+      }
+    });
+  }
+  items.push({
+    type: "action",
+    action: {
+      type: "message",
+      label: "ヘルプ",
+      text: "ヘルプ"
+    }
+  });
+  return {
+    items
+  };
+}
+
+function buildMiniAppUrlWithMode(miniAppUrl, mode) {
+  if (!miniAppUrl) {
+    return "";
+  }
+  const url = new URL(miniAppUrl);
+  if (mode) {
+    url.searchParams.set("mode", mode);
+  }
+  return url.toString();
+}
+
+async function tryEnsureLineRichMenuForUser({
+  req,
+  lineUserId,
+  isRegistered
+}) {
+  const config = resolveLineConfig({
+    requestBaseUrl: resolveRequestBaseUrl(req)
+  });
+  if (!config.channelAccessToken) {
+    return;
+  }
+  try {
+    await ensureLineRichMenuForUser({
+      channelAccessToken: config.channelAccessToken,
+      lineUserId,
+      miniAppUrl: config.miniAppUrl,
+      isRegistered
+    });
+  } catch (_error) {
+    // Non-blocking: mini app APIs should still complete when LINE rich menu API fails.
+  }
 }
 
 async function handleLineWebhookEvent({
@@ -591,6 +729,24 @@ async function handleLineWebhookEvent({
   }
 
   const miniAppUrl = buildMiniAppUrlWithLineUser(config.miniAppUrl, lineUserId);
+  const registerMiniAppUrl = buildMiniAppUrlWithMode(miniAppUrl, "register");
+  const reserveMiniAppUrl = buildMiniAppUrlWithMode(miniAppUrl, "reserve");
+
+  async function tryLinkRichMenu(isRegistered) {
+    if (!config.channelAccessToken) {
+      return;
+    }
+    try {
+      await ensureLineRichMenuForUser({
+        channelAccessToken: config.channelAccessToken,
+        lineUserId,
+        miniAppUrl: miniAppUrl || config.miniAppUrl || "",
+        isRegistered
+      });
+    } catch (_error) {
+      // Non-blocking: webhook reply should continue even if rich menu API is unavailable.
+    }
+  }
 
   if (event.type === "follow") {
     ensureLineUserIdentity({
@@ -598,10 +754,38 @@ async function handleLineWebhookEvent({
       lineUserId,
       source: "LINE_FOLLOW"
     });
+    const registration = resolveLineUserRegistrationStatus({
+      repository,
+      lineUserId
+    });
+    await tryLinkRichMenu(registration.isRegistered);
+    if (!registration.isRegistered) {
+      await sendLineReplyMessage({
+        channelAccessToken: config.channelAccessToken,
+        replyToken,
+        messages: [
+          {
+            type: "text",
+            text:
+              `友だち追加ありがとうございます。予約を利用するには初回登録（名前・電話番号）が必要です。\n` +
+              (registerMiniAppUrl ? `${registerMiniAppUrl}` : "ミニアプリURLが未設定です。"),
+            quickReply: buildLineQuickReplyForRegistration({
+              miniAppUrl: registerMiniAppUrl
+            })
+          }
+        ]
+      });
+      return {
+        status: "REPLIED",
+        type: "follow-registration"
+      };
+    }
     await sendLineReplyMessage({
       channelAccessToken: config.channelAccessToken,
       replyToken,
-      messages: buildLineWelcomeMessages({ miniAppUrl })
+      messages: buildLineWelcomeMessages({
+        miniAppUrl: reserveMiniAppUrl || miniAppUrl
+      })
     });
     return {
       status: "REPLIED",
@@ -610,6 +794,11 @@ async function handleLineWebhookEvent({
   }
 
   if (event.type !== "message" || event?.message?.type !== "text") {
+    const registration = resolveLineUserRegistrationStatus({
+      repository,
+      lineUserId
+    });
+    await tryLinkRichMenu(registration.isRegistered);
     return {
       status: "SKIPPED",
       reason: "UNSUPPORTED_EVENT"
@@ -623,6 +812,147 @@ async function handleLineWebhookEvent({
     lineUserId,
     source: "LINE_CHAT"
   });
+  let registration = resolveLineUserRegistrationStatus({
+    repository,
+    lineUserId
+  });
+  await tryLinkRichMenu(registration.isRegistered);
+
+  if (command.type === "LINK_PHONE") {
+    const linked = linkLineUserByPhone({
+      repository,
+      lineUserId,
+      phoneNumber: command.phoneNumber,
+      defaultCountryCode: resolveDefaultCountryCode(repository, serviceProfileId),
+      displayName: user.name ?? identity.displayName ?? null
+    });
+    if (linked.status === "NOT_FOUND") {
+      await sendLineReplyMessage({
+        channelAccessToken: config.channelAccessToken,
+        replyToken,
+        messages: [
+          {
+            type: "text",
+            text: `電話番号(${command.phoneNumber})に紐づく利用者が見つかりませんでした。初回登録メニューから登録してください。`,
+            quickReply: buildLineQuickReplyForRegistration({
+              miniAppUrl: registerMiniAppUrl
+            })
+          }
+        ]
+      });
+      return {
+        status: "REPLIED",
+        type: "link-not-found"
+      };
+    }
+    const requests = listLineUserRideRequests({
+      repository,
+      userId: linked.user.id,
+      limit: 3
+    });
+    registration = resolveLineUserRegistrationStatus({
+      repository,
+      lineUserId
+    });
+    await tryLinkRichMenu(registration.isRegistered);
+    const followUp =
+      registration.isRegistered
+        ? ""
+        : `\n予約利用には名前・電話番号の初回登録が必要です。\n${registerMiniAppUrl || ""}`;
+    await sendLineReplyMessage({
+      channelAccessToken: config.channelAccessToken,
+      replyToken,
+      messages: [
+        {
+          type: "text",
+          text:
+            `電話番号を連携しました (${linked.normalizedPhoneE164})\n` +
+            buildReservationSummaryText({
+              repository,
+              requests,
+              displayName: linked.user.name ?? identity.displayName ?? ""
+            }) +
+            followUp,
+          quickReply: registration.isRegistered
+            ? buildLineQuickReplyForReservation({
+                miniAppUrl: reserveMiniAppUrl || miniAppUrl
+              })
+            : buildLineQuickReplyForRegistration({
+                miniAppUrl: registerMiniAppUrl
+              })
+        }
+      ]
+    });
+    return {
+      status: "REPLIED",
+      type: "link-success"
+    };
+  }
+
+  if (command.type === "REGISTER") {
+    await sendLineReplyMessage({
+      channelAccessToken: config.channelAccessToken,
+      replyToken,
+      messages: [
+        {
+          type: "text",
+          text:
+            registerMiniAppUrl
+              ? `初回登録・登録情報更新はこちらです。\n${registerMiniAppUrl}`
+              : "ミニアプリURLが未設定です。",
+          quickReply: buildLineQuickReplyForRegistration({
+            miniAppUrl: registerMiniAppUrl
+          })
+        }
+      ]
+    });
+    return {
+      status: "REPLIED",
+      type: "open-registration"
+    };
+  }
+
+  if (!registration.isRegistered && command.type !== "HELP") {
+    await sendLineReplyMessage({
+      channelAccessToken: config.channelAccessToken,
+      replyToken,
+      messages: [
+        {
+          type: "text",
+          text:
+            "予約を利用するには初回登録（名前・電話番号）が必要です。\n" +
+            (registerMiniAppUrl ? `${registerMiniAppUrl}` : "ミニアプリURLが未設定です。"),
+          quickReply: buildLineQuickReplyForRegistration({
+            miniAppUrl: registerMiniAppUrl
+          })
+        }
+      ]
+    });
+    return {
+      status: "REPLIED",
+      type: "registration-required"
+    };
+  }
+
+  if (command.type === "BOOK" || command.type === "OPEN_MINIAPP") {
+    await sendLineReplyMessage({
+      channelAccessToken: config.channelAccessToken,
+      replyToken,
+      messages: [
+        {
+          type: "text",
+          text:
+            reserveMiniAppUrl
+              ? `予約フォームはこちらです。\n${reserveMiniAppUrl}`
+              : "ミニアプリURLが未設定です。"
+        }
+      ]
+    });
+    return {
+      status: "REPLIED",
+      type: "open-miniapp"
+    };
+  }
 
   if (command.type === "RESERVATION") {
     const requests = listLineUserRideRequests({
@@ -641,7 +971,9 @@ async function handleLineWebhookEvent({
             requests,
             displayName: user.name ?? identity.displayName ?? ""
           }),
-          quickReply: buildLineQuickReplyForReservation({ miniAppUrl })
+          quickReply: buildLineQuickReplyForReservation({
+            miniAppUrl: reserveMiniAppUrl || miniAppUrl
+          })
         }
       ]
     });
@@ -651,82 +983,22 @@ async function handleLineWebhookEvent({
     };
   }
 
-  if (command.type === "LINK_PHONE") {
-    const linked = linkLineUserByPhone({
-      repository,
-      lineUserId,
-      phoneNumber: command.phoneNumber,
-      defaultCountryCode: resolveDefaultCountryCode(repository, serviceProfileId),
-      displayName: user.name ?? identity.displayName ?? null
-    });
-    if (linked.status === "NOT_FOUND") {
-      await sendLineReplyMessage({
-        channelAccessToken: config.channelAccessToken,
-        replyToken,
-        messages: [
-          {
-            type: "text",
-            text: `電話番号(${command.phoneNumber})に紐づく利用者が見つかりませんでした。窓口で登録後に再度お試しください。`
-          }
-        ]
-      });
-      return {
-        status: "REPLIED",
-        type: "link-not-found"
-      };
-    }
-    const requests = listLineUserRideRequests({
-      repository,
-      userId: linked.user.id,
-      limit: 3
-    });
-    await sendLineReplyMessage({
-      channelAccessToken: config.channelAccessToken,
-      replyToken,
-      messages: [
-        {
-          type: "text",
-          text:
-            `電話番号を連携しました (${linked.normalizedPhoneE164})\n` +
-            buildReservationSummaryText({
-              repository,
-              requests,
-              displayName: linked.user.name ?? identity.displayName ?? ""
-            }),
-          quickReply: buildLineQuickReplyForReservation({ miniAppUrl })
-        }
-      ]
-    });
-    return {
-      status: "REPLIED",
-      type: "link-success"
-    };
-  }
-
-  if (command.type === "OPEN_MINIAPP") {
-    await sendLineReplyMessage({
-      channelAccessToken: config.channelAccessToken,
-      replyToken,
-      messages: [
-        {
-          type: "text",
-          text: miniAppUrl ? `ミニアプリはこちらです。\n${miniAppUrl}` : "ミニアプリURLが未設定です。"
-        }
-      ]
-    });
-    return {
-      status: "REPLIED",
-      type: "open-miniapp"
-    };
-  }
-
   await sendLineReplyMessage({
     channelAccessToken: config.channelAccessToken,
     replyToken,
     messages: [
       {
         type: "text",
-        text: buildLineHelpMessage({ miniAppUrl })
+        text: buildLineHelpMessage({
+          miniAppUrl: registration.isRegistered ? reserveMiniAppUrl || miniAppUrl : registerMiniAppUrl
+        }),
+        quickReply: registration.isRegistered
+          ? buildLineQuickReplyForReservation({
+              miniAppUrl: reserveMiniAppUrl || miniAppUrl
+            })
+          : buildLineQuickReplyForRegistration({
+              miniAppUrl: registerMiniAppUrl
+            })
       }
     ]
   });
@@ -837,6 +1109,15 @@ export function createReqmoServer({
           userId: linked.user.id,
           limit: 5
         });
+        const registration = resolveLineUserRegistrationStatus({
+          repository,
+          lineUserId
+        });
+        await tryEnsureLineRichMenuForUser({
+          req,
+          lineUserId,
+          isRegistered: registration.isRegistered
+        });
         await flushRepository(repository);
         return jsonResponse(res, 200, {
           status: "LINKED",
@@ -860,6 +1141,44 @@ export function createReqmoServer({
             requests: reservations,
             displayName: linked.user.name ?? linked.identity?.displayName ?? ""
           }),
+          registration,
+          config: resolveLinePublicConfig(req)
+        });
+      }
+
+      if (req.method === "POST" && pathname === "/api/line/miniapp/register") {
+        const body = await parseJsonBody(req);
+        const lineUserId = typeof body.lineUserId === "string" ? body.lineUserId.trim() : "";
+        if (!lineUserId) {
+          throw new Error("lineUserId is required");
+        }
+        const displayName =
+          typeof body.displayName === "string" && body.displayName.trim()
+            ? body.displayName.trim()
+            : null;
+        const result = registerLineMiniAppUser({
+          repository,
+          lineUserId,
+          displayName,
+          name: body.name,
+          phoneNumber: body.phoneNumber,
+          defaultCountryCode: resolveDefaultCountryCode(repository, activeServiceProfileId)
+        });
+        const session = buildLineMiniAppSession({
+          repository,
+          lineUserId,
+          displayName
+        });
+        await tryEnsureLineRichMenuForUser({
+          req,
+          lineUserId,
+          isRegistered: Boolean(session.registration?.isRegistered)
+        });
+        await flushRepository(repository);
+        return jsonResponse(res, 200, {
+          status: result.status,
+          normalizedPhoneE164: result.phoneIdentity?.normalizedPhoneE164 ?? null,
+          ...session,
           config: resolveLinePublicConfig(req)
         });
       }
@@ -919,6 +1238,17 @@ export function createReqmoServer({
           displayName,
           source: "LINE_MINIAPP_BOOKING"
         });
+        const registration = resolveLineUserRegistrationStatus({
+          repository,
+          lineUserId
+        });
+        if (!registration.isRegistered) {
+          return jsonResponse(res, 403, {
+            status: "REGISTRATION_REQUIRED",
+            registration,
+            message: "予約には利用者登録（名前・電話番号）が必要です。"
+          });
+        }
 
         const result = await createRideRequest({
           repository,
@@ -950,6 +1280,11 @@ export function createReqmoServer({
           repository,
           lineUserId,
           displayName
+        });
+        await tryEnsureLineRichMenuForUser({
+          req,
+          lineUserId,
+          isRegistered: Boolean(session.registration?.isRegistered)
         });
 
         await flushRepository(repository);
@@ -1009,6 +1344,84 @@ export function createReqmoServer({
           status: "OK",
           handledEvents: results.length,
           results
+        });
+      }
+
+      if (req.method === "GET" && pathname === "/api/admin/users") {
+        return jsonResponse(res, 200, {
+          status: "OK",
+          users: buildAdminUsersPayload(repository)
+        });
+      }
+
+      if (req.method === "POST" && pathname === "/api/admin/users/upsert") {
+        const body = await parseJsonBody(req);
+        const requestedUserId = normalizeOptionalId(body.userId);
+        const lineUserId = normalizeOptionalId(body.lineUserId);
+        const normalizedName = normalizeAdminUserName(body.name);
+        if (!normalizedName) {
+          throw new Error("name is required");
+        }
+        const normalizedPhone = normalizePhoneNumber(
+          body.phoneNumber,
+          resolveDefaultCountryCode(repository, activeServiceProfileId)
+        );
+        if (!normalizedPhone) {
+          throw new Error("phoneNumber is invalid");
+        }
+
+        let user = null;
+        if (requestedUserId && typeof repository?.getUser === "function") {
+          user = repository.getUser(requestedUserId);
+        }
+        if (!user && typeof repository?.findUserByPhone === "function") {
+          user = repository.findUserByPhone(normalizedPhone);
+        }
+        if (!user) {
+          const newUserId =
+            requestedUserId || (typeof repository?.nextId === "function" ? repository.nextId("user") : `user_${Date.now()}`);
+          user = repository.addUser({
+            id: newUserId,
+            name: normalizedName
+          });
+        } else if (typeof repository?.updateUser === "function") {
+          user = repository.updateUser(user.id, {
+            name: normalizedName
+          }) ?? user;
+        } else {
+          user = repository.addUser({
+            ...user,
+            name: normalizedName
+          });
+        }
+
+        const phoneIdentity =
+          typeof repository?.linkPhoneIdentity === "function"
+            ? repository.linkPhoneIdentity({
+                userId: user.id,
+                normalizedPhoneE164: normalizedPhone,
+                source: "ADMIN_CONSOLE",
+                verified: true
+              })
+            : null;
+        const lineIdentity =
+          lineUserId && typeof repository?.linkLineIdentity === "function"
+            ? repository.linkLineIdentity({
+                userId: user.id,
+                lineUserId,
+                source: "ADMIN_CONSOLE",
+                verified: true,
+                displayName: normalizedName
+              })
+            : resolveAdminUserLineIdentity(repository, user.id);
+
+        await flushRepository(repository);
+        return jsonResponse(res, 200, {
+          status: "UPSERTED",
+          user: serializeAdminUser(repository, user),
+          phoneIdentity,
+          lineIdentity,
+          users: buildAdminUsersPayload(repository)
         });
       }
 

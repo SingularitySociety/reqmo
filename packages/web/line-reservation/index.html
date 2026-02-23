@@ -53,22 +53,29 @@
 
       <section class="lr-card">
         <header class="lr-card-header">
-          <h2>電話番号で連携</h2>
+          <h2>利用者登録（必須）</h2>
         </header>
         <p class="lr-note">
-          既存の電話予約利用者に紐づける場合は、電話番号を入力してください。
-          チャットでも「連携 08012345678」で実行できます。
+          予約を行うには、名前と電話番号の登録が必要です。初回のみ入力してください。
         </p>
-        <form id="link-phone-form" class="lr-inline-form">
+        <p id="registration-status-text" class="lr-note"></p>
+        <form id="register-user-form" class="lr-inline-form">
           <input
-            id="phone-input"
+            id="register-name-input"
+            type="text"
+            autocomplete="name"
+            placeholder="お名前"
+            required
+          />
+          <input
+            id="register-phone-input"
             type="tel"
             inputmode="tel"
             autocomplete="tel"
             placeholder="08012345678"
             required
           />
-          <button class="lr-button lr-button-primary" type="submit">連携する</button>
+          <button class="lr-button lr-button-primary" type="submit">登録する</button>
         </form>
       </section>
 

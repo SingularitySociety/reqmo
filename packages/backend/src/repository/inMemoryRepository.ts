@@ -67,6 +67,30 @@ export class InMemoryRepository {
     return this.users.get(user.id);
   }
 
+  getUser(userId) {
+    if (typeof userId !== "string") {
+      return null;
+    }
+    const key = userId.trim();
+    if (!key) {
+      return null;
+    }
+    return this.users.get(key) ?? null;
+  }
+
+  updateUser(userId, updates = {}) {
+    const current = this.getUser(userId);
+    if (!current) {
+      return null;
+    }
+    const next = {
+      ...current,
+      ...updates
+    };
+    this.users.set(current.id, next);
+    return next;
+  }
+
   listUsers() {
     return Array.from(this.users.values());
   }
@@ -245,6 +269,31 @@ export class InMemoryRepository {
       return null;
     }
     return this.users.get(identity.userId) ?? null;
+  }
+
+  getPhoneIdentity(normalizedPhoneE164) {
+    const key = typeof normalizedPhoneE164 === "string" ? normalizedPhoneE164.trim() : "";
+    if (!key) {
+      return null;
+    }
+    return this.phoneIdentities.get(key) ?? null;
+  }
+
+  findPhoneIdentityByUserId(userId) {
+    const key = typeof userId === "string" ? userId.trim() : "";
+    if (!key) {
+      return null;
+    }
+    for (const identity of this.phoneIdentities.values()) {
+      if (identity?.userId === key && identity?.blockStatus !== "BLOCKED") {
+        return identity;
+      }
+    }
+    return null;
+  }
+
+  listPhoneIdentities() {
+    return Array.from(this.phoneIdentities.values());
   }
 
   linkLineIdentity({

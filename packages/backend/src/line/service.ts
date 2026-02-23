@@ -1,8 +1,17 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { deflateSync } from "node:zlib";
 
 import { normalizePhoneNumber } from "../telephony/phoneNumber.ts";
 
 const LINE_REPLY_ENDPOINT = "https://api.line.me/v2/bot/message/reply";
+const LINE_RICHMENU_ENDPOINT = "https://api.line.me/v2/bot/richmenu";
+const LINE_RICHMENU_ALIAS_ENDPOINT = "https://api.line.me/v2/bot/richmenu/alias";
+const LINE_RICHMENU_CONTENT_BASE = "https://api-data.line.me/v2/bot/richmenu";
+const RICH_MENU_WIDTH = 2500;
+const RICH_MENU_HEIGHT = 843;
+const DEFAULT_REGISTER_RICHMENU_ALIAS = "reqmo_register_v1";
+const DEFAULT_RESERVATION_RICHMENU_ALIAS = "reqmo_reservation_v1";
+const richMenuAliasCache = new Map();
 const ACTIVE_RIDE_STATUSES = new Set([
   "REQUESTED",
   "ASSIGNED",
@@ -21,6 +30,18 @@ const STATUS_LABELS = {
   COMPLETED: "完了",
   CANCELLED: "取消"
 };
+
+const CRC32_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let i = 0; i < 256; i += 1) {
+    let c = i;
+    for (let j = 0; j < 8; j += 1) {
+      c = (c & 1) === 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    }
+    table[i] = c >>> 0;
+  }
+  return table;
+})();
 
 function normalizeTrimmedText(value) {
   if (typeof value !== "string") {
@@ -203,6 +224,373 @@ function normalizeMessageText(text) {
   return normalizeTrimmedText(text).replace(/\s+/g, " ");
 }
 
+function normalizePersonName(name) {
+  return normalizeTrimmedText(name);
+}
+
+function appendMiniAppModeQuery(miniAppUrl, mode = "") {
+  const normalizedUrl = normalizeHttpUrl(miniAppUrl);
+  const normalizedMode = normalizeTrimmedText(mode);
+  if (!normalizedUrl) {
+    return "";
+  }
+  if (!normalizedMode) {
+    return normalizedUrl;
+  }
+  const url = new URL(normalizedUrl);
+  url.searchParams.set("mode", normalizedMode);
+  return url.toString();
+}
+
+function parseHexColor(color, fallback = "#2f855a") {
+  const normalized = normalizeTrimmedText(color).replace(/^#/, "");
+  const safe = /^[0-9a-fA-F]{6}$/.test(normalized) ? normalized : fallback.replace(/^#/, "");
+  return {
+    r: Number.parseInt(safe.slice(0, 2), 16),
+    g: Number.parseInt(safe.slice(2, 4), 16),
+    b: Number.parseInt(safe.slice(4, 6), 16)
+  };
+}
+
+function crc32(buffer) {
+  let crc = 0xffffffff;
+  for (let index = 0; index < buffer.length; index += 1) {
+    const byte = buffer[index];
+    crc = CRC32_TABLE[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function buildPngChunk(type, data) {
+  const typeBuffer = Buffer.from(type, "ascii");
+  const lengthBuffer = Buffer.alloc(4);
+  lengthBuffer.writeUInt32BE(data.length >>> 0, 0);
+  const crcBuffer = Buffer.alloc(4);
+  crcBuffer.writeUInt32BE(crc32(Buffer.concat([typeBuffer, data])), 0);
+  return Buffer.concat([lengthBuffer, typeBuffer, data, crcBuffer]);
+}
+
+function createStripedPng({
+  width = RICH_MENU_WIDTH,
+  height = RICH_MENU_HEIGHT,
+  segments = []
+} = {}) {
+  const safeWidth = Number.isFinite(Number(width)) ? Math.max(1, Math.trunc(Number(width))) : RICH_MENU_WIDTH;
+  const safeHeight = Number.isFinite(Number(height)) ? Math.max(1, Math.trunc(Number(height))) : RICH_MENU_HEIGHT;
+  const normalizedSegments = Array.isArray(segments) && segments.length
+    ? segments
+    : [{ ratio: 1, color: "#2f855a" }];
+
+  const ratioTotal = normalizedSegments.reduce((sum, item) => sum + Math.max(0, Number(item?.ratio) || 0), 0) || 1;
+  const segmentBounds = [];
+  let offset = 0;
+  normalizedSegments.forEach((item, index) => {
+    const ratio = Math.max(0, Number(item?.ratio) || 0);
+    const widthForSegment =
+      index === normalizedSegments.length - 1
+        ? safeWidth - offset
+        : Math.max(0, Math.round((safeWidth * ratio) / ratioTotal));
+    const colors = parseHexColor(item?.color ?? "#2f855a");
+    const end = Math.min(safeWidth, offset + widthForSegment);
+    segmentBounds.push({
+      start: offset,
+      end: index === normalizedSegments.length - 1 ? safeWidth : end,
+      ...colors
+    });
+    offset = end;
+  });
+
+  if (segmentBounds[segmentBounds.length - 1].end < safeWidth) {
+    segmentBounds[segmentBounds.length - 1].end = safeWidth;
+  }
+
+  const rowBytes = 1 + safeWidth * 3;
+  const scanline = Buffer.alloc(rowBytes);
+  scanline[0] = 0;
+  let segmentIndex = 0;
+  for (let x = 0; x < safeWidth; x += 1) {
+    while (
+      segmentIndex < segmentBounds.length - 1 &&
+      x >= segmentBounds[segmentIndex].end
+    ) {
+      segmentIndex += 1;
+    }
+    const segment = segmentBounds[segmentIndex];
+    const pixelOffset = 1 + x * 3;
+    scanline[pixelOffset] = segment.r;
+    scanline[pixelOffset + 1] = segment.g;
+    scanline[pixelOffset + 2] = segment.b;
+  }
+
+  const raw = Buffer.alloc(rowBytes * safeHeight);
+  for (let y = 0; y < safeHeight; y += 1) {
+    scanline.copy(raw, y * rowBytes);
+  }
+  const compressed = deflateSync(raw, { level: 9 });
+
+  const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(safeWidth, 0);
+  ihdr.writeUInt32BE(safeHeight, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 2;
+  ihdr[10] = 0;
+  ihdr[11] = 0;
+  ihdr[12] = 0;
+
+  return Buffer.concat([
+    signature,
+    buildPngChunk("IHDR", ihdr),
+    buildPngChunk("IDAT", compressed),
+    buildPngChunk("IEND", Buffer.alloc(0))
+  ]);
+}
+
+async function callLineApi({
+  channelAccessToken,
+  url,
+  method = "GET",
+  body = null,
+  headers = {},
+  allowNotFound = false,
+  parseJson = true,
+  fetchImpl = globalThis.fetch
+}) {
+  const token = normalizeTrimmedText(channelAccessToken);
+  if (!token) {
+    throw new Error("LINE_CHANNEL_ACCESS_TOKEN is not configured");
+  }
+  if (typeof fetchImpl !== "function") {
+    throw new Error("fetch is not available for LINE API call");
+  }
+
+  const requestHeaders = {
+    Authorization: `Bearer ${token}`,
+    ...headers
+  };
+  const response = await fetchImpl(url, {
+    method,
+    headers: requestHeaders,
+    body
+  });
+  if (allowNotFound && response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    const responseText = await response.text();
+    throw new Error(`LINE API request failed: ${response.status} ${responseText}`);
+  }
+  if (!parseJson) {
+    return {
+      ok: true
+    };
+  }
+  const raw = await response.text();
+  if (!raw) {
+    return {};
+  }
+  return JSON.parse(raw);
+}
+
+async function resolveRichMenuIdByAlias({
+  channelAccessToken,
+  aliasId,
+  fetchImpl
+}) {
+  const alias = normalizeTrimmedText(aliasId);
+  if (!alias) {
+    throw new Error("aliasId is required");
+  }
+  if (richMenuAliasCache.has(alias)) {
+    return richMenuAliasCache.get(alias);
+  }
+  const result = await callLineApi({
+    channelAccessToken,
+    url: `${LINE_RICHMENU_ALIAS_ENDPOINT}/${encodeURIComponent(alias)}`,
+    allowNotFound: true,
+    fetchImpl
+  });
+  const richMenuId = normalizeTrimmedText(result?.richMenuId);
+  if (richMenuId) {
+    richMenuAliasCache.set(alias, richMenuId);
+    return richMenuId;
+  }
+  return "";
+}
+
+async function createRichMenuWithAlias({
+  channelAccessToken,
+  aliasId,
+  menuPayload,
+  imageContent,
+  fetchImpl
+}) {
+  const created = await callLineApi({
+    channelAccessToken,
+    url: LINE_RICHMENU_ENDPOINT,
+    method: "POST",
+    body: JSON.stringify(menuPayload),
+    headers: {
+      "Content-Type": "application/json"
+    },
+    fetchImpl
+  });
+  const richMenuId = normalizeTrimmedText(created?.richMenuId);
+  if (!richMenuId) {
+    throw new Error("richMenuId is missing from LINE API response");
+  }
+
+  await callLineApi({
+    channelAccessToken,
+    url: `${LINE_RICHMENU_CONTENT_BASE}/${encodeURIComponent(richMenuId)}/content`,
+    method: "POST",
+    body: imageContent,
+    headers: {
+      "Content-Type": "image/png"
+    },
+    parseJson: false,
+    fetchImpl
+  });
+
+  try {
+    await callLineApi({
+      channelAccessToken,
+      url: LINE_RICHMENU_ALIAS_ENDPOINT,
+      method: "POST",
+      body: JSON.stringify({
+        richMenuAliasId: aliasId,
+        richMenuId
+      }),
+      headers: {
+        "Content-Type": "application/json"
+      },
+      parseJson: false,
+      fetchImpl
+    });
+  } catch {
+    const existing = await resolveRichMenuIdByAlias({
+      channelAccessToken,
+      aliasId,
+      fetchImpl
+    });
+    if (existing) {
+      return existing;
+    }
+    throw new Error(`Failed to create rich menu alias: ${aliasId}`);
+  }
+
+  richMenuAliasCache.set(aliasId, richMenuId);
+  return richMenuId;
+}
+
+function buildLineRegistrationRichMenu({ miniAppUrl }) {
+  const registerUrl = appendMiniAppModeQuery(miniAppUrl, "register");
+  return {
+    menuPayload: {
+      size: {
+        width: RICH_MENU_WIDTH,
+        height: RICH_MENU_HEIGHT
+      },
+      selected: false,
+      name: "reqmo-registration-menu",
+      chatBarText: "初回登録",
+      areas: [
+        {
+          bounds: {
+            x: 0,
+            y: 0,
+            width: 1250,
+            height: RICH_MENU_HEIGHT
+          },
+          action: {
+            type: "uri",
+            uri: registerUrl
+          }
+        },
+        {
+          bounds: {
+            x: 1250,
+            y: 0,
+            width: 1250,
+            height: RICH_MENU_HEIGHT
+          },
+          action: {
+            type: "message",
+            text: "ヘルプ"
+          }
+        }
+      ]
+    },
+    imageContent: createStripedPng({
+      segments: [
+        { ratio: 1, color: "#0f766e" },
+        { ratio: 1, color: "#1d4ed8" }
+      ]
+    })
+  };
+}
+
+function buildLineReservationRichMenu({ miniAppUrl }) {
+  const reserveUrl = appendMiniAppModeQuery(miniAppUrl, "reserve");
+  const registerUrl = appendMiniAppModeQuery(miniAppUrl, "register");
+  return {
+    menuPayload: {
+      size: {
+        width: RICH_MENU_WIDTH,
+        height: RICH_MENU_HEIGHT
+      },
+      selected: false,
+      name: "reqmo-reservation-menu",
+      chatBarText: "予約メニュー",
+      areas: [
+        {
+          bounds: {
+            x: 0,
+            y: 0,
+            width: 834,
+            height: RICH_MENU_HEIGHT
+          },
+          action: {
+            type: "uri",
+            uri: reserveUrl
+          }
+        },
+        {
+          bounds: {
+            x: 834,
+            y: 0,
+            width: 833,
+            height: RICH_MENU_HEIGHT
+          },
+          action: {
+            type: "message",
+            text: "予約確認"
+          }
+        },
+        {
+          bounds: {
+            x: 1667,
+            y: 0,
+            width: 833,
+            height: RICH_MENU_HEIGHT
+          },
+          action: {
+            type: "uri",
+            uri: registerUrl
+          }
+        }
+      ]
+    },
+    imageContent: createStripedPng({
+      segments: [
+        { ratio: 1, color: "#0f766e" },
+        { ratio: 1, color: "#1d4ed8" },
+        { ratio: 1, color: "#b45309" }
+      ]
+    })
+  };
+}
+
 export function resolveLineConfig({ env = process.env, requestBaseUrl = "" } = {}) {
   const publicBaseUrl = normalizePublicBaseUrl(
     env.LINE_PUBLIC_BASE_URL || requestBaseUrl || ""
@@ -332,6 +720,135 @@ export function ensureLineUserIdentity({
   };
 }
 
+function resolvePhoneIdentityForUser(repository, userId) {
+  if (!userId) {
+    return null;
+  }
+  if (typeof repository?.findPhoneIdentityByUserId === "function") {
+    return repository.findPhoneIdentityByUserId(userId);
+  }
+  if (typeof repository?.listPhoneIdentities === "function") {
+    return (
+      repository
+        .listPhoneIdentities()
+        .find((identity) => identity?.userId === userId && identity?.blockStatus !== "BLOCKED") ?? null
+    );
+  }
+  return null;
+}
+
+export function resolveLineUserRegistrationStatus({
+  repository,
+  lineUserId
+}) {
+  const normalizedLineUserId = normalizeLineUserId(lineUserId);
+  const identity =
+    typeof repository?.getLineIdentity === "function"
+      ? repository.getLineIdentity(normalizedLineUserId)
+      : null;
+  const user =
+    typeof repository?.findUserByLine === "function"
+      ? repository.findUserByLine(normalizedLineUserId)
+      : null;
+  const linkedUserId = user?.id ?? identity?.userId ?? null;
+  const phoneIdentity = resolvePhoneIdentityForUser(repository, linkedUserId);
+  const hasName = Boolean(normalizePersonName(user?.name));
+  const hasPhone = Boolean(phoneIdentity?.normalizedPhoneE164);
+  return {
+    isRegistered: Boolean(linkedUserId) && hasName && hasPhone,
+    hasName,
+    hasPhone,
+    lineUserId: normalizedLineUserId || null,
+    userId: linkedUserId,
+    userName: normalizePersonName(user?.name) || null,
+    normalizedPhoneE164: phoneIdentity?.normalizedPhoneE164 ?? null,
+    missingFields: [
+      ...(hasName ? [] : ["name"]),
+      ...(hasPhone ? [] : ["phoneNumber"])
+    ]
+  };
+}
+
+export function registerLineMiniAppUser({
+  repository,
+  lineUserId,
+  displayName = null,
+  name,
+  phoneNumber,
+  defaultCountryCode = "+81"
+}) {
+  const normalizedLineUserId = normalizeLineUserId(lineUserId);
+  if (!normalizedLineUserId) {
+    throw new Error("lineUserId is required");
+  }
+
+  const normalizedName = normalizePersonName(name);
+  if (!normalizedName) {
+    throw new Error("name is required");
+  }
+
+  const normalizedPhoneE164 = normalizePhoneNumber(phoneNumber, defaultCountryCode);
+  if (!normalizedPhoneE164) {
+    throw new Error("phoneNumber is invalid");
+  }
+
+  const existing = ensureLineUserIdentity({
+    repository,
+    lineUserId: normalizedLineUserId,
+    displayName,
+    source: "LINE_MINIAPP_REGISTER"
+  });
+
+  let user = existing.user;
+  if (typeof repository?.findUserByPhone === "function") {
+    const byPhone = repository.findUserByPhone(normalizedPhoneE164);
+    if (byPhone) {
+      user = byPhone;
+    }
+  }
+
+  if (!user || !user.id) {
+    throw new Error("Failed to resolve user for registration");
+  }
+
+  if (typeof repository?.updateUser === "function") {
+    user = repository.updateUser(user.id, { name: normalizedName }) ?? user;
+  } else if (typeof repository?.addUser === "function") {
+    user = repository.addUser({ ...user, name: normalizedName });
+  }
+
+  if (typeof repository?.linkPhoneIdentity !== "function") {
+    throw new Error("repository.linkPhoneIdentity is required");
+  }
+
+  const identity = repository.linkLineIdentity({
+    userId: user.id,
+    lineUserId: normalizedLineUserId,
+    source: "LINE_MINIAPP_REGISTER",
+    verified: true,
+    displayName: normalizeTrimmedText(displayName) || null
+  });
+  const phoneIdentity = repository.linkPhoneIdentity({
+    userId: user.id,
+    normalizedPhoneE164,
+    source: "LINE_MINIAPP_REGISTER",
+    verified: true
+  });
+
+  const registration = resolveLineUserRegistrationStatus({
+    repository,
+    lineUserId: normalizedLineUserId
+  });
+
+  return {
+    status: "REGISTERED",
+    user,
+    identity,
+    phoneIdentity,
+    registration
+  };
+}
+
 export function listLineUserRideRequests({
   repository,
   userId,
@@ -395,7 +912,15 @@ export function parseLineMessageCommand(text) {
     return { type: "UNKNOWN" };
   }
 
-  const reservationPattern = /^(予約|予約確認|予約状況|確認)$/;
+  if (/^(予約|予約する|新規予約|予約登録|予約作成)$/i.test(normalized)) {
+    return { type: "BOOK" };
+  }
+
+  if (/^(登録|初回登録|利用者登録|プロフィール登録)$/i.test(normalized)) {
+    return { type: "REGISTER" };
+  }
+
+  const reservationPattern = /^(予約確認|予約状況|確認)$/;
   if (reservationPattern.test(normalized)) {
     return { type: "RESERVATION" };
   }
@@ -465,7 +990,9 @@ export function linkLineUserByPhone({
 export function buildLineHelpMessage({ miniAppUrl = "" }) {
   const lines = [
     "使い方:",
+    "・「予約」または「予約する」: ミニアプリで新規予約",
     "・「予約確認」: 直近の予約を表示",
+    "・「登録」: 初回登録フォームを表示",
     "・「連携 08012345678」: 電話番号で利用者連携"
   ];
   if (miniAppUrl) {
@@ -477,6 +1004,14 @@ export function buildLineHelpMessage({ miniAppUrl = "" }) {
 export function buildLineWelcomeMessages({ miniAppUrl = "" }) {
   const helpText = buildLineHelpMessage({ miniAppUrl });
   const quickReplyItems = [
+    {
+      type: "action",
+      action: {
+        type: "message",
+        label: "予約する",
+        text: "予約"
+      }
+    },
     {
       type: "action",
       action: {
@@ -499,7 +1034,7 @@ export function buildLineWelcomeMessages({ miniAppUrl = "" }) {
   return [
     {
       type: "text",
-      text: "友だち追加ありがとうございます。予約確認をご利用いただけます。",
+      text: "友だち追加ありがとうございます。予約・予約確認をご利用いただけます。",
       quickReply: {
         items: quickReplyItems
       }
@@ -509,6 +1044,66 @@ export function buildLineWelcomeMessages({ miniAppUrl = "" }) {
       text: helpText
     }
   ];
+}
+
+export async function ensureLineRichMenuForUser({
+  channelAccessToken,
+  lineUserId,
+  miniAppUrl = "",
+  isRegistered = false,
+  env = process.env,
+  fetchImpl = globalThis.fetch
+}) {
+  const normalizedLineUserId = normalizeLineUserId(lineUserId);
+  if (!normalizedLineUserId) {
+    throw new Error("lineUserId is required");
+  }
+  const normalizedMiniAppUrl = normalizeHttpUrl(miniAppUrl);
+  if (!normalizedMiniAppUrl) {
+    return {
+      status: "SKIPPED",
+      reason: "MISSING_MINIAPP_URL"
+    };
+  }
+
+  const registrationAlias =
+    normalizeTrimmedText(env.LINE_RICHMENU_REGISTER_ALIAS_ID) || DEFAULT_REGISTER_RICHMENU_ALIAS;
+  const reservationAlias =
+    normalizeTrimmedText(env.LINE_RICHMENU_RESERVATION_ALIAS_ID) || DEFAULT_RESERVATION_RICHMENU_ALIAS;
+  const targetAlias = isRegistered ? reservationAlias : registrationAlias;
+
+  let richMenuId = await resolveRichMenuIdByAlias({
+    channelAccessToken,
+    aliasId: targetAlias,
+    fetchImpl
+  });
+
+  if (!richMenuId) {
+    const recipe = isRegistered
+      ? buildLineReservationRichMenu({ miniAppUrl: normalizedMiniAppUrl })
+      : buildLineRegistrationRichMenu({ miniAppUrl: normalizedMiniAppUrl });
+    richMenuId = await createRichMenuWithAlias({
+      channelAccessToken,
+      aliasId: targetAlias,
+      menuPayload: recipe.menuPayload,
+      imageContent: recipe.imageContent,
+      fetchImpl
+    });
+  }
+
+  await callLineApi({
+    channelAccessToken,
+    url: `https://api.line.me/v2/bot/user/${encodeURIComponent(normalizedLineUserId)}/richmenu/${encodeURIComponent(richMenuId)}`,
+    method: "POST",
+    parseJson: false,
+    fetchImpl
+  });
+
+  return {
+    status: "LINKED",
+    aliasId: targetAlias,
+    richMenuId
+  };
 }
 
 export async function sendLineReplyMessage({

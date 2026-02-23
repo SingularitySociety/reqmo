@@ -149,6 +149,14 @@ export class FirestoreRepository extends InMemoryRepository {
     return next;
   }
 
+  updateUser(userId, updates = {}) {
+    const next = super.updateUser(userId, updates);
+    if (next) {
+      this.writeDocument("users", next.id, next);
+    }
+    return next;
+  }
+
   addVehicle(vehicle) {
     const next = super.addVehicle(vehicle);
     this.writeDocument("vehicles", next.id, next);

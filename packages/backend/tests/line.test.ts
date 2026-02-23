@@ -116,6 +116,7 @@ test("line miniapp session returns linked reservations", async () => {
   assert.equal(Array.isArray(payload.reservations), true);
   assert.equal(payload.reservations.length, 1);
   assert.equal(payload.reservations[0].id, "req_1001");
+  assert.equal(payload.registration?.isRegistered, false);
   assert.equal(typeof payload.summaryText, "string");
 });
 
@@ -166,6 +167,7 @@ test("line miniapp phone link can connect phone identity and line identity", asy
   assert.equal(payload.user?.id, "user_phone_1");
   assert.equal(payload.normalizedPhoneE164, "+818011112222");
   assert.equal(payload.reservations?.length, 1);
+  assert.equal(payload.registration?.isRegistered, true);
   assert.equal(repository.getLineIdentity("U_link_target_1")?.userId, "user_phone_1");
 });
 
@@ -189,6 +191,22 @@ test("line miniapp reservation can be created with stop and desired time", async
   });
 
   const { server } = createReqmoServer({ repository });
+  const registerResponse = await invokeServer({
+    server,
+    method: "POST",
+    url: "/api/line/miniapp/register",
+    body: {
+      lineUserId: "U_book_target_1",
+      displayName: "LINE予約ユーザー",
+      name: "LINE 予約ユーザー",
+      phoneNumber: "080-1234-5678"
+    }
+  });
+  assert.equal(registerResponse.statusCode, 200);
+  const registerPayload = JSON.parse(registerResponse.payload);
+  assert.equal(registerPayload.status, "REGISTERED");
+  assert.equal(registerPayload.registration?.isRegistered, true);
+
   const response = await invokeServer({
     server,
     method: "POST",
@@ -223,6 +241,84 @@ test("line miniapp reservation can be created with stop and desired time", async
   assert.equal(Boolean(created[0]?.timeWindow?.desiredPickupAt), true);
 });
 
+test("line miniapp reservation requires profile registration", async () => {
+  const repository = new InMemoryRepository({
+    stops: [
+      { id: "stop_a", name: "中村駅", lat: 32.9898, lng: 132.9334 },
+      { id: "stop_b", name: "市役所前", lat: 32.9911, lng: 132.9272 }
+    ],
+    vehicles: [
+      {
+        id: "veh_1",
+        status: "ACTIVE",
+        capacity: 6,
+        onboardCount: 0,
+        currentLocation: { lat: 32.9898, lng: 132.9334 },
+        route: []
+      }
+    ],
+    serviceProfiles: [createDefaultServiceProfile()]
+  });
+
+  const { server } = createReqmoServer({ repository });
+  const response = await invokeServer({
+    server,
+    method: "POST",
+    url: "/api/line/miniapp/reservations",
+    body: {
+      lineUserId: "U_book_without_registration",
+      displayName: "未登録ユーザー",
+      pickupStopId: "stop_a",
+      dropoffStopId: "stop_b",
+      desiredMode: "DROPOFF",
+      desiredAt: "2026-02-25T01:00:00.000Z"
+    }
+  });
+
+  assert.equal(response.statusCode, 403);
+  const payload = JSON.parse(response.payload);
+  assert.equal(payload.status, "REGISTRATION_REQUIRED");
+  assert.equal(payload.registration?.isRegistered, false);
+  assert.equal(Array.isArray(payload.registration?.missingFields), true);
+});
+
+test("admin users API can upsert and list registered users", async () => {
+  const repository = new InMemoryRepository({
+    serviceProfiles: [createDefaultServiceProfile()]
+  });
+  const { server } = createReqmoServer({ repository });
+
+  const upsertResponse = await invokeServer({
+    server,
+    method: "POST",
+    url: "/api/admin/users/upsert",
+    body: {
+      name: "管理画面登録ユーザー",
+      phoneNumber: "080-2222-3333",
+      lineUserId: "U_admin_target_1"
+    }
+  });
+
+  assert.equal(upsertResponse.statusCode, 200);
+  const upsertPayload = JSON.parse(upsertResponse.payload);
+  assert.equal(upsertPayload.status, "UPSERTED");
+  assert.equal(upsertPayload.user?.registration?.isRegistered, true);
+
+  const listResponse = await invokeServer({
+    server,
+    method: "GET",
+    url: "/api/admin/users"
+  });
+  assert.equal(listResponse.statusCode, 200);
+  const listPayload = JSON.parse(listResponse.payload);
+  assert.equal(listPayload.status, "OK");
+  assert.equal(Array.isArray(listPayload.users), true);
+  assert.equal(listPayload.users.length >= 1, true);
+  const targetUser = listPayload.users.find((user) => user.name === "管理画面登録ユーザー");
+  assert.equal(Boolean(targetUser), true);
+  assert.equal(targetUser.lineUserId, "U_admin_target_1");
+});
+
 test("line webhook verifies signature and sends reply", async () => {
   await withTemporaryEnv(
     {
@@ -237,6 +333,17 @@ test("line webhook verifies signature and sends reply", async () => {
           { id: "stop_b", name: "市役所前", lat: 32.9911, lng: 132.9272 }
         ],
         users: [{ id: "line_user_1", name: "LINE利用者" }],
+        phoneIdentities: [
+          {
+            id: "phone_line_1",
+            userId: "line_user_1",
+            normalizedPhoneE164: "+818012345678",
+            source: "SEED",
+            verified: true,
+            lastSeenAt: "2026-02-21T12:00:00.000Z",
+            blockStatus: "ACTIVE"
+          }
+        ],
         lineIdentities: [
           {
             id: "line_1",
@@ -312,15 +419,127 @@ test("line webhook verifies signature and sends reply", async () => {
         const payload = JSON.parse(response.payload);
         assert.equal(payload.status, "OK");
         assert.equal(payload.handledEvents, 1);
-        assert.equal(fetchCalls.length, 1);
-        assert.equal(fetchCalls[0].url, "https://api.line.me/v2/bot/message/reply");
+        const replyCall = fetchCalls.find(
+          (call) => call.url === "https://api.line.me/v2/bot/message/reply"
+        );
+        assert.equal(Boolean(replyCall), true);
 
-        const postedBody = JSON.parse(fetchCalls[0].init.body);
+        const postedBody = JSON.parse(replyCall.init.body);
         assert.equal(postedBody.replyToken, "reply_token_1");
         assert.equal(Array.isArray(postedBody.messages), true);
         assert.equal(postedBody.messages.length, 1);
         assert.equal(
           postedBody.messages[0].text.includes("予約状況"),
+          true
+        );
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    }
+  );
+});
+
+test("line webhook sends reservation miniapp URL when user sends 予約", async () => {
+  await withTemporaryEnv(
+    {
+      LINE_CHANNEL_SECRET: "line_secret_test",
+      LINE_CHANNEL_ACCESS_TOKEN: "line_access_token_test",
+      LINE_MINIAPP_URL: "https://example.com/line-reservation/"
+    },
+    async () => {
+      const repository = new InMemoryRepository({
+        users: [{ id: "line_user_book_1", name: "LINE予約利用者" }],
+        phoneIdentities: [
+          {
+            id: "phone_book_1",
+            userId: "line_user_book_1",
+            normalizedPhoneE164: "+818012345678",
+            source: "SEED",
+            verified: true,
+            lastSeenAt: "2026-02-21T12:00:00.000Z",
+            blockStatus: "ACTIVE"
+          }
+        ],
+        lineIdentities: [
+          {
+            id: "line_book_1",
+            lineUserId: "U_book_chat_1",
+            userId: "line_user_book_1",
+            source: "SEED",
+            verified: true,
+            displayName: "LINE予約利用者",
+            lastSeenAt: "2026-02-21T12:00:00.000Z",
+            blockStatus: "ACTIVE"
+          }
+        ],
+        serviceProfiles: [createDefaultServiceProfile()]
+      });
+
+      const { server } = createReqmoServer({ repository });
+      const webhookPayload = {
+        destination: "Uxxxxxxxxx",
+        events: [
+          {
+            type: "message",
+            mode: "active",
+            timestamp: Date.now(),
+            replyToken: "reply_token_book_1",
+            source: {
+              type: "user",
+              userId: "U_book_chat_1"
+            },
+            message: {
+              type: "text",
+              id: "100002",
+              text: "予約"
+            }
+          }
+        ]
+      };
+      const rawBody = JSON.stringify(webhookPayload);
+      const signature = createHmac("sha256", "line_secret_test")
+        .update(rawBody)
+        .digest("base64");
+
+      const fetchCalls = [];
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = async (url, init) => {
+        fetchCalls.push({
+          url: String(url),
+          init
+        });
+        return new Response("", { status: 200 });
+      };
+
+      try {
+        const response = await invokeServer({
+          server,
+          method: "POST",
+          url: "/api/line/webhook",
+          rawBody,
+          headers: {
+            "x-line-signature": signature
+          }
+        });
+
+        assert.equal(response.statusCode, 200);
+        const payload = JSON.parse(response.payload);
+        assert.equal(payload.status, "OK");
+        assert.equal(payload.handledEvents, 1);
+        const replyCall = fetchCalls.find(
+          (call) => call.url === "https://api.line.me/v2/bot/message/reply"
+        );
+        assert.equal(Boolean(replyCall), true);
+        const postedBody = JSON.parse(replyCall.init.body);
+        assert.equal(postedBody.replyToken, "reply_token_book_1");
+        assert.equal(Array.isArray(postedBody.messages), true);
+        assert.equal(postedBody.messages.length, 1);
+        assert.equal(
+          postedBody.messages[0].text.includes("予約フォームはこちらです。"),
+          true
+        );
+        assert.equal(
+          postedBody.messages[0].text.includes("mode=reserve"),
           true
         );
       } finally {
