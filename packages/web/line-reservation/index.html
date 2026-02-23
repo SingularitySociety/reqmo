@@ -83,7 +83,7 @@
           <h2>新規予約</h2>
         </header>
         <p class="lr-note">
-          条件を入力すると、先に予想到着時刻を表示します。確認後に予約を確定します。
+          まず「予約可能か確認する」で予定時刻を確認し、内容に同意した場合のみ予約を確定します。
         </p>
         <form id="create-reservation-form" class="lr-form-grid">
           <label class="lr-field">
@@ -118,22 +118,31 @@
             <input id="desired-time-input" type="time" step="60" required />
           </label>
           <button id="create-reservation-button" class="lr-button lr-button-primary" type="submit">
-            予想時間を確認する
+            予約可能か確認する
           </button>
         </form>
 
         <section id="reservation-preview-panel" class="lr-preview-panel" hidden>
-          <h3>予約内容の確認</h3>
+          <h3>予約可能か確認結果</h3>
           <dl class="lr-preview-meta">
             <div><dt>乗車バス停</dt><dd id="preview-pickup-label">-</dd></div>
             <div><dt>降車バス停</dt><dd id="preview-dropoff-label">-</dd></div>
+            <div><dt>希望時刻の基準</dt><dd id="preview-desired-mode">-</dd></div>
+            <div><dt>入力した希望時刻</dt><dd id="preview-desired-at">-</dd></div>
             <div><dt>予想乗車時刻</dt><dd id="preview-pickup-at">-</dd></div>
             <div><dt>予想降車時刻</dt><dd id="preview-dropoff-at">-</dd></div>
           </dl>
+          <p class="lr-preview-warning">
+            運行状況により、乗車予定時刻・降車予定時刻は最大15分程度前後する可能性があります。
+          </p>
           <p id="preview-message" class="lr-note">この内容で予約しますか？</p>
+          <label class="lr-preview-consent">
+            <input id="preview-consent-checkbox" type="checkbox" />
+            上記内容と「最大15分のずれが発生する可能性」を確認しました。
+          </label>
           <div class="lr-preview-actions">
-            <button id="confirm-reservation-button" class="lr-button lr-button-primary" type="button">
-              はい、予約する
+            <button id="confirm-reservation-button" class="lr-button lr-button-primary" type="button" disabled>
+              予約する
             </button>
             <button id="clear-preview-button" class="lr-button lr-button-ghost" type="button">
               条件を修正する

@@ -28,9 +28,12 @@ const elements = {
   reservationPreviewPanel: document.getElementById("reservation-preview-panel"),
   previewPickupLabel: document.getElementById("preview-pickup-label"),
   previewDropoffLabel: document.getElementById("preview-dropoff-label"),
+  previewDesiredMode: document.getElementById("preview-desired-mode"),
+  previewDesiredAt: document.getElementById("preview-desired-at"),
   previewPickupAt: document.getElementById("preview-pickup-at"),
   previewDropoffAt: document.getElementById("preview-dropoff-at"),
   previewMessage: document.getElementById("preview-message"),
+  previewConsentCheckbox: document.getElementById("preview-consent-checkbox"),
   confirmReservationButton: document.getElementById("confirm-reservation-button"),
   clearPreviewButton: document.getElementById("clear-preview-button"),
   summaryText: document.getElementById("summary-text"),
@@ -135,6 +138,21 @@ function formatEstimateTime(value, etaMinutes) {
     return `約${Math.round(Number(etaMinutes))}分後`;
   }
   return "未算出";
+}
+
+function formatDesiredModeLabel(value) {
+  const normalized = typeof value === "string" ? value.trim().toUpperCase() : "";
+  return normalized === "DROPOFF" ? "降車時刻基準" : "乗車時刻基準";
+}
+
+function escapeHtml(raw) {
+  const text = typeof raw === "string" ? raw : String(raw ?? "");
+  return text
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
 function normalizeStopList(rawStops) {
@@ -243,14 +261,24 @@ function setSectionVisibility(element, visible) {
   element.hidden = !visible;
 }
 
+function updateConfirmReservationButtonState() {
+  if (!elements.confirmReservationButton) {
+    return;
+  }
+  const hasPreview = Boolean(state.pendingReservationInput);
+  const hasConsent = Boolean(elements.previewConsentCheckbox?.checked);
+  elements.confirmReservationButton.disabled = !(hasPreview && hasConsent);
+}
+
 function clearPreview() {
   state.pendingReservationInput = null;
   if (elements.reservationPreviewPanel) {
     elements.reservationPreviewPanel.hidden = true;
   }
-  if (elements.confirmReservationButton) {
-    elements.confirmReservationButton.disabled = false;
+  if (elements.previewConsentCheckbox) {
+    elements.previewConsentCheckbox.checked = false;
   }
+  updateConfirmReservationButtonState();
 }
 
 function renderGuestEntry() {
@@ -384,6 +412,42 @@ function isReservationCancellable(reservation) {
   return status && status !== "CANCELLED" && status !== "COMPLETED" && status !== "PICKED_UP";
 }
 
+function resolveReservationTone(status) {
+  const normalized = typeof status === "string" ? status.trim().toUpperCase() : "";
+  if (normalized === "CANCELLED") {
+    return "cancelled";
+  }
+  if (normalized === "COMPLETED") {
+    return "completed";
+  }
+  if (normalized === "ASSIGNED" || normalized === "PICKUP_PENDING" || normalized === "IN_PROGRESS") {
+    return "active";
+  }
+  if (normalized === "REQUESTED") {
+    return "waiting";
+  }
+  return "default";
+}
+
+function resolveDesiredSummary(reservation) {
+  if (reservation?.desiredPickupAt) {
+    return {
+      label: "希望乗車",
+      at: reservation.desiredPickupAt,
+    };
+  }
+  if (reservation?.desiredDropoffAt) {
+    return {
+      label: "希望降車",
+      at: reservation.desiredDropoffAt,
+    };
+  }
+  return {
+    label: "希望時刻",
+    at: reservation?.primaryTimeAt || null,
+  };
+}
+
 function renderReservations(reservations) {
   if (!elements.reservationList) {
     return;
@@ -391,34 +455,58 @@ function renderReservations(reservations) {
   elements.reservationList.innerHTML = "";
   if (!Array.isArray(reservations) || reservations.length === 0) {
     const item = document.createElement("li");
-    item.className = "lr-reservation-item";
-    item.innerHTML = `<p class="lr-reservation-title">予約はありません</p>`;
+    item.className = "lr-reservation-item lr-reservation-item-empty";
+    item.innerHTML = `
+      <p class="lr-reservation-empty-title">予約はありません</p>
+      <p class="lr-reservation-empty-note">新規予約で条件を入力し、確認後に予約を作成してください。</p>
+    `;
     elements.reservationList.appendChild(item);
     return;
   }
 
   reservations.forEach((reservation) => {
     const item = document.createElement("li");
-    item.className = "lr-reservation-item";
-    const primaryAt =
-      reservation.plannedPickupAt ||
-      reservation.desiredPickupAt ||
-      reservation.desiredDropoffAt ||
-      reservation.primaryTimeAt ||
-      null;
-    const cancellable = isReservationCancellable(reservation);
+    const tone = resolveReservationTone(reservation?.status);
+    item.className = `lr-reservation-item lr-reservation-item--${tone}`;
+    const desired = resolveDesiredSummary(reservation);
+    const reservationIdRaw =
+      typeof reservation?.id === "string" && reservation.id.trim() ? reservation.id.trim() : "-";
+    const cancellable = isReservationCancellable(reservation) && reservationIdRaw !== "-";
+    const reservationIdAttr = encodeURIComponent(reservationIdRaw);
+    const statusLabel = escapeHtml(reservation.statusLabel || reservation.status || "不明");
+    const reservationId = escapeHtml(reservationIdRaw);
+    const pickupLabel = escapeHtml(reservation.pickupLabel || "未設定");
+    const dropoffLabel = escapeHtml(reservation.dropoffLabel || "未設定");
+    const desiredLabel = escapeHtml(desired.label);
+    const desiredAt = escapeHtml(formatDateTime(desired.at));
+    const plannedPickup = escapeHtml(formatDateTime(reservation?.plannedPickupAt || null));
+    const plannedDropoff = escapeHtml(formatDateTime(reservation?.plannedDropoffAt || null));
+
     item.innerHTML = `
-      <p class="lr-reservation-title">${reservation.statusLabel || reservation.status || "不明"}</p>
+      <div class="lr-reservation-head">
+        <p class="lr-reservation-title">${statusLabel}</p>
+        <span class="lr-reservation-id">予約ID: ${reservationId}</span>
+      </div>
+      <div class="lr-reservation-route">
+        <div class="lr-stop-block">
+          <span class="lr-stop-chip lr-stop-chip-pickup">乗車</span>
+          <strong>${pickupLabel}</strong>
+        </div>
+        <span class="lr-route-arrow">→</span>
+        <div class="lr-stop-block">
+          <span class="lr-stop-chip lr-stop-chip-dropoff">降車</span>
+          <strong>${dropoffLabel}</strong>
+        </div>
+      </div>
       <dl class="lr-reservation-meta">
-        <div><strong>乗車:</strong> ${reservation.pickupLabel || "未設定"}</div>
-        <div><strong>降車:</strong> ${reservation.dropoffLabel || "未設定"}</div>
-        <div><strong>時刻:</strong> ${formatDateTime(primaryAt)}</div>
-        <div><strong>予約ID:</strong> ${reservation.id || "-"}</div>
+        <div><dt>${desiredLabel}</dt><dd>${desiredAt}</dd></div>
+        <div><dt>乗車予定</dt><dd>${plannedPickup}</dd></div>
+        <div><dt>降車予定</dt><dd>${plannedDropoff}</dd></div>
       </dl>
       ${
         cancellable
-          ? `<div class="lr-reservation-actions"><button class="lr-button lr-button-danger lr-button-small" type="button" data-cancel-request-id="${reservation.id}">この予約をキャンセル</button></div>`
-          : ""
+          ? `<div class="lr-reservation-actions"><button class="lr-button lr-button-danger lr-button-small" type="button" data-cancel-request-id="${reservationIdAttr}">この予約を取り消す</button></div>`
+          : `<p class="lr-reservation-locked">この予約は取り消しできません。</p>`
       }
     `;
     elements.reservationList.appendChild(item);
@@ -440,6 +528,12 @@ function renderPreviewPanel(preview) {
   if (elements.previewDropoffLabel) {
     elements.previewDropoffLabel.textContent = preview.dropoffLabel || "-";
   }
+  if (elements.previewDesiredMode) {
+    elements.previewDesiredMode.textContent = formatDesiredModeLabel(preview.desiredMode);
+  }
+  if (elements.previewDesiredAt) {
+    elements.previewDesiredAt.textContent = formatDateTime(preview.desiredAt);
+  }
   if (elements.previewPickupAt) {
     elements.previewPickupAt.textContent = formatEstimateTime(preview.plannedPickupAt, preview.etaPickupMinutes);
   }
@@ -449,9 +543,13 @@ function renderPreviewPanel(preview) {
   if (elements.previewMessage) {
     const suggestion = preview?.desiredDropoffSuggestion?.message || "";
     elements.previewMessage.textContent = suggestion
-      ? `${suggestion} この内容で予約しますか？`
-      : "この内容で予約しますか？";
+      ? `${suggestion} 確認後、「予約する」を押してください。`
+      : "内容を確認し、同意チェック後に「予約する」を押してください。";
   }
+  if (elements.previewConsentCheckbox) {
+    elements.previewConsentCheckbox.checked = false;
+  }
+  updateConfirmReservationButtonState();
 }
 
 function renderSession(payload) {
@@ -687,7 +785,7 @@ async function submitCreateReservation(event) {
     }
     state.pendingReservationInput = input;
     renderPreviewPanel(preview);
-    setCreateMessage("予想時刻を確認してから予約を確定してください。", "ok");
+    setCreateMessage("予約可能です。確認欄をチェックしてから予約を確定してください。", "ok");
   } catch (error) {
     setCreateMessage(`予想の取得に失敗しました: ${getErrorMessage(error)}`, "error");
   } finally {
@@ -700,6 +798,10 @@ async function submitCreateReservation(event) {
 async function confirmReservation() {
   if (!state.pendingReservationInput) {
     setCreateMessage("先に予想時刻を確認してください。", "warn");
+    return;
+  }
+  if (!elements.previewConsentCheckbox?.checked) {
+    setCreateMessage("確認チェックを入れてから予約してください。", "warn");
     return;
   }
   if (elements.confirmReservationButton) {
@@ -715,9 +817,7 @@ async function confirmReservation() {
   } catch (error) {
     setCreateMessage(`予約の登録に失敗しました: ${getErrorMessage(error)}`, "error");
   } finally {
-    if (elements.confirmReservationButton) {
-      elements.confirmReservationButton.disabled = false;
-    }
+    updateConfirmReservationButtonState();
   }
 }
 
@@ -728,6 +828,10 @@ async function cancelReservationById(requestId) {
   }
   if (!state.lineUserId) {
     setStatus("LINEユーザー情報が未取得です。", "warn");
+    return;
+  }
+  const shouldCancel = window.confirm(`予約ID ${id} を取り消しますか？`);
+  if (!shouldCancel) {
     return;
   }
 
@@ -784,17 +888,33 @@ function registerEvents() {
     });
   }
 
+  if (elements.previewConsentCheckbox) {
+    elements.previewConsentCheckbox.addEventListener("change", () => {
+      updateConfirmReservationButtonState();
+    });
+  }
+
   if (elements.reservationList) {
     elements.reservationList.addEventListener("click", (event) => {
       const target = event.target;
       if (!(target instanceof HTMLElement)) {
         return;
       }
-      const requestId = target.getAttribute("data-cancel-request-id");
+      const button = target.closest("[data-cancel-request-id]");
+      if (!(button instanceof HTMLElement)) {
+        return;
+      }
+      const requestId = button.getAttribute("data-cancel-request-id");
       if (!requestId) {
         return;
       }
-      cancelReservationById(requestId);
+      let decodedId = requestId;
+      try {
+        decodedId = decodeURIComponent(requestId);
+      } catch {
+        decodedId = requestId;
+      }
+      cancelReservationById(decodedId);
     });
   }
 
@@ -812,6 +932,7 @@ function registerEvents() {
 
 async function bootstrap() {
   registerEvents();
+  updateConfirmReservationButtonState();
   setDefaultDesiredDateTime();
   state.initialMode = resolveInitialModeFromQuery();
   state.lineUserId = resolveLineUserIdFromQuery();
