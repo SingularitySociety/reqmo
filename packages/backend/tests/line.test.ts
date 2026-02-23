@@ -169,6 +169,60 @@ test("line miniapp phone link can connect phone identity and line identity", asy
   assert.equal(repository.getLineIdentity("U_link_target_1")?.userId, "user_phone_1");
 });
 
+test("line miniapp reservation can be created with stop and desired time", async () => {
+  const repository = new InMemoryRepository({
+    stops: [
+      { id: "stop_a", name: "中村駅", lat: 32.9898, lng: 132.9334 },
+      { id: "stop_b", name: "市役所前", lat: 32.9911, lng: 132.9272 }
+    ],
+    vehicles: [
+      {
+        id: "veh_1",
+        status: "ACTIVE",
+        capacity: 6,
+        onboardCount: 0,
+        currentLocation: { lat: 32.9898, lng: 132.9334 },
+        route: []
+      }
+    ],
+    serviceProfiles: [createDefaultServiceProfile()]
+  });
+
+  const { server } = createReqmoServer({ repository });
+  const response = await invokeServer({
+    server,
+    method: "POST",
+    url: "/api/line/miniapp/reservations",
+    body: {
+      lineUserId: "U_book_target_1",
+      displayName: "LINE予約ユーザー",
+      pickupStopId: "stop_a",
+      dropoffStopId: "stop_b",
+      desiredMode: "PICKUP",
+      desiredAt: "2026-02-25T01:00:00.000Z"
+    }
+  });
+
+  assert.equal(response.statusCode, 200);
+  const payload = JSON.parse(response.payload);
+  assert.equal(payload.status, "CREATED");
+  assert.equal(payload.lineUserId, "U_book_target_1");
+  assert.equal(payload.reservation?.pickupLabel, "中村駅");
+  assert.equal(payload.reservation?.dropoffLabel, "市役所前");
+  assert.equal(typeof payload.reservation?.id, "string");
+  assert.equal(payload.reservation?.id.length > 0, true);
+
+  const identity = repository.getLineIdentity("U_book_target_1");
+  assert.equal(Boolean(identity?.userId), true);
+
+  const created = repository.listRideRequests();
+  assert.equal(created.length, 1);
+  assert.equal(created[0].requesterId, identity?.userId ?? null);
+  assert.equal(created[0].pickup?.stopId, "stop_a");
+  assert.equal(created[0].dropoff?.stopId, "stop_b");
+  assert.equal(Boolean(created[0]?.timeWindow?.desiredPickupAt), true);
+});
+
 test("line webhook verifies signature and sends reply", async () => {
   await withTemporaryEnv(
     {

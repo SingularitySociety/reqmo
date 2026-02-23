@@ -355,6 +355,46 @@ function normalizePassenger(passengerInput) {
   };
 }
 
+function normalizeLineMiniAppStopId(value, fieldName) {
+  const stopId = typeof value === "string" ? value.trim() : "";
+  if (!stopId) {
+    throw new Error(`${fieldName} is required`);
+  }
+  return stopId;
+}
+
+function normalizeLineMiniAppDesiredMode(value) {
+  const mode = typeof value === "string" ? value.trim().toUpperCase() : "";
+  if (mode !== "PICKUP" && mode !== "DROPOFF") {
+    throw new Error("desiredMode must be PICKUP or DROPOFF");
+  }
+  return mode;
+}
+
+function normalizeLineMiniAppDesiredAt(value) {
+  const raw = typeof value === "string" ? value.trim() : "";
+  if (!raw) {
+    throw new Error("desiredAt is required");
+  }
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error("desiredAt must be a valid datetime");
+  }
+  return parsed.toISOString();
+}
+
+function resolveLineMiniAppTenantId(value) {
+  const requested = typeof value === "string" ? value.trim() : "";
+  if (requested) {
+    return requested;
+  }
+  const configured =
+    typeof process.env.REQMO_TENANT_ID === "string"
+      ? process.env.REQMO_TENANT_ID.trim()
+      : "";
+  return configured || "tenant_default";
+}
+
 function resolveLinePublicConfig(req) {
   const config = resolveLineConfig({
     requestBaseUrl: resolveRequestBaseUrl(req)
@@ -820,6 +860,104 @@ export function createReqmoServer({
             requests: reservations,
             displayName: linked.user.name ?? linked.identity?.displayName ?? ""
           }),
+          config: resolveLinePublicConfig(req)
+        });
+      }
+
+      if (req.method === "POST" && pathname === "/api/line/miniapp/reservations") {
+        const body = await parseJsonBody(req);
+        const lineUserId = typeof body.lineUserId === "string" ? body.lineUserId.trim() : "";
+        if (!lineUserId) {
+          throw new Error("lineUserId is required");
+        }
+
+        const displayName =
+          typeof body.displayName === "string" && body.displayName.trim()
+            ? body.displayName.trim()
+            : null;
+        const pickupStopId = normalizeLineMiniAppStopId(body.pickupStopId, "pickupStopId");
+        const dropoffStopId = normalizeLineMiniAppStopId(body.dropoffStopId, "dropoffStopId");
+        if (pickupStopId === dropoffStopId) {
+          throw new Error("pickupStopId and dropoffStopId must be different");
+        }
+
+        const pickupStop =
+          typeof repository.findStopById === "function"
+            ? repository.findStopById(pickupStopId)
+            : null;
+        if (!pickupStop) {
+          return jsonResponse(res, 404, {
+            status: "STOP_NOT_FOUND",
+            field: "pickupStopId",
+            stopId: pickupStopId
+          });
+        }
+        const dropoffStop =
+          typeof repository.findStopById === "function"
+            ? repository.findStopById(dropoffStopId)
+            : null;
+        if (!dropoffStop) {
+          return jsonResponse(res, 404, {
+            status: "STOP_NOT_FOUND",
+            field: "dropoffStopId",
+            stopId: dropoffStopId
+          });
+        }
+
+        const desiredMode = normalizeLineMiniAppDesiredMode(body.desiredMode);
+        const desiredAt = normalizeLineMiniAppDesiredAt(body.desiredAt);
+        const parsedPartySize = Number(body.partySize);
+        const partySize =
+          Number.isFinite(parsedPartySize) && parsedPartySize > 0
+            ? Math.max(1, Math.trunc(parsedPartySize))
+            : 1;
+        const tenantId = resolveLineMiniAppTenantId(body.tenantId);
+
+        const { user } = ensureLineUserIdentity({
+          repository,
+          lineUserId,
+          displayName,
+          source: "LINE_MINIAPP_BOOKING"
+        });
+
+        const result = await createRideRequest({
+          repository,
+          serviceProfileId: body.serviceProfileId ?? activeServiceProfileId,
+          tenantId,
+          requesterId: user.id,
+          pickup: { mode: "FIXED_STOP", stopId: pickupStopId },
+          dropoff: { mode: "FIXED_STOP", stopId: dropoffStopId },
+          partySize,
+          passenger:
+            normalizePassenger(body.passenger) ??
+            (user.name
+              ? {
+                  name: user.name
+                }
+              : null),
+          channel: "PASSENGER_APP",
+          requestType: desiredMode === "PICKUP" ? "DEPART_AT" : "ARRIVE_BY",
+          desiredPickupAt: desiredMode === "PICKUP" ? desiredAt : null,
+          desiredDropoffAt: desiredMode === "DROPOFF" ? desiredAt : null,
+          context: requestContext
+        });
+
+        const rideRequest =
+          result && typeof result === "object" && result.rideRequest
+            ? result.rideRequest
+            : null;
+        const session = buildLineMiniAppSession({
+          repository,
+          lineUserId,
+          displayName
+        });
+
+        await flushRepository(repository);
+        return jsonResponse(res, 200, {
+          status: "CREATED",
+          resultStatus: typeof result?.status === "string" ? result.status : null,
+          reservation: rideRequest ? serializeLineReservation(repository, rideRequest) : null,
+          ...session,
           config: resolveLinePublicConfig(req)
         });
       }

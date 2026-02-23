@@ -74,6 +74,52 @@
 
       <section class="lr-card">
         <header class="lr-card-header">
+          <h2>新規予約</h2>
+        </header>
+        <p class="lr-note">
+          乗車バス停・降車バス停と希望日時を指定して予約できます。希望時刻は「乗車」か「降車」を選択してください。
+        </p>
+        <form id="create-reservation-form" class="lr-form-grid">
+          <label class="lr-field">
+            <span>乗車バス停</span>
+            <select id="pickup-stop-select" required>
+              <option value="">選択してください</option>
+            </select>
+          </label>
+          <label class="lr-field">
+            <span>降車バス停</span>
+            <select id="dropoff-stop-select" required>
+              <option value="">選択してください</option>
+            </select>
+          </label>
+          <fieldset class="lr-fieldset">
+            <legend>希望時刻の基準</legend>
+            <label>
+              <input type="radio" name="desired-time-mode" value="PICKUP" checked />
+              乗車
+            </label>
+            <label>
+              <input type="radio" name="desired-time-mode" value="DROPOFF" />
+              降車
+            </label>
+          </fieldset>
+          <label class="lr-field">
+            <span>希望日</span>
+            <input id="desired-date-input" type="date" required />
+          </label>
+          <label class="lr-field">
+            <span>希望時刻</span>
+            <input id="desired-time-input" type="time" step="60" required />
+          </label>
+          <button id="create-reservation-button" class="lr-button lr-button-primary" type="submit">
+            この条件で予約する
+          </button>
+        </form>
+        <p id="reservation-create-message" class="lr-note lr-create-message" aria-live="polite"></p>
+      </section>
+
+      <section class="lr-card">
+        <header class="lr-card-header">
           <h2>予約一覧</h2>
         </header>
         <p id="summary-text" class="lr-summary">予約情報を読み込み中です。</p>

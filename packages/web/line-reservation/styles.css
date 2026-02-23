@@ -217,6 +217,79 @@ body {
   box-shadow: 0 0 0 3px rgba(3, 105, 161, 0.14);
 }
 
+.lr-form-grid {
+  margin-top: 12px;
+  display: grid;
+  gap: 12px;
+}
+
+.lr-field {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--lr-muted);
+  font-weight: 700;
+}
+
+.lr-field select,
+.lr-field input {
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid rgba(15, 23, 42, 0.2);
+  padding: 11px 12px;
+  font-size: 14px;
+  color: var(--lr-text);
+  background: #fff;
+}
+
+.lr-field select:focus,
+.lr-field input:focus {
+  outline: none;
+  border-color: rgba(3, 105, 161, 0.5);
+  box-shadow: 0 0 0 3px rgba(3, 105, 161, 0.14);
+}
+
+.lr-fieldset {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(15, 23, 42, 0.16);
+  border-radius: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+
+.lr-fieldset legend {
+  padding: 0 4px;
+  color: var(--lr-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.lr-fieldset label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--lr-text);
+  font-size: 14px;
+}
+
+.lr-create-message {
+  margin-top: 10px;
+}
+
+.lr-create-message[data-tone="ok"] {
+  color: #0f766e;
+}
+
+.lr-create-message[data-tone="warn"] {
+  color: #b45309;
+}
+
+.lr-create-message[data-tone="error"] {
+  color: var(--lr-danger);
+}
+
 .lr-summary {
   margin: 10px 0 12px;
   color: var(--lr-muted);
@@ -273,5 +346,10 @@ body {
 
   .lr-button {
     text-align: center;
+  }
+
+  .lr-fieldset {
+    display: grid;
+    gap: 8px;
   }
 }

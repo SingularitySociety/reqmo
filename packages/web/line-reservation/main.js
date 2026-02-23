@@ -11,6 +11,13 @@ const elements = {
   linkedUserName: document.getElementById("linked-user-name"),
   phoneForm: document.getElementById("link-phone-form"),
   phoneInput: document.getElementById("phone-input"),
+  createReservationForm: document.getElementById("create-reservation-form"),
+  pickupStopSelect: document.getElementById("pickup-stop-select"),
+  dropoffStopSelect: document.getElementById("dropoff-stop-select"),
+  desiredDateInput: document.getElementById("desired-date-input"),
+  desiredTimeInput: document.getElementById("desired-time-input"),
+  createReservationButton: document.getElementById("create-reservation-button"),
+  reservationCreateMessage: document.getElementById("reservation-create-message"),
   summaryText: document.getElementById("summary-text"),
   reservationList: document.getElementById("reservation-list"),
 };
@@ -25,6 +32,7 @@ const state = {
   lineUserId: "",
   displayName: "",
   session: null,
+  stops: [],
 };
 
 function getErrorMessage(error) {
@@ -44,6 +52,14 @@ function isAccessTokenRevokedError(error) {
 function setStatus(message, tone = "info") {
   elements.statusMessage.textContent = message || "";
   elements.statusMessage.dataset.tone = tone;
+}
+
+function setCreateMessage(message, tone = "info") {
+  if (!elements.reservationCreateMessage) {
+    return;
+  }
+  elements.reservationCreateMessage.textContent = message || "";
+  elements.reservationCreateMessage.dataset.tone = tone;
 }
 
 function setButtonUrl(element, url) {
@@ -85,6 +101,96 @@ function formatDateTime(value) {
     minute: "2-digit",
     hour12: false,
   });
+}
+
+function toDateInputText(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function toTimeInputText(date) {
+  const hour = String(date.getHours()).padStart(2, "0");
+  const minute = String(date.getMinutes()).padStart(2, "0");
+  return `${hour}:${minute}`;
+}
+
+function buildDesiredAtIso(dateText, timeText) {
+  const dateValue = typeof dateText === "string" ? dateText.trim() : "";
+  const timeValue = typeof timeText === "string" ? timeText.trim() : "";
+  if (!dateValue || !timeValue) {
+    return "";
+  }
+  const withSeconds = timeValue.length === 5 ? `${timeValue}:00` : timeValue;
+  const parsed = new Date(`${dateValue}T${withSeconds}`);
+  if (Number.isNaN(parsed.getTime())) {
+    return "";
+  }
+  return parsed.toISOString();
+}
+
+function normalizeStopList(rawStops) {
+  if (!Array.isArray(rawStops)) {
+    return [];
+  }
+  return rawStops
+    .map((stop) => {
+      const id = typeof stop?.id === "string" ? stop.id.trim() : "";
+      if (!id) {
+        return null;
+      }
+      const name = typeof stop?.name === "string" && stop.name.trim() ? stop.name.trim() : id;
+      return { id, name };
+    })
+    .filter(Boolean);
+}
+
+function renderStopSelectOptions() {
+  const selects = [elements.pickupStopSelect, elements.dropoffStopSelect];
+  selects.forEach((select) => {
+    if (!select) {
+      return;
+    }
+    const previousValue = select.value;
+    select.innerHTML = "";
+
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "選択してください";
+    select.appendChild(placeholder);
+
+    state.stops.forEach((stop) => {
+      const option = document.createElement("option");
+      option.value = stop.id;
+      option.textContent = stop.name;
+      select.appendChild(option);
+    });
+
+    if (previousValue && state.stops.some((stop) => stop.id === previousValue)) {
+      select.value = previousValue;
+    }
+  });
+}
+
+function setDefaultDesiredDateTime() {
+  if (!elements.desiredDateInput || !elements.desiredTimeInput) {
+    return;
+  }
+  const baseline = new Date();
+  baseline.setMinutes(baseline.getMinutes() + 30, 0, 0);
+  if (!elements.desiredDateInput.value) {
+    elements.desiredDateInput.value = toDateInputText(baseline);
+  }
+  if (!elements.desiredTimeInput.value) {
+    elements.desiredTimeInput.value = toTimeInputText(baseline);
+  }
+}
+
+function resolveDesiredMode() {
+  const selected = document.querySelector('input[name="desired-time-mode"]:checked');
+  const value = selected && typeof selected.value === "string" ? selected.value.trim().toUpperCase() : "";
+  return value === "DROPOFF" ? "DROPOFF" : "PICKUP";
 }
 
 async function apiGet(path) {
@@ -204,6 +310,12 @@ async function loadPublicConfig() {
   applyPublicConfig(payload.config || {});
 }
 
+async function loadStops() {
+  const payload = await apiGet("/api/stops");
+  state.stops = normalizeStopList(payload.data);
+  renderStopSelectOptions();
+}
+
 function resolveLineUserIdFromQuery() {
   const query = new URLSearchParams(window.location.search);
   return (query.get("lineUserId") || "").trim();
@@ -302,20 +414,83 @@ async function submitPhoneLink(event) {
     renderSession(payload);
     setStatus("電話番号連携が完了しました。", "ok");
   } catch (error) {
-    setStatus(`連携に失敗しました: ${error.message}`, "error");
+    setStatus(`連携に失敗しました: ${getErrorMessage(error)}`, "error");
+  }
+}
+
+async function submitCreateReservation(event) {
+  event.preventDefault();
+  setCreateMessage("", "info");
+
+  if (!elements.pickupStopSelect || !elements.dropoffStopSelect) {
+    setCreateMessage("予約フォームの初期化に失敗しました。ページを再読み込みしてください。", "error");
+    return;
+  }
+
+  if (!state.lineUserId) {
+    setStatus("先にLINEログインを実行してください。", "warn");
+    return;
+  }
+  if (!elements.pickupStopSelect.value || !elements.dropoffStopSelect.value) {
+    setCreateMessage("乗車バス停と降車バス停を選択してください。", "warn");
+    return;
+  }
+  if (elements.pickupStopSelect.value === elements.dropoffStopSelect.value) {
+    setCreateMessage("乗車バス停と降車バス停は別の停留所を選択してください。", "warn");
+    return;
+  }
+
+  const desiredAt = buildDesiredAtIso(
+    elements.desiredDateInput.value,
+    elements.desiredTimeInput.value
+  );
+  if (!desiredAt) {
+    setCreateMessage("希望日と希望時刻を正しく入力してください。", "warn");
+    return;
+  }
+
+  const desiredMode = resolveDesiredMode();
+  if (elements.createReservationButton) {
+    elements.createReservationButton.disabled = true;
+  }
+  try {
+    const payload = await apiPost("/api/line/miniapp/reservations", {
+      lineUserId: state.lineUserId,
+      displayName: state.displayName || "",
+      pickupStopId: elements.pickupStopSelect.value,
+      dropoffStopId: elements.dropoffStopSelect.value,
+      desiredMode,
+      desiredAt,
+    });
+    renderSession(payload);
+    const reservationId = payload?.reservation?.id || "-";
+    setCreateMessage(`予約を受け付けました（予約ID: ${reservationId}）`, "ok");
+    setStatus("予約を登録しました。", "ok");
+  } catch (error) {
+    setCreateMessage(`予約の登録に失敗しました: ${getErrorMessage(error)}`, "error");
+  } finally {
+    if (elements.createReservationButton) {
+      elements.createReservationButton.disabled = false;
+    }
   }
 }
 
 function registerEvents() {
   elements.refreshSessionButton.addEventListener("click", () => {
     loadSession().catch((error) => {
-      setStatus(`更新に失敗しました: ${error.message}`, "error");
+      setStatus(`更新に失敗しました: ${getErrorMessage(error)}`, "error");
     });
   });
 
   elements.phoneForm.addEventListener("submit", (event) => {
     submitPhoneLink(event);
   });
+
+  if (elements.createReservationForm) {
+    elements.createReservationForm.addEventListener("submit", (event) => {
+      submitCreateReservation(event);
+    });
+  }
 
   elements.liffLoginButton.addEventListener("click", () => {
     if (!window.liff || !state.config.liffId) {
@@ -336,14 +511,21 @@ function registerEvents() {
 
 async function bootstrap() {
   registerEvents();
+  setDefaultDesiredDateTime();
   state.lineUserId = resolveLineUserIdFromQuery();
   renderIdentity();
 
   try {
     await loadPublicConfig();
   } catch (error) {
-    setStatus(`LINE設定の取得に失敗しました: ${error.message}`, "error");
+    setStatus(`LINE設定の取得に失敗しました: ${getErrorMessage(error)}`, "error");
     return;
+  }
+
+  try {
+    await loadStops();
+  } catch (error) {
+    setCreateMessage(`バス停一覧の取得に失敗しました: ${getErrorMessage(error)}`, "error");
   }
 
   await resolveLiffProfile();
@@ -352,7 +534,7 @@ async function bootstrap() {
   try {
     await loadSession();
   } catch (error) {
-    setStatus(`予約情報の取得に失敗しました: ${error.message}`, "error");
+    setStatus(`予約情報の取得に失敗しました: ${getErrorMessage(error)}`, "error");
   }
 }
 
