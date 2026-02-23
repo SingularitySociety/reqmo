@@ -64,7 +64,18 @@ export function createDefaultServiceProfile(overrides = {}) {
         enabledForComplex: true,
         minExistingRouteTasks: 4,
         minCandidateCount: 10,
-        minActiveVehicles: 2
+        minActiveVehicles: 2,
+        orPolicy: {
+          enabledForSingleSelection: true,
+          enabledForOptionSelection: true,
+          optionSelectionPoolMultiplier: 3,
+          maxTotalExistingDelayMinutes: 0,
+          maxTotalMaxDelayMinutes: 0,
+          maxAverageMaxDelayMinutes: 0,
+          maxSelectedPerGroup: 1,
+          fairnessPenaltyWeight: 0,
+          timeDeviationWeight: 1
+        }
       },
       weights: {
         pickupDelay: 0.4,

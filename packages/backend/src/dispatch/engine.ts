@@ -4,7 +4,7 @@ import {
   findBestInsertionAcrossVehicles,
   findBestInsertionPlan
 } from "./insertion.ts";
-import { selectCandidateByHighs } from "./highs.ts";
+import { selectCandidatesByHighs } from "./highs.ts";
 import { resolveRideRequestLocations } from "../location/resolver.ts";
 import { estimateTravelMinutes } from "../../../shared/src/geo.ts";
 import { createTravelEstimator } from "../routing/service.ts";
@@ -1007,6 +1007,66 @@ function resolveHighsComplexityPolicy(serviceProfile) {
   };
 }
 
+function resolveOptionalPositive(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return null;
+  }
+  return numeric;
+}
+
+function resolveOptionalPositiveInteger(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return null;
+  }
+  const integer = Math.trunc(numeric);
+  if (integer <= 0) {
+    return null;
+  }
+  return integer;
+}
+
+function resolveHighsOrPolicy(serviceProfile) {
+  const policy = serviceProfile?.dispatchPolicy?.highs?.orPolicy ?? {};
+  return {
+    enabledForSingleSelection: policy.enabledForSingleSelection !== false,
+    enabledForOptionSelection: policy.enabledForOptionSelection !== false,
+    optionSelectionPoolMultiplier: Math.min(
+      Math.max(normalizeNonNegativeInteger(policy.optionSelectionPoolMultiplier, 3), 1),
+      10
+    ),
+    maxTotalExistingDelayMinutes: resolveOptionalPositive(policy.maxTotalExistingDelayMinutes),
+    maxTotalMaxDelayMinutes: resolveOptionalPositive(policy.maxTotalMaxDelayMinutes),
+    maxAverageMaxDelayMinutes: resolveOptionalPositive(policy.maxAverageMaxDelayMinutes),
+    maxSelectedPerGroup: resolveOptionalPositiveInteger(policy.maxSelectedPerGroup),
+    fairnessPenaltyWeight: normalizeNonNegative(policy.fairnessPenaltyWeight, 0),
+    timeDeviationWeight: normalizeNonNegative(policy.timeDeviationWeight, 0)
+  };
+}
+
+function resolveVehicleWorkloadPenalty(vehicle) {
+  const routeLength = Array.isArray(vehicle?.route) ? vehicle.route.length : 0;
+  const onboardCount = normalizeNonNegative(Number(vehicle?.onboardCount), 0);
+  return routeLength + onboardCount;
+}
+
+function resolveOptionTimeDeviationMinutes(option) {
+  const pickupRaw = option?.desiredPickupDeltaMinutes;
+  const dropoffRaw = option?.desiredDropoffDeltaMinutes;
+  const pickupDelta =
+    pickupRaw === null || pickupRaw === undefined ? Number.NaN : Number(pickupRaw);
+  const dropoffDelta =
+    dropoffRaw === null || dropoffRaw === undefined ? Number.NaN : Number(dropoffRaw);
+  if (Number.isFinite(pickupDelta)) {
+    return Math.abs(pickupDelta);
+  }
+  if (Number.isFinite(dropoffDelta)) {
+    return Math.abs(dropoffDelta);
+  }
+  return 0;
+}
+
 function estimateInsertionCandidateCount(routeTaskCount) {
   const n = normalizeNonNegativeInteger(routeTaskCount, 0);
   return ((n + 1) * (n + 2)) / 2;
@@ -1129,10 +1189,38 @@ async function findBestPlanByAlgorithm({
   }
 
   try {
-    const selectedByHighs = await selectCandidateByHighs({
-      candidates: insertionCandidates,
+    const vehicleIndex = new Map(
+      vehicles.map((vehicle) => [vehicle.id, vehicle])
+    );
+    const orPolicy = resolveHighsOrPolicy(serviceProfile);
+    const selectedByHighsList = await selectCandidatesByHighs({
+      candidates: insertionCandidates.map((candidate) => ({
+        ...candidate,
+        existingDelaySumMinutes: normalizeNonNegative(candidate?.detourSumMinutes, 0),
+        maxDelayMinutes: normalizeNonNegative(candidate?.detourMinutes, 0),
+        groupKey: candidate?.vehicleId ?? null,
+        fairnessPenalty: resolveVehicleWorkloadPenalty(
+          vehicleIndex.get(candidate?.vehicleId ?? "")
+        ),
+        timeDeviationMinutes: 0
+      })),
+      selectionCount: 1,
+      constraints: orPolicy.enabledForSingleSelection
+        ? {
+            maxTotalExistingDelayMinutes: orPolicy.maxTotalExistingDelayMinutes,
+            maxTotalMaxDelayMinutes: orPolicy.maxTotalMaxDelayMinutes,
+            maxAverageMaxDelayMinutes: orPolicy.maxAverageMaxDelayMinutes,
+            maxSelectedPerGroup: orPolicy.maxSelectedPerGroup,
+            fairnessPenaltyWeight: orPolicy.fairnessPenaltyWeight,
+            timeDeviationWeight: 0
+          }
+        : {},
       timeLimitSeconds: resolveHighsTimeLimitSeconds(serviceProfile)
     });
+    const selectedByHighs =
+      Array.isArray(selectedByHighsList) && selectedByHighsList.length
+        ? selectedByHighsList[0]
+        : null;
     if (selectedByHighs) {
       return {
         ...selectedByHighs,
@@ -2018,7 +2106,7 @@ export async function listRideRequestDispatchOptions({
       requestLookup
     });
 
-    options.push({
+    const option = {
       optionId: `vehicle:${vehicle.id}`,
       vehicleId: vehicle.id,
       selectedAlgorithm: plan.selectedAlgorithm ?? selectAlgorithm(serviceProfile),
@@ -2027,6 +2115,7 @@ export async function listRideRequestDispatchOptions({
       fallbackAlgorithm: plan.fallbackAlgorithm ?? selectFallbackAlgorithm(serviceProfile),
       score: roundMinutes(plan.score),
       detourMinutes: roundMinutes(plan.detourMinutes),
+      detourSumMinutes: roundMinutes(plan.detourSumMinutes),
       etaPickupMinutes: requestSummary.pickupEtaMinutes ?? roundMinutes(plan.etaPickupMinutes),
       etaDropoffMinutes: requestSummary.dropoffEtaMinutes ?? null,
       plannedPickupAt: pickupAt,
@@ -2041,18 +2130,77 @@ export async function listRideRequestDispatchOptions({
         requestLookup,
         stopIndex
       })
-    });
+    };
+    option.timeDeviationMinutes = resolveOptionTimeDeviationMinutes(option);
+    option.workloadPenalty = resolveVehicleWorkloadPenalty(vehicle);
+    options.push(option);
   }
 
   const normalizedLimit = Math.min(Math.max(Math.trunc(Number(optionLimit) || 5), 1), 10);
-  const sortedOptions = options
+  const baseSortedOptions = options
     .sort((left, right) =>
       compareDispatchOptions(left, right, {
         desiredDropoffDate,
         desiredPickupDate
       })
-    )
-    .slice(0, normalizedLimit);
+    );
+  const orPolicy = resolveHighsOrPolicy(serviceProfile);
+  let sortedOptions = baseSortedOptions.slice(0, normalizedLimit);
+  if (
+    orPolicy.enabledForOptionSelection &&
+    baseSortedOptions.length > normalizedLimit
+  ) {
+    const selectionPoolSize = Math.min(
+      baseSortedOptions.length,
+      Math.max(
+        normalizedLimit,
+        normalizedLimit * orPolicy.optionSelectionPoolMultiplier
+      )
+    );
+    const selectionPool = baseSortedOptions.slice(0, selectionPoolSize);
+    try {
+      const selectedByHighs = await selectCandidatesByHighs({
+        candidates: selectionPool.map((option) => ({
+          ...option,
+          existingDelaySumMinutes: normalizeNonNegative(option?.detourSumMinutes, 0),
+          maxDelayMinutes: normalizeNonNegative(option?.detourMinutes, 0),
+          groupKey: option?.vehicleId ?? null,
+          fairnessPenalty: normalizeNonNegative(option?.workloadPenalty, 0),
+          timeDeviationMinutes: normalizeNonNegative(option?.timeDeviationMinutes, 0)
+        })),
+        selectionCount: normalizedLimit,
+        constraints: {
+          maxTotalExistingDelayMinutes: orPolicy.maxTotalExistingDelayMinutes,
+          maxTotalMaxDelayMinutes: orPolicy.maxTotalMaxDelayMinutes,
+          maxAverageMaxDelayMinutes: orPolicy.maxAverageMaxDelayMinutes,
+          maxSelectedPerGroup: orPolicy.maxSelectedPerGroup,
+          fairnessPenaltyWeight: orPolicy.fairnessPenaltyWeight,
+          timeDeviationWeight: orPolicy.timeDeviationWeight
+        },
+        timeLimitSeconds: resolveHighsTimeLimitSeconds(serviceProfile)
+      });
+      if (Array.isArray(selectedByHighs) && selectedByHighs.length) {
+        const selectedOptionIds = new Set(
+          selectedByHighs
+            .map((option) => (typeof option?.optionId === "string" ? option.optionId : ""))
+            .filter(Boolean)
+        );
+        const selectedRanked = baseSortedOptions.filter((option) =>
+          selectedOptionIds.has(option.optionId)
+        );
+        if (selectedRanked.length < normalizedLimit) {
+          const remainder = baseSortedOptions.filter(
+            (option) => !selectedOptionIds.has(option.optionId)
+          );
+          selectedRanked.push(...remainder.slice(0, normalizedLimit - selectedRanked.length));
+        }
+        sortedOptions = selectedRanked.slice(0, normalizedLimit);
+      }
+    } catch (_error) {
+      // Keep deterministic fallback order when HiGHS option selection fails.
+      sortedOptions = baseSortedOptions.slice(0, normalizedLimit);
+    }
+  }
 
   if (!sortedOptions.length) {
     if (firstPolicyRejected) {

@@ -111,6 +111,30 @@
         "cruiseSpeedKmh": { "type": "number", "exclusiveMinimum": 0 },
         "pickupServiceMinutes": { "type": "number", "minimum": 0 },
         "dropoffServiceMinutes": { "type": "number", "minimum": 0 },
+        "highs": {
+          "type": "object",
+          "properties": {
+            "timeLimitSec": { "type": "number", "exclusiveMinimum": 0 },
+            "enabledForComplex": { "type": "boolean" },
+            "minExistingRouteTasks": { "type": "integer", "minimum": 0 },
+            "minCandidateCount": { "type": "integer", "minimum": 0 },
+            "minActiveVehicles": { "type": "integer", "minimum": 0 },
+            "orPolicy": {
+              "type": "object",
+              "properties": {
+                "enabledForSingleSelection": { "type": "boolean" },
+                "enabledForOptionSelection": { "type": "boolean" },
+                "optionSelectionPoolMultiplier": { "type": "integer", "minimum": 1 },
+                "maxTotalExistingDelayMinutes": { "type": "number", "minimum": 0 },
+                "maxTotalMaxDelayMinutes": { "type": "number", "minimum": 0 },
+                "maxAverageMaxDelayMinutes": { "type": "number", "minimum": 0 },
+                "maxSelectedPerGroup": { "type": "integer", "minimum": 1 },
+                "fairnessPenaltyWeight": { "type": "number", "minimum": 0 },
+                "timeDeviationWeight": { "type": "number", "minimum": 0 }
+              }
+            }
+          }
+        },
         "weights": {
           "type": "object",
           "required": ["pickupDelay", "detour", "deadhead", "lateness"],
@@ -118,8 +142,10 @@
             "pickupDelay": { "type": "number", "minimum": 0 },
             "detour": { "type": "number", "minimum": 0 },
             "deadhead": { "type": "number", "minimum": 0 },
+            "rideTimeDetour": { "type": "number", "minimum": 0 },
             "lateness": { "type": "number", "minimum": 0 },
-            "dropoffPriority": { "type": "number", "minimum": 0 }
+            "dropoffPriority": { "type": "number", "minimum": 0 },
+            "existingDelaySum": { "type": "number", "minimum": 0 }
           }
         }
       }

@@ -42,8 +42,8 @@ const ROUTE_POINT_SNAP_TOLERANCE_METERS = 2;
 const OFFICE_RETURN_ARRIVAL_METERS = 20;
 const DESIRED_TIME_STEP_MINUTES = 5;
 const DESIRED_TIME_MODES = [
-  { title: "降車時刻", value: "DROPOFF" },
   { title: "乗車時刻", value: "PICKUP" },
+  { title: "降車時刻", value: "DROPOFF" },
 ];
 
 const simulatorQuery = new URLSearchParams(window.location.search);
@@ -5160,18 +5160,6 @@ createApp({
           <div class="rq-form-section" style="flex:1">
             <div class="rq-form-label">人数</div>
             <v-text-field type="number" min="1" v-model="form.partySize" density="compact" variant="outlined" hide-details />
-          </div>
-          <div class="rq-form-section" style="flex:1">
-            <div class="rq-form-label">時刻指定基準</div>
-            <v-select
-              :items="desiredTimeModeOptions"
-              v-model="form.desiredTimeMode"
-              item-title="title"
-              item-value="value"
-              density="compact"
-              variant="outlined"
-              hide-details
-            />
             <div class="rq-form-label mt-2">{{ formDesiredTimeModeLabel }}</div>
             <v-menu
               v-model="dispatchTimeMenuOpen"
@@ -5217,6 +5205,18 @@ createApp({
                 </div>
               </div>
             </v-menu>
+          </div>
+          <div class="rq-form-section" style="flex:1">
+            <div class="rq-form-label">時刻指定基準</div>
+            <v-select
+              :items="desiredTimeModeOptions"
+              v-model="form.desiredTimeMode"
+              item-title="title"
+              item-value="value"
+              density="compact"
+              variant="outlined"
+              hide-details
+            />
           </div>
         </div>
 
@@ -5289,18 +5289,6 @@ createApp({
           <div class="rq-form-section" style="flex:1">
             <div class="rq-form-label">人数</div>
             <v-text-field type="number" min="1" v-model="callForm.partySize" density="compact" variant="outlined" hide-details />
-          </div>
-          <div class="rq-form-section" style="flex:1">
-            <div class="rq-form-label">時刻指定基準</div>
-            <v-select
-              :items="desiredTimeModeOptions"
-              v-model="callForm.desiredTimeMode"
-              item-title="title"
-              item-value="value"
-              density="compact"
-              variant="outlined"
-              hide-details
-            />
             <div class="rq-form-label mt-2">{{ callDesiredTimeModeLabel }}</div>
             <v-menu
               v-model="callTimeMenuOpen"
@@ -5346,6 +5334,18 @@ createApp({
                 </div>
               </div>
             </v-menu>
+          </div>
+          <div class="rq-form-section" style="flex:1">
+            <div class="rq-form-label">時刻指定基準</div>
+            <v-select
+              :items="desiredTimeModeOptions"
+              v-model="callForm.desiredTimeMode"
+              item-title="title"
+              item-value="value"
+              density="compact"
+              variant="outlined"
+              hide-details
+            />
           </div>
         </div>
         <div class="rq-form-section">
@@ -5564,8 +5564,7 @@ createApp({
               <div class="rq-driver-plan-subrow">{{ step.requestLabel }}</div>
               <div class="rq-driver-plan-meta">
                 <span class="rq-driver-plan-arrival">
-                  <span>着 {{ step.arrivalDateLabel }}</span>
-                  <span>{{ step.arrivalLabel }}</span>
+                  <span>着 {{ step.arrivalLabel }}</span>
                 </span>
                 <span>待 {{ step.waitLabel }}</span>
                 <span>移動 {{ step.moveDistanceLabel }} / {{ step.moveMinutesLabel }}</span>
@@ -5626,7 +5625,6 @@ createApp({
               <span class="rq-req-date-meta">
                 <v-icon size="11">mdi-calendar</v-icon>
                 <span class="rq-req-date-meta-body">
-                  <span>{{ row.pickupDateLabel }}</span>
                   <span>{{ row.displayTime }}</span>
                 </span>
               </span>
