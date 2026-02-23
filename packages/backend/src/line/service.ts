@@ -10,7 +10,7 @@ const LINE_RICHMENU_CONTENT_BASE = "https://api-data.line.me/v2/bot/richmenu";
 const RICH_MENU_WIDTH = 2500;
 const RICH_MENU_HEIGHT = 843;
 const DEFAULT_REGISTER_RICHMENU_ALIAS = "reqmo_register_v2";
-const DEFAULT_RESERVATION_RICHMENU_ALIAS = "reqmo_reservation_v2";
+const DEFAULT_RESERVATION_RICHMENU_ALIAS = "reqmo_reservation_v3";
 const richMenuAliasCache = new Map();
 const ACTIVE_RIDE_STATUSES = new Set([
   "REQUESTED",
@@ -107,6 +107,18 @@ function buildMiniAppUrl({ miniAppUrl = "", publicBaseUrl = "" }) {
     return "";
   }
   return new URL("line-reservation/", base).toString();
+}
+
+function buildBusMapUrl({ busMapUrl = "", publicBaseUrl = "" }) {
+  const configured = normalizeHttpUrl(busMapUrl);
+  if (configured) {
+    return configured;
+  }
+  const base = normalizePublicBaseUrl(publicBaseUrl);
+  if (!base) {
+    return "";
+  }
+  return new URL("line-bus-map/", base).toString();
 }
 
 function toIsoOrNull(value) {
@@ -670,9 +682,10 @@ function buildLineRegistrationRichMenu({ miniAppUrl }) {
   };
 }
 
-function buildLineReservationRichMenu({ miniAppUrl }) {
+function buildLineReservationRichMenu({ miniAppUrl, busMapUrl = "" }) {
   const reserveUrl = appendMiniAppModeQuery(miniAppUrl, "reserve");
   const registerUrl = appendMiniAppModeQuery(miniAppUrl, "register");
+  const normalizedBusMapUrl = normalizeHttpUrl(busMapUrl);
   return {
     menuPayload: {
       size: {
@@ -687,7 +700,7 @@ function buildLineReservationRichMenu({ miniAppUrl }) {
           bounds: {
             x: 0,
             y: 0,
-            width: 834,
+            width: 625,
             height: RICH_MENU_HEIGHT
           },
           action: {
@@ -697,9 +710,9 @@ function buildLineReservationRichMenu({ miniAppUrl }) {
         },
         {
           bounds: {
-            x: 834,
+            x: 625,
             y: 0,
-            width: 833,
+            width: 625,
             height: RICH_MENU_HEIGHT
           },
           action: {
@@ -709,15 +722,32 @@ function buildLineReservationRichMenu({ miniAppUrl }) {
         },
         {
           bounds: {
-            x: 1667,
+            x: 1250,
             y: 0,
-            width: 833,
+            width: 625,
             height: RICH_MENU_HEIGHT
           },
           action: {
             type: "uri",
             uri: registerUrl
           }
+        },
+        {
+          bounds: {
+            x: 1875,
+            y: 0,
+            width: 625,
+            height: RICH_MENU_HEIGHT
+          },
+          action: normalizedBusMapUrl
+            ? {
+                type: "uri",
+                uri: normalizedBusMapUrl
+              }
+            : {
+                type: "message",
+                text: "バス位置"
+              }
         }
       ]
     },
@@ -725,12 +755,14 @@ function buildLineReservationRichMenu({ miniAppUrl }) {
       segments: [
         { ratio: 1, color: "#0f766e" },
         { ratio: 1, color: "#1d4ed8" },
-        { ratio: 1, color: "#b45309" }
+        { ratio: 1, color: "#b45309" },
+        { ratio: 1, color: "#334155" }
       ],
       labels: [
         { segmentIndex: 0, text: "BOOK" },
         { segmentIndex: 1, text: "STATUS" },
-        { segmentIndex: 2, text: "PROFILE" }
+        { segmentIndex: 2, text: "PROFILE" },
+        { segmentIndex: 3, text: "BUS" }
       ]
     })
   };
@@ -749,6 +781,10 @@ export function resolveLineConfig({ env = process.env, requestBaseUrl = "" } = {
     miniAppUrl: env.LINE_MINIAPP_URL,
     publicBaseUrl
   });
+  const busMapUrl = buildBusMapUrl({
+    busMapUrl: env.LINE_BUS_MAP_URL,
+    publicBaseUrl
+  });
 
   return {
     channelSecret: normalizeTrimmedText(env.LINE_CHANNEL_SECRET),
@@ -757,6 +793,7 @@ export function resolveLineConfig({ env = process.env, requestBaseUrl = "" } = {
     officialAccountId,
     friendAddUrl,
     miniAppUrl,
+    busMapUrl,
     publicBaseUrl,
     botEnabled:
       Boolean(normalizeTrimmedText(env.LINE_CHANNEL_SECRET)) &&
@@ -1080,6 +1117,10 @@ export function parseLineMessageCommand(text) {
     return { type: "OPEN_MINIAPP" };
   }
 
+  if (/^(バス位置|現在地|車両位置|運行位置)$/i.test(normalized)) {
+    return { type: "BUS_LOCATION" };
+  }
+
   const linkPattern = /^(連携|link)\s+(.+)$/i.exec(normalized);
   if (linkPattern) {
     return {
@@ -1134,22 +1175,26 @@ export function linkLineUserByPhone({
   };
 }
 
-export function buildLineHelpMessage({ miniAppUrl = "" }) {
+export function buildLineHelpMessage({ miniAppUrl = "", busMapUrl = "" }) {
   const lines = [
     "使い方:",
     "・「予約」または「予約する」: ミニアプリで新規予約",
     "・「予約確認」: 直近の予約を表示",
+    "・「バス位置」: 現在の車両位置マップを表示",
     "・「登録」: 初回登録フォームを表示",
     "・「連携 08012345678」: 電話番号で利用者連携"
   ];
   if (miniAppUrl) {
     lines.push(`・ミニアプリ: ${miniAppUrl}`);
   }
+  if (busMapUrl) {
+    lines.push(`・バス位置マップ: ${busMapUrl}`);
+  }
   return lines.join("\n");
 }
 
-export function buildLineWelcomeMessages({ miniAppUrl = "" }) {
-  const helpText = buildLineHelpMessage({ miniAppUrl });
+export function buildLineWelcomeMessages({ miniAppUrl = "", busMapUrl = "" }) {
+  const helpText = buildLineHelpMessage({ miniAppUrl, busMapUrl });
   const quickReplyItems = [
     {
       type: "action",
@@ -1178,6 +1223,16 @@ export function buildLineWelcomeMessages({ miniAppUrl = "" }) {
       }
     });
   }
+  if (busMapUrl) {
+    quickReplyItems.push({
+      type: "action",
+      action: {
+        type: "uri",
+        label: "バス位置",
+        uri: busMapUrl
+      }
+    });
+  }
   return [
     {
       type: "text",
@@ -1197,6 +1252,7 @@ export async function ensureLineRichMenuForUser({
   channelAccessToken,
   lineUserId,
   miniAppUrl = "",
+  busMapUrl = "",
   isRegistered = false,
   env = process.env,
   fetchImpl = globalThis.fetch
@@ -1212,6 +1268,7 @@ export async function ensureLineRichMenuForUser({
       reason: "MISSING_MINIAPP_URL"
     };
   }
+  const normalizedBusMapUrl = normalizeHttpUrl(busMapUrl);
 
   const registrationAlias =
     normalizeTrimmedText(env.LINE_RICHMENU_REGISTER_ALIAS_ID) || DEFAULT_REGISTER_RICHMENU_ALIAS;
@@ -1227,7 +1284,10 @@ export async function ensureLineRichMenuForUser({
 
   if (!richMenuId) {
     const recipe = isRegistered
-      ? buildLineReservationRichMenu({ miniAppUrl: normalizedMiniAppUrl })
+      ? buildLineReservationRichMenu({
+          miniAppUrl: normalizedMiniAppUrl,
+          busMapUrl: normalizedBusMapUrl
+        })
       : buildLineRegistrationRichMenu({ miniAppUrl: normalizedMiniAppUrl });
     richMenuId = await createRichMenuWithAlias({
       channelAccessToken,

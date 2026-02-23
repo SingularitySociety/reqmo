@@ -553,6 +553,7 @@ function resolveLinePublicConfig(req) {
   return {
     liffId: config.liffId,
     miniAppUrl: config.miniAppUrl,
+    busMapUrl: config.busMapUrl,
     friendAddUrl: config.friendAddUrl,
     officialAccountId: config.officialAccountId,
     botEnabled: config.botEnabled
@@ -728,7 +729,7 @@ function resolveDefaultCountryCode(repository, serviceProfileId) {
   return fallbackCode || "+81";
 }
 
-function buildLineQuickReplyForReservation({ miniAppUrl }) {
+function buildLineQuickReplyForReservation({ miniAppUrl, busMapUrl = "" }) {
   const items = [];
   if (miniAppUrl) {
     items.push({
@@ -758,12 +759,31 @@ function buildLineQuickReplyForReservation({ miniAppUrl }) {
       }
     });
   }
+  if (busMapUrl) {
+    items.push({
+      type: "action",
+      action: {
+        type: "uri",
+        label: "バス位置",
+        uri: busMapUrl
+      }
+    });
+  } else {
+    items.push({
+      type: "action",
+      action: {
+        type: "message",
+        label: "バス位置",
+        text: "バス位置"
+      }
+    });
+  }
   return {
     items
   };
 }
 
-function buildLineQuickReplyForRegistration({ miniAppUrl }) {
+function buildLineQuickReplyForRegistration({ miniAppUrl, busMapUrl = "" }) {
   const items = [];
   if (miniAppUrl) {
     items.push({
@@ -783,6 +803,25 @@ function buildLineQuickReplyForRegistration({ miniAppUrl }) {
       text: "ヘルプ"
     }
   });
+  if (busMapUrl) {
+    items.push({
+      type: "action",
+      action: {
+        type: "uri",
+        label: "バス位置",
+        uri: busMapUrl
+      }
+    });
+  } else {
+    items.push({
+      type: "action",
+      action: {
+        type: "message",
+        label: "バス位置",
+        text: "バス位置"
+      }
+    });
+  }
   return {
     items
   };
@@ -815,6 +854,7 @@ async function tryEnsureLineRichMenuForUser({
       channelAccessToken: config.channelAccessToken,
       lineUserId,
       miniAppUrl: config.miniAppUrl,
+      busMapUrl: config.busMapUrl,
       isRegistered
     });
   } catch (_error) {
@@ -845,6 +885,7 @@ async function handleLineWebhookEvent({
   }
 
   const miniAppUrl = buildMiniAppUrlWithLineUser(config.miniAppUrl, lineUserId);
+  const busMapUrl = buildMiniAppUrlWithLineUser(config.busMapUrl, lineUserId);
   const registerMiniAppUrl = buildMiniAppUrlWithMode(miniAppUrl, "register");
   const reserveMiniAppUrl = buildMiniAppUrlWithMode(miniAppUrl, "reserve");
 
@@ -857,6 +898,7 @@ async function handleLineWebhookEvent({
         channelAccessToken: config.channelAccessToken,
         lineUserId,
         miniAppUrl: miniAppUrl || config.miniAppUrl || "",
+        busMapUrl: busMapUrl || config.busMapUrl || "",
         isRegistered
       });
     } catch (_error) {
@@ -886,7 +928,8 @@ async function handleLineWebhookEvent({
               `友だち追加ありがとうございます。予約を利用するには初回登録（名前・電話番号）が必要です。\n` +
               (registerMiniAppUrl ? `${registerMiniAppUrl}` : "ミニアプリURLが未設定です。"),
             quickReply: buildLineQuickReplyForRegistration({
-              miniAppUrl: registerMiniAppUrl
+              miniAppUrl: registerMiniAppUrl,
+              busMapUrl
             })
           }
         ]
@@ -900,7 +943,8 @@ async function handleLineWebhookEvent({
       channelAccessToken: config.channelAccessToken,
       replyToken,
       messages: buildLineWelcomeMessages({
-        miniAppUrl: reserveMiniAppUrl || miniAppUrl
+        miniAppUrl: reserveMiniAppUrl || miniAppUrl,
+        busMapUrl
       })
     });
     return {
@@ -951,7 +995,8 @@ async function handleLineWebhookEvent({
             type: "text",
             text: `電話番号(${command.phoneNumber})に紐づく利用者が見つかりませんでした。初回登録メニューから登録してください。`,
             quickReply: buildLineQuickReplyForRegistration({
-              miniAppUrl: registerMiniAppUrl
+              miniAppUrl: registerMiniAppUrl,
+              busMapUrl
             })
           }
         ]
@@ -991,10 +1036,12 @@ async function handleLineWebhookEvent({
             followUp,
           quickReply: registration.isRegistered
             ? buildLineQuickReplyForReservation({
-                miniAppUrl: reserveMiniAppUrl || miniAppUrl
+                miniAppUrl: reserveMiniAppUrl || miniAppUrl,
+                busMapUrl
               })
             : buildLineQuickReplyForRegistration({
-                miniAppUrl: registerMiniAppUrl
+                miniAppUrl: registerMiniAppUrl,
+                busMapUrl
               })
         }
       ]
@@ -1017,7 +1064,8 @@ async function handleLineWebhookEvent({
               ? `初回登録・登録情報更新はこちらです。\n${registerMiniAppUrl}`
               : "ミニアプリURLが未設定です。",
           quickReply: buildLineQuickReplyForRegistration({
-            miniAppUrl: registerMiniAppUrl
+            miniAppUrl: registerMiniAppUrl,
+            busMapUrl
           })
         }
       ]
@@ -1028,7 +1076,7 @@ async function handleLineWebhookEvent({
     };
   }
 
-  if (!registration.isRegistered && command.type !== "HELP") {
+  if (!registration.isRegistered && command.type !== "HELP" && command.type !== "BUS_LOCATION") {
     await sendLineReplyMessage({
       channelAccessToken: config.channelAccessToken,
       replyToken,
@@ -1039,7 +1087,8 @@ async function handleLineWebhookEvent({
             "予約を利用するには初回登録（名前・電話番号）が必要です。\n" +
             (registerMiniAppUrl ? `${registerMiniAppUrl}` : "ミニアプリURLが未設定です。"),
           quickReply: buildLineQuickReplyForRegistration({
-            miniAppUrl: registerMiniAppUrl
+            miniAppUrl: registerMiniAppUrl,
+            busMapUrl
           })
         }
       ]
@@ -1060,7 +1109,11 @@ async function handleLineWebhookEvent({
           text:
             reserveMiniAppUrl
               ? `予約フォームはこちらです。\n${reserveMiniAppUrl}`
-              : "ミニアプリURLが未設定です。"
+              : "ミニアプリURLが未設定です。",
+          quickReply: buildLineQuickReplyForReservation({
+            miniAppUrl: reserveMiniAppUrl || miniAppUrl,
+            busMapUrl
+          })
         }
       ]
     });
@@ -1088,7 +1141,8 @@ async function handleLineWebhookEvent({
             displayName: user.name ?? identity.displayName ?? ""
           }),
           quickReply: buildLineQuickReplyForReservation({
-            miniAppUrl: reserveMiniAppUrl || miniAppUrl
+            miniAppUrl: reserveMiniAppUrl || miniAppUrl,
+            busMapUrl
           })
         }
       ]
@@ -1099,6 +1153,35 @@ async function handleLineWebhookEvent({
     };
   }
 
+  if (command.type === "BUS_LOCATION") {
+    await sendLineReplyMessage({
+      channelAccessToken: config.channelAccessToken,
+      replyToken,
+      messages: [
+        {
+          type: "text",
+          text:
+            busMapUrl
+              ? `現在のバス位置マップはこちらです。\n${busMapUrl}`
+              : "バス位置マップURLが未設定です。",
+          quickReply: registration.isRegistered
+            ? buildLineQuickReplyForReservation({
+                miniAppUrl: reserveMiniAppUrl || miniAppUrl,
+                busMapUrl
+              })
+            : buildLineQuickReplyForRegistration({
+                miniAppUrl: registerMiniAppUrl,
+                busMapUrl
+              })
+        }
+      ]
+    });
+    return {
+      status: "REPLIED",
+      type: "bus-location"
+    };
+  }
+
   await sendLineReplyMessage({
     channelAccessToken: config.channelAccessToken,
     replyToken,
@@ -1106,14 +1189,17 @@ async function handleLineWebhookEvent({
       {
         type: "text",
         text: buildLineHelpMessage({
-          miniAppUrl: registration.isRegistered ? reserveMiniAppUrl || miniAppUrl : registerMiniAppUrl
+          miniAppUrl: registration.isRegistered ? reserveMiniAppUrl || miniAppUrl : registerMiniAppUrl,
+          busMapUrl
         }),
         quickReply: registration.isRegistered
           ? buildLineQuickReplyForReservation({
-              miniAppUrl: reserveMiniAppUrl || miniAppUrl
+              miniAppUrl: reserveMiniAppUrl || miniAppUrl,
+              busMapUrl
             })
           : buildLineQuickReplyForRegistration({
-              miniAppUrl: registerMiniAppUrl
+              miniAppUrl: registerMiniAppUrl,
+              busMapUrl
             })
       }
     ]

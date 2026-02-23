@@ -665,3 +665,118 @@ test("line webhook sends reservation miniapp URL when user sends 予約", async 
     }
   );
 });
+
+test("line webhook sends bus map URL when user sends バス位置", async () => {
+  await withTemporaryEnv(
+    {
+      LINE_CHANNEL_SECRET: "line_secret_test",
+      LINE_CHANNEL_ACCESS_TOKEN: "line_access_token_test",
+      LINE_MINIAPP_URL: "https://example.com/line-reservation/",
+      LINE_BUS_MAP_URL: "https://example.com/line-bus-map/"
+    },
+    async () => {
+      const repository = new InMemoryRepository({
+        users: [{ id: "line_user_bus_1", name: "LINE位置確認利用者" }],
+        phoneIdentities: [
+          {
+            id: "phone_bus_1",
+            userId: "line_user_bus_1",
+            normalizedPhoneE164: "+818012345678",
+            source: "SEED",
+            verified: true,
+            lastSeenAt: "2026-02-21T12:00:00.000Z",
+            blockStatus: "ACTIVE"
+          }
+        ],
+        lineIdentities: [
+          {
+            id: "line_bus_1",
+            lineUserId: "U_bus_chat_1",
+            userId: "line_user_bus_1",
+            source: "SEED",
+            verified: true,
+            displayName: "LINE位置確認利用者",
+            lastSeenAt: "2026-02-21T12:00:00.000Z",
+            blockStatus: "ACTIVE"
+          }
+        ],
+        serviceProfiles: [createDefaultServiceProfile()]
+      });
+
+      const { server } = createReqmoServer({ repository });
+      const webhookPayload = {
+        destination: "Uxxxxxxxxx",
+        events: [
+          {
+            type: "message",
+            mode: "active",
+            timestamp: Date.now(),
+            replyToken: "reply_token_bus_1",
+            source: {
+              type: "user",
+              userId: "U_bus_chat_1"
+            },
+            message: {
+              type: "text",
+              id: "100003",
+              text: "バス位置"
+            }
+          }
+        ]
+      };
+      const rawBody = JSON.stringify(webhookPayload);
+      const signature = createHmac("sha256", "line_secret_test")
+        .update(rawBody)
+        .digest("base64");
+
+      const fetchCalls = [];
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = async (url, init) => {
+        fetchCalls.push({
+          url: String(url),
+          init
+        });
+        return new Response("", { status: 200 });
+      };
+
+      try {
+        const response = await invokeServer({
+          server,
+          method: "POST",
+          url: "/api/line/webhook",
+          rawBody,
+          headers: {
+            "x-line-signature": signature
+          }
+        });
+
+        assert.equal(response.statusCode, 200);
+        const payload = JSON.parse(response.payload);
+        assert.equal(payload.status, "OK");
+        assert.equal(payload.handledEvents, 1);
+        const replyCall = fetchCalls.find(
+          (call) => call.url === "https://api.line.me/v2/bot/message/reply"
+        );
+        assert.equal(Boolean(replyCall), true);
+        const postedBody = JSON.parse(replyCall.init.body);
+        assert.equal(postedBody.replyToken, "reply_token_bus_1");
+        assert.equal(Array.isArray(postedBody.messages), true);
+        assert.equal(postedBody.messages.length, 1);
+        assert.equal(
+          postedBody.messages[0].text.includes("現在のバス位置マップはこちらです。"),
+          true
+        );
+        assert.equal(
+          postedBody.messages[0].text.includes("line-bus-map"),
+          true
+        );
+        assert.equal(
+          postedBody.messages[0].text.includes("lineUserId=U_bus_chat_1"),
+          true
+        );
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    }
+  );
+});

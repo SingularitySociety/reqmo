@@ -1,0 +1,219 @@
+:root {
+  font-family: "Noto Sans JP", "M PLUS 1p", sans-serif;
+  color: #0f172a;
+  background: radial-gradient(circle at 80% 0%, #dbeafe 0%, #f8fafc 55%, #eef2ff 100%);
+  line-height: 1.5;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+.lb-shell {
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 24px 16px 32px;
+}
+
+.lb-hero {
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 22px;
+  padding: 22px;
+  box-shadow: 0 20px 32px -30px rgba(15, 23, 42, 0.55);
+}
+
+.lb-eyebrow {
+  margin: 0;
+  font-size: 0.95rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #0369a1;
+  font-weight: 700;
+}
+
+h1 {
+  margin: 10px 0 0;
+  font-size: clamp(2rem, 4vw, 2.8rem);
+  line-height: 1.1;
+  letter-spacing: 0.02em;
+  color: #0f172a;
+}
+
+.lb-description {
+  margin: 14px 0 0;
+  color: #334155;
+  font-size: 1.05rem;
+}
+
+.lb-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.lb-button {
+  border: none;
+  border-radius: 999px;
+  font-size: 1rem;
+  font-weight: 700;
+  padding: 10px 20px;
+  cursor: pointer;
+}
+
+.lb-button-primary {
+  background: linear-gradient(120deg, #0ea5e9, #0369a1);
+  color: #fff;
+}
+
+.lb-button-ghost {
+  background: #f8fafc;
+  color: #0f172a;
+  border: 1px solid #cbd5e1;
+}
+
+.lb-status {
+  margin: 14px 0 0;
+  font-weight: 600;
+}
+
+.lb-status[data-tone="success"] {
+  color: #0f766e;
+}
+
+.lb-status[data-tone="warn"] {
+  color: #b45309;
+}
+
+.lb-status[data-tone="error"] {
+  color: #b91c1c;
+}
+
+.lb-layout {
+  margin-top: 18px;
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: 14px;
+}
+
+.lb-card {
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 22px;
+  padding: 16px;
+  box-shadow: 0 20px 32px -30px rgba(15, 23, 42, 0.55);
+}
+
+.lb-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+h2 {
+  margin: 0;
+  font-size: 1.3rem;
+  color: #0f172a;
+}
+
+.lb-map {
+  margin-top: 12px;
+  width: 100%;
+  height: min(65vh, 560px);
+  min-height: 360px;
+  border-radius: 16px;
+  border: 1px solid #cbd5e1;
+}
+
+.lb-vehicle-list {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+  max-height: min(65vh, 560px);
+  overflow: auto;
+}
+
+.lb-vehicle-item {
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  padding: 12px;
+  background: #ffffff;
+}
+
+.lb-empty {
+  border: 1px dashed #cbd5e1;
+  border-radius: 14px;
+  padding: 20px;
+  text-align: center;
+  color: #64748b;
+}
+
+.lb-vehicle-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.lb-vehicle-id {
+  font-size: 1.03rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.lb-status-pill {
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.lb-status-pill-active {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.lb-status-pill-inactive {
+  background: #e2e8f0;
+  color: #334155;
+}
+
+.lb-status-pill-unknown {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.lb-vehicle-meta {
+  margin-top: 5px;
+  font-size: 0.94rem;
+  color: #334155;
+}
+
+.lb-popup {
+  font-family: "Noto Sans JP", "M PLUS 1p", sans-serif;
+  font-size: 13px;
+}
+
+@media (max-width: 900px) {
+  .lb-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .lb-map {
+    height: min(58vh, 440px);
+    min-height: 320px;
+  }
+
+  .lb-vehicle-list {
+    max-height: 360px;
+  }
+}
