@@ -838,7 +838,7 @@ async function cancelReservationById(requestId) {
     setStatus("LINEユーザー情報が未取得です。", "warn");
     return;
   }
-  const shouldCancel = window.confirm(`予約ID ${id} を取り消しますか？`);
+  const shouldCancel = window.confirm(`予約ID ${id} をキャンセルしますか？`);
   if (!shouldCancel) {
     return;
   }
