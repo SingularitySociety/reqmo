@@ -104,6 +104,33 @@ body {
   transform: none;
 }
 
+.lr-button.is-loading:disabled {
+  cursor: progress;
+  opacity: 0.92;
+}
+
+.lr-button-content {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.lr-button-spinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.42);
+  border-top-color: #fff;
+  animation: lr-spin 0.7s linear infinite;
+}
+
+@keyframes lr-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .lr-button-primary {
   background: linear-gradient(135deg, var(--lr-primary), var(--lr-primary-dark));
   color: #fff;

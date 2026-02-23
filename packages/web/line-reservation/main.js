@@ -29,6 +29,8 @@ const elements = {
   desiredDateInput: document.getElementById("desired-date-input"),
   desiredTimeInput: document.getElementById("desired-time-input"),
   createReservationButton: document.getElementById("create-reservation-button"),
+  createReservationButtonSpinner: document.getElementById("create-reservation-button-spinner"),
+  createReservationButtonLabel: document.getElementById("create-reservation-button-label"),
   reservationCreateMessage: document.getElementById("reservation-create-message"),
   reservationPreviewPanel: document.getElementById("reservation-preview-panel"),
   previewPickupLabel: document.getElementById("preview-pickup-label"),
@@ -60,6 +62,7 @@ const state = {
   initialMode: "",
   showRegistrationEditor: false,
   pendingReservationInput: null,
+  isPreviewLoading: false,
 };
 
 function getErrorMessage(error) {
@@ -320,7 +323,6 @@ function setReservationFormEnabled(enabled) {
     elements.partySizeInput,
     elements.desiredDateInput,
     elements.desiredTimeInput,
-    elements.createReservationButton,
   ];
   controls.forEach((control) => {
     if (!control) {
@@ -331,6 +333,7 @@ function setReservationFormEnabled(enabled) {
   if (!enabled) {
     clearPreview();
   }
+  setPreviewLoading(state.isPreviewLoading);
 }
 
 function isRegistered() {
@@ -588,6 +591,40 @@ function renderPreviewPanel(preview) {
   updateConfirmReservationButtonState();
 }
 
+function setPreviewLoading(loading) {
+  state.isPreviewLoading = Boolean(loading);
+  if (!elements.createReservationButton) {
+    return;
+  }
+  const canSubmit = isRegistered() && !state.isPreviewLoading;
+  elements.createReservationButton.disabled = !canSubmit;
+  elements.createReservationButton.classList.toggle("is-loading", state.isPreviewLoading);
+  if (elements.createReservationButtonSpinner) {
+    elements.createReservationButtonSpinner.hidden = !state.isPreviewLoading;
+  }
+  if (elements.createReservationButtonLabel) {
+    elements.createReservationButtonLabel.textContent = state.isPreviewLoading
+      ? "確認中..."
+      : "スケジュールを確認";
+  }
+}
+
+function scrollToPreviewPanel() {
+  if (!elements.reservationPreviewPanel || elements.reservationPreviewPanel.hidden) {
+    return;
+  }
+  window.requestAnimationFrame(() => {
+    const top =
+      window.scrollY +
+      elements.reservationPreviewPanel.getBoundingClientRect().top -
+      20;
+    window.scrollTo({
+      top: Math.max(0, top),
+      behavior: "smooth",
+    });
+  });
+}
+
 function renderSession(payload) {
   if (!payload) {
     state.session = null;
@@ -815,9 +852,7 @@ async function submitCreateReservation(event) {
     return;
   }
 
-  if (elements.createReservationButton) {
-    elements.createReservationButton.disabled = true;
-  }
+  setPreviewLoading(true);
   try {
     const payload = await apiPost("/api/line/miniapp/reservations/preview", input);
     const preview = payload?.preview || null;
@@ -826,13 +861,12 @@ async function submitCreateReservation(event) {
     }
     state.pendingReservationInput = input;
     renderPreviewPanel(preview);
+    scrollToPreviewPanel();
     setCreateMessage("予約可能です。確認欄をチェックしてから予約を確定してください。", "ok");
   } catch (error) {
     setCreateMessage(`予想の取得に失敗しました: ${getErrorMessage(error)}`, "error");
   } finally {
-    if (elements.createReservationButton) {
-      elements.createReservationButton.disabled = false;
-    }
+    setPreviewLoading(false);
   }
 }
 

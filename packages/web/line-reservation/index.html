@@ -91,7 +91,7 @@
           <h2>新規予約</h2>
         </header>
         <p class="lr-note">
-          まず「予約可能か確認する」で予定時刻を確認し、内容に同意した場合のみ予約を確定します。
+          まず「スケジュールを確認」で予定時刻を確認し、内容に同意した場合のみ予約を確定します。
         </p>
         <form id="create-reservation-form" class="lr-form-grid">
           <label class="lr-field">
@@ -130,7 +130,10 @@
             <input id="desired-time-input" type="time" step="60" required />
           </label>
           <button id="create-reservation-button" class="lr-button lr-button-primary" type="submit">
-            予約可能か確認する
+            <span class="lr-button-content">
+              <span id="create-reservation-button-spinner" class="lr-button-spinner" hidden aria-hidden="true"></span>
+              <span id="create-reservation-button-label">スケジュールを確認</span>
+            </span>
           </button>
         </form>
 
