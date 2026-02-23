@@ -426,7 +426,8 @@ export function createReqmoServer({
           passenger: normalizePassenger(body.passenger),
           channel: body.channel,
           requestType: body.requestType ?? null,
-          desiredDropoffAt: body.desiredDropoffAt ?? body.desiredPickupAt ?? null,
+          desiredDropoffAt: body.desiredDropoffAt ?? null,
+          desiredPickupAt: body.desiredPickupAt ?? null,
           preferredVehicleId: body.preferredVehicleId ?? null,
           context: requestContext
         });
@@ -449,7 +450,8 @@ export function createReqmoServer({
           passenger: normalizePassenger(body.passenger),
           channel: body.channel,
           requestType: body.requestType ?? null,
-          desiredDropoffAt: body.desiredDropoffAt ?? body.desiredPickupAt ?? null,
+          desiredDropoffAt: body.desiredDropoffAt ?? null,
+          desiredPickupAt: body.desiredPickupAt ?? null,
           optionLimit: body.optionLimit ?? 5,
           context: requestContext
         });
@@ -470,7 +472,8 @@ export function createReqmoServer({
           passenger: normalizePassenger(body.passenger),
           channel: body.channel,
           requestType: body.requestType ?? null,
-          desiredDropoffAt: body.desiredDropoffAt ?? body.desiredPickupAt ?? null,
+          desiredDropoffAt: body.desiredDropoffAt ?? null,
+          desiredPickupAt: body.desiredPickupAt ?? null,
           context: requestContext
         });
 
@@ -583,7 +586,8 @@ export function createReqmoServer({
           partySize: body.partySize ?? 1,
           passenger: normalizePassenger(body.passenger),
           requestType: body.requestType ?? null,
-          desiredDropoffAt: body.desiredDropoffAt ?? body.desiredPickupAt ?? null,
+          desiredDropoffAt: body.desiredDropoffAt ?? null,
+          desiredPickupAt: body.desiredPickupAt ?? null,
           preferredVehicleId: body.preferredVehicleId ?? null,
           context: requestContext
         });
@@ -605,7 +609,8 @@ export function createReqmoServer({
           partySize: body.partySize ?? 1,
           passenger: normalizePassenger(body.passenger),
           requestType: body.requestType ?? null,
-          desiredDropoffAt: body.desiredDropoffAt ?? body.desiredPickupAt ?? null,
+          desiredDropoffAt: body.desiredDropoffAt ?? null,
+          desiredPickupAt: body.desiredPickupAt ?? null,
           optionLimit: body.optionLimit ?? 5,
           context: requestContext
         });

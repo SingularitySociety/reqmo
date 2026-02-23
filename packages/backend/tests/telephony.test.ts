@@ -144,6 +144,50 @@ test("phone operator flow returns options and can confirm selected vehicle", asy
   assert.equal(confirmed.rideRequest.timeWindow?.requestType, "ARRIVE_BY");
 });
 
+test("phone operator flow supports desired pickup time", async () => {
+  const repository = seedForTelephony();
+  const profile = createDefaultServiceProfile();
+  repository.setServiceProfile(profile);
+
+  linkPhoneIdentity({
+    repository,
+    serviceProfileId: profile.id,
+    userId: "user_100",
+    phoneNumber: "08012345678"
+  });
+
+  const desiredPickupAt = new Date(Date.now() + 20 * 60 * 1000).toISOString();
+  const options = await listPhoneRideOptions({
+    repository,
+    serviceProfileId: profile.id,
+    callerRaw: "08012345678",
+    pickup: { mode: "FIXED_STOP", stopId: "stop_a" },
+    dropoff: { mode: "FIXED_STOP", stopId: "stop_b" },
+    partySize: 1,
+    desiredPickupAt
+  });
+
+  assert.equal(options.status, "ASSIGNABLE");
+  assert.equal(options.desiredPickupAt, desiredPickupAt);
+  assert.equal(Array.isArray(options.options), true);
+  assert.equal(options.options.length > 0, true);
+
+  const confirmed = await createPhoneRideRequest({
+    repository,
+    serviceProfileId: profile.id,
+    callerRaw: "08012345678",
+    pickup: { mode: "FIXED_STOP", stopId: "stop_a" },
+    dropoff: { mode: "FIXED_STOP", stopId: "stop_b" },
+    partySize: 1,
+    desiredPickupAt
+  });
+
+  assert.equal(confirmed.status, "ASSIGNED");
+  assert.equal(confirmed.rideRequest.timeWindow?.desiredPickupAt, desiredPickupAt);
+  assert.equal(confirmed.rideRequest.timeWindow?.desiredDropoffAt ?? null, null);
+  assert.equal(confirmed.rideRequest.timeWindow?.requestType, "DEPART_AT");
+});
+
 test("previewFare computes hybrid fare", () => {
   const profile = createDefaultServiceProfile();
   const fare = previewFare({

@@ -63,7 +63,8 @@ export function createRideRequestByPhone({
   passenger = null,
   requestType = "ASAP",
   scheduledAt = null,
-  desiredDropoffAt = null
+  desiredDropoffAt = null,
+  desiredPickupAt = null
 }) {
   const user = callerE164 ? repository.findUserByPhone(callerE164) : null;
   const requesterId = user?.id ?? null;
@@ -86,7 +87,8 @@ export function createRideRequestByPhone({
     timeWindow: {
       requestType,
       scheduledAt,
-      desiredDropoffAt
+      desiredDropoffAt,
+      desiredPickupAt
     }
   });
 }

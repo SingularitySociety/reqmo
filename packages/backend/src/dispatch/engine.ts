@@ -1550,22 +1550,34 @@ function resolveNowFromContext(context = {}) {
   return resolved ?? new Date();
 }
 
-function compareDispatchOptions(left, right, desiredDropoffDate) {
+function compareDispatchOptions(
+  left,
+  right,
+  {
+    desiredDropoffDate = null,
+    desiredPickupDate = null
+  } = {}
+) {
   const leftPickupEta = Number(left.etaPickupMinutes);
   const rightPickupEta = Number(right.etaPickupMinutes);
   const leftScore = Number(left.score);
   const rightScore = Number(right.score);
 
-  if (desiredDropoffDate) {
-    const desiredTs = desiredDropoffDate.getTime();
-    const leftDropoffTs = normalizeDateInput(left.plannedDropoffAt)?.getTime();
-    const rightDropoffTs = normalizeDateInput(right.plannedDropoffAt)?.getTime();
+  const desiredTs = desiredDropoffDate?.getTime() ?? desiredPickupDate?.getTime() ?? null;
+  const compareByPickup = !desiredDropoffDate && Boolean(desiredPickupDate);
+  if (Number.isFinite(desiredTs)) {
+    const leftTargetTs = normalizeDateInput(
+      compareByPickup ? left.plannedPickupAt : left.plannedDropoffAt
+    )?.getTime();
+    const rightTargetTs = normalizeDateInput(
+      compareByPickup ? right.plannedPickupAt : right.plannedDropoffAt
+    )?.getTime();
 
-    const leftDelta = Number.isFinite(leftDropoffTs)
-      ? Math.abs((leftDropoffTs - desiredTs) / (60 * 1000))
+    const leftDelta = Number.isFinite(leftTargetTs)
+      ? Math.abs((leftTargetTs - desiredTs) / (60 * 1000))
       : Number.POSITIVE_INFINITY;
-    const rightDelta = Number.isFinite(rightDropoffTs)
-      ? Math.abs((rightDropoffTs - desiredTs) / (60 * 1000))
+    const rightDelta = Number.isFinite(rightTargetTs)
+      ? Math.abs((rightTargetTs - desiredTs) / (60 * 1000))
       : Number.POSITIVE_INFINITY;
 
     if (leftDelta !== rightDelta) {
@@ -1884,6 +1896,7 @@ export async function listRideRequestDispatchOptions({
   serviceProfile,
   context = {},
   desiredDropoffAt = null,
+  desiredPickupAt = null,
   optionLimit = 5,
   allowedVehicleIds = null
 }) {
@@ -1909,6 +1922,7 @@ export async function listRideRequestDispatchOptions({
       reason: "NO_FEASIBLE_VEHICLE",
       resolvedLocations,
       desiredDropoffAt: normalizeDateInput(desiredDropoffAt)?.toISOString() ?? null,
+      desiredPickupAt: normalizeDateInput(desiredPickupAt)?.toISOString() ?? null,
       options: [],
       diagnostics: buildNoFeasibleDiagnostics({
         vehicles,
@@ -1932,6 +1946,7 @@ export async function listRideRequestDispatchOptions({
     });
   }
   const desiredDropoffDate = normalizeDateInput(desiredDropoffAt);
+  const desiredPickupDate = normalizeDateInput(desiredPickupAt);
   const options = [];
   let firstPolicyRejected = null;
 
@@ -1992,6 +2007,10 @@ export async function listRideRequestDispatchOptions({
       desiredDropoffDate && dropoffAt
         ? roundMinutes((new Date(dropoffAt).getTime() - desiredDropoffDate.getTime()) / (60 * 1000))
         : null;
+    const pickupDeltaMinutes =
+      desiredPickupDate && pickupAt
+        ? roundMinutes((new Date(pickupAt).getTime() - desiredPickupDate.getTime()) / (60 * 1000))
+        : null;
     const impacts = buildImpactSummary({
       beforeSummary,
       afterSummary,
@@ -2013,6 +2032,7 @@ export async function listRideRequestDispatchOptions({
       plannedPickupAt: pickupAt,
       plannedDropoffAt: dropoffAt,
       desiredDropoffDeltaMinutes: dropoffDeltaMinutes,
+      desiredPickupDeltaMinutes: pickupDeltaMinutes,
       impactedRequests: impacts,
       routeAfter: decorateTimeline({
         timeline: timelineAfter,
@@ -2026,7 +2046,12 @@ export async function listRideRequestDispatchOptions({
 
   const normalizedLimit = Math.min(Math.max(Math.trunc(Number(optionLimit) || 5), 1), 10);
   const sortedOptions = options
-    .sort((left, right) => compareDispatchOptions(left, right, desiredDropoffDate))
+    .sort((left, right) =>
+      compareDispatchOptions(left, right, {
+        desiredDropoffDate,
+        desiredPickupDate
+      })
+    )
     .slice(0, normalizedLimit);
 
   if (!sortedOptions.length) {
@@ -2036,6 +2061,7 @@ export async function listRideRequestDispatchOptions({
         reason: "NO_FEASIBLE_VEHICLE",
         resolvedLocations,
         desiredDropoffAt: desiredDropoffDate?.toISOString() ?? null,
+        desiredPickupAt: desiredPickupDate?.toISOString() ?? null,
         options: [],
         diagnostics: buildOperationPolicyDiagnostics({
           violation: firstPolicyRejected.violation,
@@ -2055,6 +2081,7 @@ export async function listRideRequestDispatchOptions({
       reason: "NO_FEASIBLE_VEHICLE",
       resolvedLocations,
       desiredDropoffAt: desiredDropoffDate?.toISOString() ?? null,
+      desiredPickupAt: desiredPickupDate?.toISOString() ?? null,
       options: [],
       diagnostics: buildNoFeasibleDiagnostics({
         vehicles,
@@ -2069,6 +2096,7 @@ export async function listRideRequestDispatchOptions({
     status: "ASSIGNABLE",
     resolvedLocations,
     desiredDropoffAt: desiredDropoffDate?.toISOString() ?? null,
+    desiredPickupAt: desiredPickupDate?.toISOString() ?? null,
     options: sortedOptions
   };
 }

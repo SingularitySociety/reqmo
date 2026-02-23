@@ -201,6 +201,29 @@ test("api ride-request endpoints preserve desired time window fields", async () 
   assert.equal(requests[0].timeWindow?.requestType, "ARRIVE_BY");
 });
 
+test("api ride-request endpoints preserve desired pickup time window fields", async () => {
+  const { server, repository } = createReqmoServer();
+  const desiredPickupAt = "2026-02-01T03:50:00.000Z";
+  const response = await invokeServer({
+    server,
+    method: "POST",
+    url: "/api/ride-requests",
+    body: {
+      pickup: { mode: "FIXED_STOP", stopId: "stop_a" },
+      dropoff: { mode: "FIXED_STOP", stopId: "stop_b" },
+      partySize: 1,
+      desiredPickupAt
+    }
+  });
+
+  assert.equal(response.statusCode, 200);
+  const requests = repository.listRideRequests();
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].timeWindow?.desiredPickupAt, desiredPickupAt);
+  assert.equal(requests[0].timeWindow?.desiredDropoffAt ?? null, null);
+  assert.equal(requests[0].timeWindow?.requestType, "DEPART_AT");
+});
+
 test("api ride-request options can propose multiple strategies and confirm selected option", async () => {
   const repository = new InMemoryRepository({
     stops: [
@@ -402,6 +425,56 @@ test("api ride-request options for future reservation date prioritize reservatio
   });
 });
 
+test("api ride-request options support desired pickup time strategy", async () => {
+  const repository = new InMemoryRepository({
+    stops: [
+      { id: "stop_a", name: "Stop A", lat: 33.0, lng: 132.9 },
+      { id: "stop_b", name: "Stop B", lat: 33.01, lng: 132.905 }
+    ],
+    vehicles: [
+      {
+        id: "veh_1",
+        status: "ACTIVE",
+        capacity: 4,
+        onboardCount: 0,
+        currentLocation: { lat: 33.0, lng: 132.9 },
+        route: []
+      }
+    ],
+    serviceProfiles: [createDefaultServiceProfile()]
+  });
+  const { server } = createReqmoServer({ repository });
+  const desiredPickupAt = buildNextLocalDateAt(12, 15).toISOString();
+
+  const response = await invokeServer({
+    server,
+    method: "POST",
+    url: "/api/ride-requests/options",
+    body: {
+      pickup: { mode: "FIXED_STOP", stopId: "stop_a" },
+      dropoff: { mode: "FIXED_STOP", stopId: "stop_b" },
+      partySize: 1,
+      desiredPickupAt,
+      optionLimit: 5
+    }
+  });
+
+  assert.equal(response.statusCode, 200);
+  const payload = JSON.parse(response.payload);
+  assert.equal(payload.status, "ASSIGNABLE");
+  assert.equal(payload.desiredPickupAt, desiredPickupAt);
+  assert.equal(Array.isArray(payload.options), true);
+  assert.equal(payload.options.length > 0, true);
+  assert.equal(
+    payload.options.some((option) => option.strategyKey === "REQUESTED_TIME"),
+    true
+  );
+  const requested = payload.options.find((option) => option.strategyKey === "REQUESTED_TIME");
+  assert.equal(requested?.requestType, "DEPART_AT");
+  assert.equal(requested?.desiredPickupAt, desiredPickupAt);
+  assert.equal(typeof requested?.desiredPickupDeltaMinutes, "number");
+});
+
 test("api ride-request options suggest post-break pickup when desired time is within lunch break", async () => {
   const baseProfile = createDefaultServiceProfile();
   const profile = createDefaultServiceProfile({
@@ -502,8 +575,8 @@ test("api ride-request options do not apply lunch break when operation policy is
   });
   const { server } = createReqmoServer({ repository });
 
-  const desiredDropoffAt = "2026-02-23T11:30:00+09:00";
-  const breakEndAt = new Date("2026-02-23T12:00:00+09:00");
+  const desiredDropoffAt = buildNextLocalDateAt(11, 30).toISOString();
+  const breakEndAt = buildNextLocalDateAt(12, 0);
 
   const response = await invokeServer({
     server,

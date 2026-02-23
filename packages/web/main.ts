@@ -1,4 +1,13 @@
-const { createApp, ref, computed, onMounted, onBeforeUnmount, watch, nextTick, reactive } = Vue;
+const {
+  createApp,
+  ref,
+  computed,
+  onMounted,
+  onBeforeUnmount,
+  watch,
+  nextTick,
+  reactive,
+} = Vue;
 const { createVuetify } = Vuetify;
 
 const vuetify = createVuetify({
@@ -9,11 +18,11 @@ const vuetify = createVuetify({
         colors: {
           primary: "#0f766e",
           secondary: "#ea580c",
-          background: "#f0f4f8"
-        }
-      }
-    }
-  }
+          background: "#f0f4f8",
+        },
+      },
+    },
+  },
 });
 
 const API_BASE = (() => {
@@ -32,6 +41,10 @@ const VEHICLE_ROUTE_ON_PATH_TOLERANCE_METERS = 45;
 const ROUTE_POINT_SNAP_TOLERANCE_METERS = 2;
 const OFFICE_RETURN_ARRIVAL_METERS = 20;
 const DESIRED_TIME_STEP_MINUTES = 5;
+const DESIRED_TIME_MODES = [
+  { title: "降車時刻", value: "DROPOFF" },
+  { title: "乗車時刻", value: "PICKUP" },
+];
 
 const simulatorQuery = new URLSearchParams(window.location.search);
 if (simulatorQuery.has("simulator")) {
@@ -53,9 +66,9 @@ async function apiPost(path, body) {
   const res = await fetch(`${API_BASE}${path}`, {
     method: "POST",
     headers: {
-      "Content-Type": "application/json"
+      "Content-Type": "application/json",
     },
-    body: JSON.stringify(body)
+    body: JSON.stringify(body),
   });
 
   const payload = await res.json();
@@ -97,9 +110,14 @@ function formatClock(date) {
   return `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
 }
 
-function formatClockByMinuteStep(date, stepMinutes = DESIRED_TIME_STEP_MINUTES) {
+function formatClockByMinuteStep(
+  date,
+  stepMinutes = DESIRED_TIME_STEP_MINUTES,
+) {
   const normalizedStep =
-    Number.isInteger(stepMinutes) && stepMinutes > 0 ? stepMinutes : DESIRED_TIME_STEP_MINUTES;
+    Number.isInteger(stepMinutes) && stepMinutes > 0
+      ? stepMinutes
+      : DESIRED_TIME_STEP_MINUTES;
   const normalized = new Date(date);
   normalized.setSeconds(0, 0);
   const minute = normalized.getMinutes();
@@ -118,7 +136,9 @@ function buildHourOptions() {
 
 function buildMinuteOptions(stepMinutes = DESIRED_TIME_STEP_MINUTES) {
   const normalizedStep =
-    Number.isInteger(stepMinutes) && stepMinutes > 0 ? stepMinutes : DESIRED_TIME_STEP_MINUTES;
+    Number.isInteger(stepMinutes) && stepMinutes > 0
+      ? stepMinutes
+      : DESIRED_TIME_STEP_MINUTES;
   const options = [];
   for (let minute = 0; minute < 60; minute += normalizedStep) {
     options.push(pad2(minute));
@@ -129,8 +149,10 @@ function buildMinuteOptions(stepMinutes = DESIRED_TIME_STEP_MINUTES) {
 function formatClockParts(hourValue, minuteValue) {
   const hour = Number(hourValue);
   const minute = Number(minuteValue);
-  const normalizedHour = Number.isInteger(hour) && hour >= 0 && hour <= 23 ? hour : 0;
-  const normalizedMinute = Number.isInteger(minute) && minute >= 0 && minute <= 59 ? minute : 0;
+  const normalizedHour =
+    Number.isInteger(hour) && hour >= 0 && hour <= 23 ? hour : 0;
+  const normalizedMinute =
+    Number.isInteger(minute) && minute >= 0 && minute <= 59 ? minute : 0;
   return `${pad2(normalizedHour)}:${pad2(normalizedMinute)}`;
 }
 
@@ -156,7 +178,11 @@ function parseDateKeyToDate(value) {
   const year = Number(dateMatch[1]);
   const month = Number(dateMatch[2]);
   const day = Number(dateMatch[3]);
-  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) {
+  if (
+    !Number.isInteger(year) ||
+    !Number.isInteger(month) ||
+    !Number.isInteger(day)
+  ) {
     return null;
   }
   const date = new Date(year, month - 1, day, 0, 0, 0, 0);
@@ -213,7 +239,28 @@ function parseTimeValueMs(value) {
   return timestampMs;
 }
 
-function buildDesiredDropoffAtFromDateAndClock(dateText, clockText) {
+function normalizeDesiredTimeMode(mode) {
+  return mode === "PICKUP" ? "PICKUP" : "DROPOFF";
+}
+
+function desiredTimeLabel(mode) {
+  return normalizeDesiredTimeMode(mode) === "PICKUP"
+    ? "希望乗車時刻"
+    : "希望降車時刻";
+}
+
+function desiredTimeRequestType(mode) {
+  return normalizeDesiredTimeMode(mode) === "PICKUP"
+    ? "DEPART_AT"
+    : "ARRIVE_BY";
+}
+
+function buildDesiredTimeAtFromDateAndClock(
+  dateText,
+  clockText,
+  mode = "DROPOFF",
+) {
+  const label = desiredTimeLabel(mode);
   const dateMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(`${dateText}`.trim());
   if (!dateMatch) {
     throw new Error("予約日は YYYY-MM-DD 形式で入力してください");
@@ -221,7 +268,11 @@ function buildDesiredDropoffAtFromDateAndClock(dateText, clockText) {
   const year = Number(dateMatch[1]);
   const month = Number(dateMatch[2]);
   const day = Number(dateMatch[3]);
-  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) {
+  if (
+    !Number.isInteger(year) ||
+    !Number.isInteger(month) ||
+    !Number.isInteger(day)
+  ) {
     throw new Error("予約日は YYYY-MM-DD 形式で入力してください");
   }
   if (month < 1 || month > 12 || day < 1 || day > 31) {
@@ -232,13 +283,15 @@ function buildDesiredDropoffAtFromDateAndClock(dateText, clockText) {
   const hour = Number(hourRaw);
   const minute = Number(minuteRaw);
   if (!Number.isInteger(hour) || !Number.isInteger(minute)) {
-    throw new Error("希望降車時刻は HH:mm 形式で入力してください");
+    throw new Error(`${label}は HH:mm 形式で入力してください`);
   }
   if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
-    throw new Error("希望降車時刻は 00:00 から 23:59 の範囲で入力してください");
+    throw new Error(`${label}は 00:00 から 23:59 の範囲で入力してください`);
   }
   if (minute % DESIRED_TIME_STEP_MINUTES !== 0) {
-    throw new Error(`希望降車時刻は ${DESIRED_TIME_STEP_MINUTES}分単位で入力してください`);
+    throw new Error(
+      `${label}は ${DESIRED_TIME_STEP_MINUTES}分単位で入力してください`,
+    );
   }
 
   const candidate = new Date(year, month - 1, day, hour, minute, 0, 0);
@@ -260,7 +313,7 @@ function resolvePlannedDateTime({
   plannedAt = null,
   etaMinutes = null,
   fallbackAt = null,
-  now = new Date()
+  now = new Date(),
 } = {}) {
   const plannedTimestamp = parseTimeValueMs(plannedAt);
   if (plannedTimestamp !== null) {
@@ -278,7 +331,9 @@ function resolvePlannedDateTime({
 }
 
 function hasPoint(point) {
-  return Boolean(point) && Number.isFinite(point.lat) && Number.isFinite(point.lng);
+  return (
+    Boolean(point) && Number.isFinite(point.lat) && Number.isFinite(point.lng)
+  );
 }
 
 function resolveOfficeName(profile) {
@@ -293,19 +348,19 @@ function resolveVehicleOfficePoint(vehicle, profile = null) {
   if (hasPoint(vehicle?.officePoint)) {
     return {
       lat: Number(vehicle.officePoint.lat),
-      lng: Number(vehicle.officePoint.lng)
+      lng: Number(vehicle.officePoint.lng),
     };
   }
   if (hasPoint(vehicle?.homeBase)) {
     return {
       lat: Number(vehicle.homeBase.lat),
-      lng: Number(vehicle.homeBase.lng)
+      lng: Number(vehicle.homeBase.lng),
     };
   }
   if (hasPoint(profile?.operationPolicy?.office?.point)) {
     return {
       lat: Number(profile.operationPolicy.office.point.lat),
-      lng: Number(profile.operationPolicy.office.point.lng)
+      lng: Number(profile.operationPolicy.office.point.lng),
     };
   }
   return null;
@@ -350,7 +405,9 @@ function projectPointOnSegmentMeters(point, start, end) {
     return null;
   }
 
-  const refLat = toRadians((Number(start.lat) + Number(end.lat) + Number(point.lat)) / 3);
+  const refLat = toRadians(
+    (Number(start.lat) + Number(end.lat) + Number(point.lat)) / 3,
+  );
   const metersPerDegLat = 111320;
   const metersPerDegLng = metersPerDegLat * Math.cos(refLat);
   if (!Number.isFinite(metersPerDegLng) || Math.abs(metersPerDegLng) < 1e-6) {
@@ -372,20 +429,23 @@ function projectPointOnSegmentMeters(point, start, end) {
       distanceMeters: Math.hypot(px - sx, py - sy),
       projectedPoint: {
         lat: Number(start.lat),
-        lng: Number(start.lng)
-      }
+        lng: Number(start.lng),
+      },
     };
   }
 
-  const clampedT = Math.max(0, Math.min(1, ((px - sx) * dx + (py - sy) * dy) / lengthSq));
+  const clampedT = Math.max(
+    0,
+    Math.min(1, ((px - sx) * dx + (py - sy) * dy) / lengthSq),
+  );
   const projectedX = sx + dx * clampedT;
   const projectedY = sy + dy * clampedT;
   return {
     distanceMeters: Math.hypot(px - projectedX, py - projectedY),
     projectedPoint: {
       lat: projectedY / metersPerDegLat,
-      lng: projectedX / metersPerDegLng
-    }
+      lng: projectedX / metersPerDegLng,
+    },
   };
 }
 
@@ -435,7 +495,7 @@ const PREVIEW_REJECTION_LABELS = {
   MAX_DETOUR: "既存予約への迂回遅延上限を超える",
   MAX_ADDITIONAL_STOPS: "追加停留所数の上限を超える",
   RESERVATION_WINDOW: "予約日が異なる便を混在させない",
-  OFFICE_BREAK_POLICY: "事務所・休憩ポリシーに合致しない"
+  OFFICE_BREAK_POLICY: "事務所・休憩ポリシーに合致しない",
 };
 
 const PREVIEW_REJECTION_ORDER = [
@@ -444,7 +504,7 @@ const PREVIEW_REJECTION_ORDER = [
   "MAX_WAIT",
   "MAX_DETOUR",
   "MAX_ADDITIONAL_STOPS",
-  "RESERVATION_WINDOW"
+  "RESERVATION_WINDOW",
 ];
 
 function previewRejectionCodeLabel(code) {
@@ -461,7 +521,7 @@ function statusColor(status) {
     PENDING: "warning",
     PICKED_UP: "info",
     COMPLETED: "success",
-    CANCELLED: "error"
+    CANCELLED: "error",
   };
   return map[status] ?? "default";
 }
@@ -470,7 +530,10 @@ function normalizeRouteTaskType(value) {
   if (typeof value !== "string") {
     return "";
   }
-  const normalized = value.trim().toUpperCase().replace(/[\s-]+/g, "_");
+  const normalized = value
+    .trim()
+    .toUpperCase()
+    .replace(/[\s-]+/g, "_");
   if (normalized === "PICKUP" || normalized === "PICK_UP") {
     return "PICKUP";
   }
@@ -503,7 +566,7 @@ const STATUS_LABELS = {
   LINKED: "連携済み",
   UNREGISTERED: "未登録",
   ANONYMOUS: "匿名",
-  BLOCKED: "拒否"
+  BLOCKED: "拒否",
 };
 
 function statusLabel(status) {
@@ -517,7 +580,7 @@ function statusLabel(status) {
 const DISPATCH_ALGORITHM_LABELS = {
   INSERTION: "INSERTION（局所挿入）",
   GREEDY: "GREEDY（貪欲）",
-  HIGHS: "HIGHS（MIP選択）"
+  HIGHS: "HIGHS（MIP選択）",
 };
 
 function dispatchAlgorithmLabel(value) {
@@ -545,59 +608,59 @@ const LOCATION_INPUT_OPTIONS = [
   {
     title: "バス停を指定",
     value: "FIXED_STOP",
-    description: "登録済みのバス停から選択します。"
+    description: "登録済みのバス停から選択します。",
   },
   {
     title: "自由地点を指定",
     value: "FREE_POINT",
-    description: "緯度経度（lat,lng）を直接入力します。"
-  }
+    description: "緯度経度（lat,lng）を直接入力します。",
+  },
 ];
 
 const LOCATION_POLICY_OPTIONS = [
   {
     title: "自由地点のみ",
     value: "FREE_ONLY",
-    description: "入力された座標をそのまま配車地点として扱います。"
+    description: "入力された座標をそのまま配車地点として扱います。",
   },
   {
     title: "仮想停留所のみ",
     value: "VIRTUAL_ONLY",
-    description: "最寄りの仮想停留所に補正して配車地点を決定します。"
+    description: "最寄りの仮想停留所に補正して配車地点を決定します。",
   },
   {
     title: "自由地点と仮想停留所を併用",
     value: "HYBRID",
-    description: "自由地点と仮想停留所の双方を比較し、最適な地点を採用します。"
-  }
+    description: "自由地点と仮想停留所の双方を比較し、最適な地点を採用します。",
+  },
 ];
 
 const FARE_MODEL_OPTIONS = [
   {
     title: "固定運賃",
     value: "FIXED",
-    description: "距離や時間に関係なく一定料金を適用します。"
+    description: "距離や時間に関係なく一定料金を適用します。",
   },
   {
     title: "距離連動",
     value: "DISTANCE",
-    description: "走行距離に応じて運賃を計算します。"
+    description: "走行距離に応じて運賃を計算します。",
   },
   {
     title: "時間連動",
     value: "TIME",
-    description: "乗車時間に応じて運賃を計算します。"
+    description: "乗車時間に応じて運賃を計算します。",
   },
   {
     title: "ゾーン別",
     value: "ZONAL",
-    description: "出発地・到着地のゾーン組み合わせで運賃を決定します。"
+    description: "出発地・到着地のゾーン組み合わせで運賃を決定します。",
   },
   {
     title: "ハイブリッド",
     value: "HYBRID",
-    description: "固定・距離・時間の要素を組み合わせて運賃を算出します。"
-  }
+    description: "固定・距離・時間の要素を組み合わせて運賃を算出します。",
+  },
 ];
 
 function findOption(options, value) {
@@ -624,7 +687,7 @@ createApp({
       stops: 0,
       rideRequests: 0,
       callEvents: 0,
-      serviceProfileId: ""
+      serviceProfileId: "",
     });
 
     const serviceProfile = ref(null);
@@ -649,9 +712,12 @@ createApp({
     const callDateInputEl = ref(null);
     const dispatchTimeMenuOpen = ref(false);
     const callTimeMenuOpen = ref(false);
+    const desiredTimeModeOptions = DESIRED_TIME_MODES;
     const desiredHourOptions = buildHourOptions();
     const desiredMinuteOptions = buildMinuteOptions();
-    const [defaultDesiredHour, defaultDesiredMinute] = formatClockByMinuteStep(new Date()).split(":");
+    const [defaultDesiredHour, defaultDesiredMinute] = formatClockByMinuteStep(
+      new Date(),
+    ).split(":");
 
     let nowTicker = null;
     let realtimeTicker = null;
@@ -668,7 +734,7 @@ createApp({
       selectedRoute: null,
       previewRoute: null,
       focus: null,
-      vehicles: null
+      vehicles: null,
     };
 
     const form = ref({
@@ -683,9 +749,10 @@ createApp({
       passengerName: "",
       passengerPhone: "",
       partySize: 1,
+      desiredTimeMode: "DROPOFF",
       desiredDate: formatDateInput(new Date()),
       desiredHour: defaultDesiredHour ?? "00",
-      desiredMinute: defaultDesiredMinute ?? "00"
+      desiredMinute: defaultDesiredMinute ?? "00",
     });
 
     const callForm = ref({
@@ -693,23 +760,34 @@ createApp({
       pickupStopId: "",
       dropoffStopId: "",
       partySize: 1,
+      desiredTimeMode: "DROPOFF",
       desiredDate: formatDateInput(new Date()),
       desiredHour: defaultDesiredHour ?? "00",
-      desiredMinute: defaultDesiredMinute ?? "00"
+      desiredMinute: defaultDesiredMinute ?? "00",
     });
     const callRideOptions = ref([]);
     const selectedCallOptionId = ref("");
     const callDesiredDropoffAt = ref(null);
+    const callDesiredPickupAt = ref(null);
+    const formDesiredTimeModeLabel = computed(() =>
+      desiredTimeLabel(form.value.desiredTimeMode),
+    );
+    const callDesiredTimeModeLabel = computed(() =>
+      desiredTimeLabel(callForm.value.desiredTimeMode),
+    );
     const formDesiredTimeLabel = computed(() =>
-      formatClockParts(form.value.desiredHour, form.value.desiredMinute)
+      formatClockParts(form.value.desiredHour, form.value.desiredMinute),
     );
     const callDesiredTimeLabel = computed(() =>
-      formatClockParts(callForm.value.desiredHour, callForm.value.desiredMinute)
+      formatClockParts(
+        callForm.value.desiredHour,
+        callForm.value.desiredMinute,
+      ),
     );
 
     const locationTitleState = ref({
       pickup: { manual: false, pending: false, requestId: 0, pointKey: "" },
-      dropoff: { manual: false, pending: false, requestId: 0, pointKey: "" }
+      dropoff: { manual: false, pending: false, requestId: 0, pointKey: "" },
     });
 
     const profileEditor = ref({
@@ -729,15 +807,17 @@ createApp({
       idleReturnThresholdMinutes: 40,
       lunchBreakEnabled: false,
       lunchBreakStart: "11:00",
-      lunchBreakEnd: "12:00"
+      lunchBreakEnd: "12:00",
     });
     const vehicleEditor = ref([]);
 
-    const availableStops = computed(() => stops.value.map((stop) => ({
-      title: `${stop.name} (${stop.id})`,
-      value: stop.id,
-      searchText: `${stop.name} ${stop.id}`
-    })));
+    const availableStops = computed(() =>
+      stops.value.map((stop) => ({
+        title: `${stop.name} (${stop.id})`,
+        value: stop.id,
+        searchText: `${stop.name} ${stop.id}`,
+      })),
+    );
 
     function filterStopItem(value, query, item) {
       const normalizedQuery = normalizeStopSearchText(query);
@@ -762,19 +842,27 @@ createApp({
     });
 
     const pickupModeDescription = computed(
-      () => findOption(locationInputOptions, form.value.pickupMode)?.description ?? ""
+      () =>
+        findOption(locationInputOptions, form.value.pickupMode)?.description ??
+        "",
     );
 
     const dropoffModeDescription = computed(
-      () => findOption(locationInputOptions, form.value.dropoffMode)?.description ?? ""
+      () =>
+        findOption(locationInputOptions, form.value.dropoffMode)?.description ??
+        "",
     );
 
     const locationModeDescription = computed(
-      () => findOption(locationPolicyOptions, profileEditor.value.locationMode)?.description ?? ""
+      () =>
+        findOption(locationPolicyOptions, profileEditor.value.locationMode)
+          ?.description ?? "",
     );
 
     const fareModelDescription = computed(
-      () => findOption(fareModelOptions, profileEditor.value.fareModel)?.description ?? ""
+      () =>
+        findOption(fareModelOptions, profileEditor.value.fareModel)
+          ?.description ?? "",
     );
 
     const stopIndex = computed(() => {
@@ -802,8 +890,12 @@ createApp({
     });
 
     const kpi = computed(() => {
-      const assigned = requests.value.filter((request) => request.status === "ASSIGNED").length;
-      const pending = requests.value.filter((request) => request.status === "PENDING").length;
+      const assigned = requests.value.filter(
+        (request) => request.status === "ASSIGNED",
+      ).length;
+      const pending = requests.value.filter(
+        (request) => request.status === "PENDING",
+      ).length;
       const successRate = requests.value.length
         ? `${Math.round((assigned / requests.value.length) * 100)}%`
         : "-";
@@ -811,7 +903,9 @@ createApp({
       const avgWait = requests.value.length
         ? `${(
             requests.value
-              .map((request) => Number(request.assignment?.etaPickupMinutes ?? 0))
+              .map((request) =>
+                Number(request.assignment?.etaPickupMinutes ?? 0),
+              )
               .reduce((acc, value) => acc + value, 0) / requests.value.length
           ).toFixed(1)}分`
         : "-";
@@ -823,7 +917,7 @@ createApp({
         activeVehicles: summary.value.vehicles,
         pending,
         totalRequests: requests.value.length,
-        callCount: summary.value.callEvents
+        callCount: summary.value.callEvents,
       };
     });
 
@@ -833,20 +927,23 @@ createApp({
       const date = parseDateKeyToDate(form.value.desiredDate);
       return date ? formatDateLabel(date) : "日付を選択";
     });
-    const formDesiredDateWeekdayLabel = computed(() =>
-      formatWeekdayLabel(form.value.desiredDate) || "カレンダーから選択"
+    const formDesiredDateWeekdayLabel = computed(
+      () => formatWeekdayLabel(form.value.desiredDate) || "カレンダーから選択",
     );
     const callDesiredDateLabel = computed(() => {
       const date = parseDateKeyToDate(callForm.value.desiredDate);
       return date ? formatDateLabel(date) : "日付を選択";
     });
-    const callDesiredDateWeekdayLabel = computed(() =>
-      formatWeekdayLabel(callForm.value.desiredDate) || "カレンダーから選択"
+    const callDesiredDateWeekdayLabel = computed(
+      () =>
+        formatWeekdayLabel(callForm.value.desiredDate) || "カレンダーから選択",
     );
 
     function openNativeDatePicker(target) {
       const inputEl =
-        target === "dispatch" ? dispatchDateInputEl.value : callDateInputEl.value;
+        target === "dispatch"
+          ? dispatchDateInputEl.value
+          : callDateInputEl.value;
       if (!(inputEl instanceof HTMLInputElement)) {
         return;
       }
@@ -866,7 +963,9 @@ createApp({
       }
       if (mapSelectionField.value === "vehicleOffice") {
         const index = Number(mapSelectionVehicleIndex.value);
-        const vehicle = Number.isInteger(index) ? vehicleEditor.value[index] : null;
+        const vehicle = Number.isInteger(index)
+          ? vehicleEditor.value[index]
+          : null;
         const vehicleName =
           typeof vehicle?.name === "string" && vehicle.name.trim()
             ? vehicle.name.trim()
@@ -905,7 +1004,8 @@ createApp({
       if (!location) {
         return "未設定";
       }
-      const customTitle = typeof location.title === "string" ? location.title.trim() : "";
+      const customTitle =
+        typeof location.title === "string" ? location.title.trim() : "";
       if (customTitle) {
         return customTitle;
       }
@@ -915,14 +1015,18 @@ createApp({
       if (location.resolvedAs === "VIRTUAL_STOP") {
         return "仮想停留所";
       }
-      if (location.mode === "FREE_POINT" || location.resolvedAs === "FREE_POINT") {
+      if (
+        location.mode === "FREE_POINT" ||
+        location.resolvedAs === "FREE_POINT"
+      ) {
         return "自由地点";
       }
       return "地点";
     }
 
     function resolveVehicleDisplayName(vehicleId, { includeId = false } = {}) {
-      const normalizedId = typeof vehicleId === "string" ? vehicleId.trim() : "";
+      const normalizedId =
+        typeof vehicleId === "string" ? vehicleId.trim() : "";
       if (!normalizedId || normalizedId === "-") {
         return "-";
       }
@@ -956,7 +1060,9 @@ createApp({
       }
       const assignment = targetRequest.assignment ?? {};
       const plannedAt =
-        taskType === "PICKUP" ? assignment?.plannedPickupAt : assignment?.plannedDropoffAt;
+        taskType === "PICKUP"
+          ? assignment?.plannedPickupAt
+          : assignment?.plannedDropoffAt;
       if (typeof plannedAt !== "string") {
         return null;
       }
@@ -974,7 +1080,9 @@ createApp({
       }
       const assignment = targetRequest.assignment ?? {};
       const etaRaw = Number(
-        taskType === "PICKUP" ? assignment?.etaPickupMinutes : assignment?.etaDropoffMinutes
+        taskType === "PICKUP"
+          ? assignment?.etaPickupMinutes
+          : assignment?.etaDropoffMinutes,
       );
       if (!Number.isFinite(etaRaw)) {
         return null;
@@ -986,7 +1094,9 @@ createApp({
       const taskType = normalizeRouteTaskType(task?.type);
       const targetRequest = request ?? resolveVehicleTaskRequest(task);
       if (targetRequest && taskType) {
-        return resolveLocationLabel(taskType === "PICKUP" ? targetRequest.pickup : targetRequest.dropoff);
+        return resolveLocationLabel(
+          taskType === "PICKUP" ? targetRequest.pickup : targetRequest.dropoff,
+        );
       }
       if (hasPoint(task?.point)) {
         return `${formatCoordinate(task.point.lat)},${formatCoordinate(task.point.lng)}`;
@@ -1021,12 +1131,15 @@ createApp({
       if (cached?.status !== "ready") {
         return null;
       }
-      if (!Number.isFinite(cached.distanceKm) || !Number.isFinite(cached.durationMinutes)) {
+      if (
+        !Number.isFinite(cached.distanceKm) ||
+        !Number.isFinite(cached.durationMinutes)
+      ) {
         return null;
       }
       return {
         distanceKm: Math.max(0, Number(cached.distanceKm)),
-        durationMinutes: Math.max(0, Number(cached.durationMinutes))
+        durationMinutes: Math.max(0, Number(cached.durationMinutes)),
       };
     }
 
@@ -1048,17 +1161,21 @@ createApp({
       }
 
       routeSegmentMetricsCache.set(cacheKey, {
-        status: "pending"
+        status: "pending",
       });
 
       try {
         const response = await apiPost("/api/routing/path", {
-          points: [from, to]
+          points: [from, to],
         });
-        const source = typeof response?.source === "string" ? response.source.toUpperCase() : "";
+        const source =
+          typeof response?.source === "string"
+            ? response.source.toUpperCase()
+            : "";
         const durationMinutes = Number(response?.durationMinutes);
         const distanceMeters = Number(response?.distanceMeters);
-        const supportsMetricDisplay = source === "OSRM" || source === "STRAIGHT_LINE";
+        const supportsMetricDisplay =
+          source === "OSRM" || source === "STRAIGHT_LINE";
         if (
           !supportsMetricDisplay ||
           !Number.isFinite(durationMinutes) ||
@@ -1068,19 +1185,19 @@ createApp({
         ) {
           routeSegmentMetricsCache.set(cacheKey, {
             status: "failed",
-            failedAt: Date.now()
+            failedAt: Date.now(),
           });
           return;
         }
         routeSegmentMetricsCache.set(cacheKey, {
           status: "ready",
           distanceKm: distanceMeters / 1000,
-          durationMinutes
+          durationMinutes,
         });
       } catch (_error) {
         routeSegmentMetricsCache.set(cacheKey, {
           status: "failed",
-          failedAt: Date.now()
+          failedAt: Date.now(),
         });
       }
     }
@@ -1109,9 +1226,13 @@ createApp({
       const pickupServiceRaw = Number(dispatchPolicy.pickupServiceMinutes);
       const dropoffServiceRaw = Number(dispatchPolicy.dropoffServiceMinutes);
       const pickupServiceMinutes =
-        Number.isFinite(pickupServiceRaw) && pickupServiceRaw >= 0 ? pickupServiceRaw : 0;
+        Number.isFinite(pickupServiceRaw) && pickupServiceRaw >= 0
+          ? pickupServiceRaw
+          : 0;
       const dropoffServiceMinutes =
-        Number.isFinite(dropoffServiceRaw) && dropoffServiceRaw >= 0 ? dropoffServiceRaw : 0;
+        Number.isFinite(dropoffServiceRaw) && dropoffServiceRaw >= 0
+          ? dropoffServiceRaw
+          : 0;
 
       if (taskType === "PICKUP") {
         return pickupServiceMinutes;
@@ -1142,12 +1263,18 @@ createApp({
           continue;
         }
         const taskType = normalizeRouteTaskType(task?.type);
-        const segmentMetrics = getRouteSegmentMetricsFromCache(current, task.point);
+        const segmentMetrics = getRouteSegmentMetricsFromCache(
+          current,
+          task.point,
+        );
         if (!segmentMetrics) {
           void requestRouteSegmentMetrics(current, task.point);
           elapsedDistanceKm = null;
           elapsedMinutes = null;
-        } else if (Number.isFinite(elapsedDistanceKm) && Number.isFinite(elapsedMinutes)) {
+        } else if (
+          Number.isFinite(elapsedDistanceKm) &&
+          Number.isFinite(elapsedMinutes)
+        ) {
           elapsedDistanceKm += segmentMetrics.distanceKm;
           elapsedMinutes += segmentMetrics.durationMinutes;
         }
@@ -1155,7 +1282,7 @@ createApp({
           task,
           taskType,
           elapsedDistanceKm,
-          elapsedMinutes
+          elapsedMinutes,
         });
         current = task.point;
         if (Number.isFinite(elapsedMinutes)) {
@@ -1175,23 +1302,34 @@ createApp({
         }
 
         const nextTaskIndex = timeline.findIndex(
-          (candidate, candidateIndex) => candidateIndex > index && Boolean(candidate.taskType)
+          (candidate, candidateIndex) =>
+            candidateIndex > index && Boolean(candidate.taskType),
         );
-        const nextTaskEntry = nextTaskIndex >= 0 ? timeline[nextTaskIndex] : null;
+        const nextTaskEntry =
+          nextTaskIndex >= 0 ? timeline[nextTaskIndex] : null;
         const nextPickupIndex = timeline.findIndex(
-          (candidate, candidateIndex) => candidateIndex > index && candidate.taskType === "PICKUP"
+          (candidate, candidateIndex) =>
+            candidateIndex > index && candidate.taskType === "PICKUP",
         );
-        const nextPickupEntry = nextPickupIndex >= 0 ? timeline[nextPickupIndex] : null;
+        const nextPickupEntry =
+          nextPickupIndex >= 0 ? timeline[nextPickupIndex] : null;
         const hasNextTask = nextTaskEntry !== null;
         const nextTaskType = hasNextTask ? nextTaskEntry.taskType : "";
         const hasNextPickup = nextPickupEntry !== null;
-        const dropoffDistanceKm = Number.isFinite(entry.elapsedDistanceKm) ? entry.elapsedDistanceKm : null;
-        const dropoffMinutes = Number.isFinite(entry.elapsedMinutes) ? entry.elapsedMinutes : null;
+        const dropoffDistanceKm = Number.isFinite(entry.elapsedDistanceKm)
+          ? entry.elapsedDistanceKm
+          : null;
+        const dropoffMinutes = Number.isFinite(entry.elapsedMinutes)
+          ? entry.elapsedMinutes
+          : null;
         const nextTaskDistanceKm =
           hasNextTask &&
           Number.isFinite(nextTaskEntry.elapsedDistanceKm) &&
           Number.isFinite(entry.elapsedDistanceKm)
-            ? Math.max(0, nextTaskEntry.elapsedDistanceKm - entry.elapsedDistanceKm)
+            ? Math.max(
+                0,
+                nextTaskEntry.elapsedDistanceKm - entry.elapsedDistanceKm,
+              )
             : null;
         const nextTaskMinutes =
           hasNextTask &&
@@ -1203,7 +1341,10 @@ createApp({
           hasNextPickup &&
           Number.isFinite(nextPickupEntry.elapsedDistanceKm) &&
           Number.isFinite(entry.elapsedDistanceKm)
-            ? Math.max(0, nextPickupEntry.elapsedDistanceKm - entry.elapsedDistanceKm)
+            ? Math.max(
+                0,
+                nextPickupEntry.elapsedDistanceKm - entry.elapsedDistanceKm,
+              )
             : null;
         const nextPickupMinutes =
           hasNextPickup &&
@@ -1221,7 +1362,7 @@ createApp({
           hasNextTask,
           nextPickupDistanceKm,
           nextPickupMinutes,
-          hasNextPickup
+          hasNextPickup,
         });
       }
 
@@ -1255,14 +1396,21 @@ createApp({
 
       for (const request of requests.value) {
         const status = normalizeRequestStatus(request.status);
-        const vehicleId = typeof request.assignment?.vehicleId === "string" ? request.assignment.vehicleId.trim() : "";
+        const vehicleId =
+          typeof request.assignment?.vehicleId === "string"
+            ? request.assignment.vehicleId.trim()
+            : "";
         if (!vehicleId) {
           continue;
         }
         const pickupEtaRaw = Number(request.assignment?.etaPickupMinutes);
         const dropoffEtaRaw = Number(request.assignment?.etaDropoffMinutes);
-        const pickupEtaMinutes = Number.isFinite(pickupEtaRaw) ? Math.max(0, pickupEtaRaw) : null;
-        const dropoffEtaMinutes = Number.isFinite(dropoffEtaRaw) ? Math.max(0, dropoffEtaRaw) : null;
+        const pickupEtaMinutes = Number.isFinite(pickupEtaRaw)
+          ? Math.max(0, pickupEtaRaw)
+          : null;
+        const dropoffEtaMinutes = Number.isFinite(dropoffEtaRaw)
+          ? Math.max(0, dropoffEtaRaw)
+          : null;
         if (pickupEtaMinutes === null && dropoffEtaMinutes === null) {
           continue;
         }
@@ -1276,7 +1424,7 @@ createApp({
           pickupEtaMinutes,
           dropoffEtaMinutes,
           pickupPoint: resolveLocationPoint(request.pickup),
-          dropoffPoint
+          dropoffPoint,
         });
       }
 
@@ -1285,8 +1433,14 @@ createApp({
           return;
         }
         const pickupCandidates = entries
-          .filter((entry) => isFuturePickupCandidate(entry.status) && Number.isFinite(entry.pickupEtaMinutes))
-          .sort((left, right) => left.pickupEtaMinutes - right.pickupEtaMinutes);
+          .filter(
+            (entry) =>
+              isFuturePickupCandidate(entry.status) &&
+              Number.isFinite(entry.pickupEtaMinutes),
+          )
+          .sort(
+            (left, right) => left.pickupEtaMinutes - right.pickupEtaMinutes,
+          );
         if (!pickupCandidates.length) {
           return;
         }
@@ -1301,26 +1455,34 @@ createApp({
               (candidate) =>
                 candidate.requestId !== entry.requestId &&
                 Number.isFinite(candidate.pickupEtaMinutes) &&
-                candidate.pickupEtaMinutes > entry.dropoffEtaMinutes
+                candidate.pickupEtaMinutes > entry.dropoffEtaMinutes,
             ) ?? null;
           if (!nextEntry) {
             return;
           }
 
-          const etaDeltaMinutes = roundedEta(nextEntry.pickupEtaMinutes - entry.dropoffEtaMinutes);
+          const etaDeltaMinutes = roundedEta(
+            nextEntry.pickupEtaMinutes - entry.dropoffEtaMinutes,
+          );
           let distanceKm = null;
           if (hasPoint(entry.dropoffPoint) && hasPoint(nextEntry.pickupPoint)) {
-            const segmentMetrics = getRouteSegmentMetricsFromCache(entry.dropoffPoint, nextEntry.pickupPoint);
+            const segmentMetrics = getRouteSegmentMetricsFromCache(
+              entry.dropoffPoint,
+              nextEntry.pickupPoint,
+            );
             if (segmentMetrics) {
               distanceKm = roundedDistanceKm(segmentMetrics.distanceKm);
             } else {
-              void requestRouteSegmentMetrics(entry.dropoffPoint, nextEntry.pickupPoint);
+              void requestRouteSegmentMetrics(
+                entry.dropoffPoint,
+                nextEntry.pickupPoint,
+              );
             }
           }
 
           result.set(entry.requestId, {
             etaMinutes: etaDeltaMinutes,
-            distanceKm
+            distanceKm,
           });
         });
       });
@@ -1335,7 +1497,7 @@ createApp({
           primeVehicleRouteSegmentMetrics(vehicle);
         });
       },
-      { deep: true, immediate: true }
+      { deep: true, immediate: true },
     );
 
     const requestRows = computed(() => {
@@ -1346,13 +1508,13 @@ createApp({
             plannedAt: left.assignment?.plannedPickupAt,
             etaMinutes: left.assignment?.etaPickupMinutes,
             fallbackAt: left.createdAt,
-            now: nowValue
+            now: nowValue,
           }).getTime();
           const rightPickupSort = resolvePlannedDateTime({
             plannedAt: right.assignment?.plannedPickupAt,
             etaMinutes: right.assignment?.etaPickupMinutes,
             fallbackAt: right.createdAt,
-            now: nowValue
+            now: nowValue,
           }).getTime();
           if (leftPickupSort !== rightPickupSort) {
             return leftPickupSort - rightPickupSort;
@@ -1362,13 +1524,13 @@ createApp({
             plannedAt: left.assignment?.plannedDropoffAt,
             etaMinutes: left.assignment?.etaDropoffMinutes,
             fallbackAt: left.createdAt,
-            now: nowValue
+            now: nowValue,
           }).getTime();
           const rightDropoffSort = resolvePlannedDateTime({
             plannedAt: right.assignment?.plannedDropoffAt,
             etaMinutes: right.assignment?.etaDropoffMinutes,
             fallbackAt: right.createdAt,
-            now: nowValue
+            now: nowValue,
           }).getTime();
           if (leftDropoffSort !== rightDropoffSort) {
             return leftDropoffSort - rightDropoffSort;
@@ -1389,15 +1551,23 @@ createApp({
           const etaMinutes = roundedEta(etaRaw);
           const etaDropoffMinutes = roundedEta(etaDropoffRaw);
           const vehicleId = request.assignment?.vehicleId ?? "-";
-          const vehicleLabel = resolveVehicleDisplayName(vehicleId, { includeId: true });
+          const vehicleLabel = resolveVehicleDisplayName(vehicleId, {
+            includeId: true,
+          });
           const routeMetrics = requestRouteMetrics.value.get(request.id);
-          const dropoffTravelDistanceKm = roundedDistanceKm(routeMetrics?.dropoffDistanceKm);
+          const dropoffTravelDistanceKm = roundedDistanceKm(
+            routeMetrics?.dropoffDistanceKm,
+          );
           const dropoffTravelMinutes = roundedEta(routeMetrics?.dropoffMinutes);
-          let nextTaskTravelDistanceKm = roundedDistanceKm(routeMetrics?.nextTaskDistanceKm);
+          let nextTaskTravelDistanceKm = roundedDistanceKm(
+            routeMetrics?.nextTaskDistanceKm,
+          );
           let nextTaskTravelMinutes = roundedEta(routeMetrics?.nextTaskMinutes);
           let hasNextTask = Boolean(routeMetrics?.hasNextTask);
           let nextTaskType =
-            typeof routeMetrics?.nextTaskType === "string" ? routeMetrics.nextTaskType : "";
+            typeof routeMetrics?.nextTaskType === "string"
+              ? routeMetrics.nextTaskType
+              : "";
           if (!hasNextTask) {
             const fallback = nextPickupByRequest.value.get(request.id);
             if (fallback) {
@@ -1412,12 +1582,17 @@ createApp({
             }
           }
           const nextTaskLabel =
-            nextTaskType === "DROPOFF" ? "降車" : nextTaskType === "PICKUP" ? "乗車" : "停車";
+            nextTaskType === "DROPOFF"
+              ? "降車"
+              : nextTaskType === "PICKUP"
+                ? "乗車"
+                : "停車";
           const idleReturnThresholdRaw = Number(
-            serviceProfile.value?.operationPolicy?.idleReturnThresholdMinutes
+            serviceProfile.value?.operationPolicy?.idleReturnThresholdMinutes,
           );
           const idleReturnThresholdMinutes =
-            Number.isFinite(idleReturnThresholdRaw) && idleReturnThresholdRaw >= 0
+            Number.isFinite(idleReturnThresholdRaw) &&
+            idleReturnThresholdRaw >= 0
               ? Math.round(idleReturnThresholdRaw)
               : 40;
           const shouldReturnOffice =
@@ -1428,20 +1603,22 @@ createApp({
             plannedAt: request.assignment?.plannedPickupAt,
             etaMinutes,
             fallbackAt: request.createdAt,
-            now: nowValue
+            now: nowValue,
           });
           const plannedDropoff = resolvePlannedDateTime({
             plannedAt: request.assignment?.plannedDropoffAt,
             etaMinutes: etaDropoffMinutes,
             fallbackAt: request.createdAt,
-            now: nowValue
+            now: nowValue,
           });
           const pickupDateKey = formatDateKey(plannedPickup);
           const dropoffDateKey = formatDateKey(plannedDropoff);
           const pickupDateLabel = formatDateLabel(plannedPickup);
           const dropoffDateLabel = formatDateLabel(plannedDropoff);
           const passengerName =
-            typeof request.passenger?.name === "string" ? request.passenger.name.trim() : "";
+            typeof request.passenger?.name === "string"
+              ? request.passenger.name.trim()
+              : "";
           const passengerPhone =
             typeof request.passenger?.phoneNumber === "string"
               ? request.passenger.phoneNumber.trim()
@@ -1462,12 +1639,18 @@ createApp({
             etaDropoffMinutes,
             dropoffTravelDistanceKm,
             dropoffTravelMinutes,
-            dropoffTravelDistanceLabel: formatDistanceLabel(dropoffTravelDistanceKm),
+            dropoffTravelDistanceLabel: formatDistanceLabel(
+              dropoffTravelDistanceKm,
+            ),
             dropoffTravelMinutesLabel: formatMinutesLabel(dropoffTravelMinutes),
             nextTaskTravelDistanceKm,
             nextTaskTravelMinutes,
-            nextTaskTravelDistanceLabel: formatDistanceLabel(nextTaskTravelDistanceKm),
-            nextTaskTravelMinutesLabel: formatMinutesLabel(nextTaskTravelMinutes),
+            nextTaskTravelDistanceLabel: formatDistanceLabel(
+              nextTaskTravelDistanceKm,
+            ),
+            nextTaskTravelMinutesLabel: formatMinutesLabel(
+              nextTaskTravelMinutes,
+            ),
             hasNextTask,
             nextTaskType,
             nextTaskLabel,
@@ -1492,7 +1675,7 @@ createApp({
             pickupStopId: request.pickup?.stopId ?? null,
             dropoffStopId: request.dropoff?.stopId ?? null,
             passengerName,
-            passengerPhone
+            passengerPhone,
           };
         });
     });
@@ -1506,7 +1689,7 @@ createApp({
           const nextSection = {
             dateKey: key,
             dateLabel: row.pickupDateLabel || "日付未設定",
-            rows: []
+            rows: [],
           };
           sectionIndex.set(key, nextSection);
           sections.push(nextSection);
@@ -1516,8 +1699,13 @@ createApp({
       return sections;
     });
 
-    const selectedRequest = computed(() =>
-      requestRows.value.find((request) => request.id === selectedRequestId.value) ?? requestRows.value[0] ?? null
+    const selectedRequest = computed(
+      () =>
+        requestRows.value.find(
+          (request) => request.id === selectedRequestId.value,
+        ) ??
+        requestRows.value[0] ??
+        null,
     );
 
     const selectedVehicleRoutePlan = computed(() => {
@@ -1526,13 +1714,21 @@ createApp({
           ? selectedRequest.value.vehicleId.trim()
           : "";
       const fallbackVehicle =
-        vehicles.value.find((vehicle) => Array.isArray(vehicle?.route) && vehicle.route.length > 0) ??
-        vehicles.value.find((vehicle) => String(vehicle?.status ?? "").trim().toUpperCase() === "ACTIVE") ??
+        vehicles.value.find(
+          (vehicle) =>
+            Array.isArray(vehicle?.route) && vehicle.route.length > 0,
+        ) ??
+        vehicles.value.find(
+          (vehicle) =>
+            String(vehicle?.status ?? "")
+              .trim()
+              .toUpperCase() === "ACTIVE",
+        ) ??
         vehicles.value[0] ??
         null;
       const vehicle =
         selectedVehicleId && selectedVehicleId !== "-"
-          ? vehicleIndex.value.get(selectedVehicleId) ?? fallbackVehicle
+          ? (vehicleIndex.value.get(selectedVehicleId) ?? fallbackVehicle)
           : fallbackVehicle;
 
       if (!vehicle) {
@@ -1541,20 +1737,27 @@ createApp({
           vehicleLabel: "-",
           steps: [],
           routePoints: [],
-          emptyLabel: "対象車両なし"
+          emptyLabel: "対象車両なし",
         };
       }
 
       const vehicleName =
-        typeof vehicle?.name === "string" && vehicle.name.trim() ? vehicle.name.trim() : "";
+        typeof vehicle?.name === "string" && vehicle.name.trim()
+          ? vehicle.name.trim()
+          : "";
       const vehicleLabel =
-        vehicleName && vehicleName !== vehicle.id ? `${vehicleName} (${vehicle.id})` : vehicle.id;
+        vehicleName && vehicleName !== vehicle.id
+          ? `${vehicleName} (${vehicle.id})`
+          : vehicle.id;
       const officeName = resolveOfficeName(serviceProfile.value);
-      const officePoint = resolveVehicleOfficePoint(vehicle, serviceProfile.value);
+      const officePoint = resolveVehicleOfficePoint(
+        vehicle,
+        serviceProfile.value,
+      );
       const currentPoint = hasPoint(vehicle.currentLocation)
         ? {
             lat: Number(vehicle.currentLocation.lat),
-            lng: Number(vehicle.currentLocation.lng)
+            lng: Number(vehicle.currentLocation.lng),
           }
         : null;
       let emptyLabel = "乗降予定なし";
@@ -1575,7 +1778,7 @@ createApp({
           vehicleLabel,
           steps: [],
           routePoints: currentPoint ? [currentPoint] : [],
-          emptyLabel
+          emptyLabel,
         };
       }
 
@@ -1595,17 +1798,24 @@ createApp({
         const request = resolveVehicleTaskRequest(task);
         const locationLabel = resolveVehicleTaskLocationLabel(task, request);
         const requestLabel = resolveVehicleTaskRequestLabel(task, request);
-        const loadDelta = Number.isFinite(Number(task?.loadChange)) ? Number(task.loadChange) : 0;
+        const loadDelta = Number.isFinite(Number(task?.loadChange))
+          ? Number(task.loadChange)
+          : 0;
         const passengerCount = Math.max(0, Math.abs(Math.trunc(loadDelta)));
         onboard += loadDelta;
 
         let moveDistanceLabel = "-";
         let moveMinutesLabel = "-";
         if (hasPoint(previousPoint)) {
-          const segmentMetrics = getRouteSegmentMetricsFromCache(previousPoint, task.point);
+          const segmentMetrics = getRouteSegmentMetricsFromCache(
+            previousPoint,
+            task.point,
+          );
           if (segmentMetrics) {
-            moveDistanceLabel = formatDistanceLabel(segmentMetrics.distanceKm) ?? "-";
-            moveMinutesLabel = formatMinutesLabel(segmentMetrics.durationMinutes) ?? "-";
+            moveDistanceLabel =
+              formatDistanceLabel(segmentMetrics.distanceKm) ?? "-";
+            moveMinutesLabel =
+              formatMinutesLabel(segmentMetrics.durationMinutes) ?? "-";
           } else {
             void requestRouteSegmentMetrics(previousPoint, task.point);
             moveDistanceLabel = "算出中";
@@ -1614,20 +1824,33 @@ createApp({
         }
 
         const plannedAt = resolveVehicleTaskPlannedAt(task, request);
-        const etaMinutes = plannedAt ? null : resolveVehicleTaskEtaMinutes(task, request);
+        const etaMinutes = plannedAt
+          ? null
+          : resolveVehicleTaskEtaMinutes(task, request);
         const arrivalMs =
           parseTimeValueMs(plannedAt) ??
-          (Number.isFinite(etaMinutes) ? now.value.getTime() + etaMinutes * 60 * 1000 : null);
+          (Number.isFinite(etaMinutes)
+            ? now.value.getTime() + etaMinutes * 60 * 1000
+            : null);
 
         const nextTask =
           route
             .slice(index + 1)
-            .find((candidate) => normalizeRouteTaskType(candidate?.type) && hasPoint(candidate?.point)) ??
-          null;
-        const nextRequest = nextTask ? resolveVehicleTaskRequest(nextTask) : null;
-        const nextPlannedAt = nextTask ? resolveVehicleTaskPlannedAt(nextTask, nextRequest) : null;
+            .find(
+              (candidate) =>
+                normalizeRouteTaskType(candidate?.type) &&
+                hasPoint(candidate?.point),
+            ) ?? null;
+        const nextRequest = nextTask
+          ? resolveVehicleTaskRequest(nextTask)
+          : null;
+        const nextPlannedAt = nextTask
+          ? resolveVehicleTaskPlannedAt(nextTask, nextRequest)
+          : null;
         const nextEtaMinutes =
-          nextTask && !nextPlannedAt ? resolveVehicleTaskEtaMinutes(nextTask, nextRequest) : null;
+          nextTask && !nextPlannedAt
+            ? resolveVehicleTaskEtaMinutes(nextTask, nextRequest)
+            : null;
         const nextArrivalMs =
           parseTimeValueMs(nextPlannedAt) ??
           (Number.isFinite(nextEtaMinutes)
@@ -1637,10 +1860,13 @@ createApp({
         let waitLabel = "-";
         if (Number.isFinite(arrivalMs) && Number.isFinite(nextArrivalMs)) {
           const serviceMinutes = resolveRouteTaskServiceMinutes(taskType);
-          const rawWaitMinutes = (nextArrivalMs - arrivalMs) / (60 * 1000) - serviceMinutes;
+          const rawWaitMinutes =
+            (nextArrivalMs - arrivalMs) / (60 * 1000) - serviceMinutes;
           waitLabel = `${Math.max(0, Math.round(rawWaitMinutes))}分`;
         }
-        const arrivalDate = Number.isFinite(arrivalMs) ? new Date(arrivalMs) : null;
+        const arrivalDate = Number.isFinite(arrivalMs)
+          ? new Date(arrivalMs)
+          : null;
 
         steps.push({
           key: `${task.requestId ?? "task"}-${taskType}-${index}`,
@@ -1655,16 +1881,21 @@ createApp({
           requestId: typeof task?.requestId === "string" ? task.requestId : "",
           point: {
             lat: Number(task.point.lat),
-            lng: Number(task.point.lng)
+            lng: Number(task.point.lng),
           },
           moveDistanceLabel,
           moveMinutesLabel,
           arrivalDateKey: arrivalDate ? formatDateKey(arrivalDate) : "",
-          arrivalDateLabel: arrivalDate ? formatDateLabel(arrivalDate) : "日付未設定",
-          arrivalDateTime: arrivalDate ? formatDateTimeLabel(arrivalDate) : "--:--",
-          arrivalLabel: arrivalMs === null ? "--:--" : formatClock(new Date(arrivalMs)),
+          arrivalDateLabel: arrivalDate
+            ? formatDateLabel(arrivalDate)
+            : "日付未設定",
+          arrivalDateTime: arrivalDate
+            ? formatDateTimeLabel(arrivalDate)
+            : "--:--",
+          arrivalLabel:
+            arrivalMs === null ? "--:--" : formatClock(new Date(arrivalMs)),
           waitLabel,
-          onboardAfter: Math.max(0, onboard)
+          onboardAfter: Math.max(0, onboard),
         });
 
         previousPoint = task.point;
@@ -1674,16 +1905,18 @@ createApp({
         vehicleId: vehicle.id,
         vehicleLabel,
         steps,
-        routePoints: [currentPoint, ...steps.map((step) => step.point)].filter(hasPoint),
-        emptyLabel: "乗降予定なし"
+        routePoints: [currentPoint, ...steps.map((step) => step.point)].filter(
+          hasPoint,
+        ),
+        emptyLabel: "乗降予定なし",
       };
     });
 
     const selectedVehicleRouteVehicleLabel = computed(
-      () => selectedVehicleRoutePlan.value.vehicleLabel
+      () => selectedVehicleRoutePlan.value.vehicleLabel,
     );
     const selectedVehicleRouteSteps = computed(
-      () => selectedVehicleRoutePlan.value.steps
+      () => selectedVehicleRoutePlan.value.steps,
     );
     const selectedVehicleRouteDateSections = computed(() => {
       const sectionIndex = new Map();
@@ -1694,7 +1927,7 @@ createApp({
           const nextSection = {
             dateKey: key,
             dateLabel: step.arrivalDateLabel || "日付未設定",
-            steps: []
+            steps: [],
           };
           sectionIndex.set(key, nextSection);
           sections.push(nextSection);
@@ -1728,40 +1961,50 @@ createApp({
       }
       return keys[0];
     });
-    const activePanelDate = computed(() => parseDateKeyToDate(activePanelDateKey.value));
+    const activePanelDate = computed(() =>
+      parseDateKeyToDate(activePanelDateKey.value),
+    );
     const activePanelDateLabel = computed(() =>
-      activePanelDate.value ? formatDateLabel(activePanelDate.value) : "日付なし"
+      activePanelDate.value
+        ? formatDateLabel(activePanelDate.value)
+        : "日付なし",
     );
     const activePanelDateWeekdayLabel = computed(() =>
-      activePanelDate.value ? formatWeekdayLabel(activePanelDate.value) : ""
+      activePanelDate.value ? formatWeekdayLabel(activePanelDate.value) : "",
     );
     const activePanelDateIndex = computed(() =>
-      panelAvailableDateKeys.value.findIndex((dateKey) => dateKey === activePanelDateKey.value)
+      panelAvailableDateKeys.value.findIndex(
+        (dateKey) => dateKey === activePanelDateKey.value,
+      ),
     );
     const hasPreviousPanelDate = computed(() => activePanelDateIndex.value > 0);
     const hasNextPanelDate = computed(
       () =>
         activePanelDateIndex.value >= 0 &&
-        activePanelDateIndex.value < panelAvailableDateKeys.value.length - 1
+        activePanelDateIndex.value < panelAvailableDateKeys.value.length - 1,
     );
     const visibleRequestDateSections = computed(() => {
       const key = activePanelDateKey.value;
       if (!key) {
         return [];
       }
-      return requestDateSections.value.filter((section) => section.dateKey === key);
+      return requestDateSections.value.filter(
+        (section) => section.dateKey === key,
+      );
     });
     const visibleVehicleRouteDateSections = computed(() => {
       const key = activePanelDateKey.value;
       if (!key) {
         return [];
       }
-      return selectedVehicleRouteDateSections.value.filter((section) => section.dateKey === key);
+      return selectedVehicleRouteDateSections.value.filter(
+        (section) => section.dateKey === key,
+      );
     });
     const visibleVehicleRouteSteps = computed(() =>
       visibleVehicleRouteDateSections.value.flatMap((section) =>
-        Array.isArray(section?.steps) ? section.steps : []
-      )
+        Array.isArray(section?.steps) ? section.steps : [],
+      ),
     );
 
     function movePanelDate(delta) {
@@ -1772,7 +2015,8 @@ createApp({
       if (!keys.length) {
         return;
       }
-      const index = activePanelDateIndex.value >= 0 ? activePanelDateIndex.value : 0;
+      const index =
+        activePanelDateIndex.value >= 0 ? activePanelDateIndex.value : 0;
       const nextIndex = Math.max(0, Math.min(keys.length - 1, index + delta));
       selectedPanelDateKey.value = keys[nextIndex];
     }
@@ -1788,12 +2032,14 @@ createApp({
           return;
         }
         const todayKey = formatDateKey(now.value);
-        selectedPanelDateKey.value = keys.includes(todayKey) ? todayKey : keys[0];
+        selectedPanelDateKey.value = keys.includes(todayKey)
+          ? todayKey
+          : keys[0];
       },
-      { immediate: true }
+      { immediate: true },
     );
     const selectedVehicleRouteEmptyLabel = computed(
-      () => selectedVehicleRoutePlan.value.emptyLabel ?? "乗降予定なし"
+      () => selectedVehicleRoutePlan.value.emptyLabel ?? "乗降予定なし",
     );
     const selectedVehicleRoutePoints = computed(() => {
       const currentPoint = selectedVehicleRoutePlan.value.routePoints?.[0];
@@ -1805,8 +2051,11 @@ createApp({
       });
       return normalizeRoutePoints(points);
     });
-    const selectedVehicleRouteStep = computed(() =>
-      visibleVehicleRouteSteps.value.find((step) => step.key === selectedVehicleRouteStepKey.value) ?? null
+    const selectedVehicleRouteStep = computed(
+      () =>
+        visibleVehicleRouteSteps.value.find(
+          (step) => step.key === selectedVehicleRouteStepKey.value,
+        ) ?? null,
     );
     const operationMapChipLabel = computed(() => {
       const vehicleLabel = selectedVehicleRouteVehicleLabel.value || "対象車両";
@@ -1828,7 +2077,7 @@ createApp({
           selectedRequestId.value = rows[0].id;
         }
       },
-      { immediate: true }
+      { immediate: true },
     );
 
     watch(
@@ -1838,11 +2087,13 @@ createApp({
           selectedVehicleRouteStepKey.value = "";
           return;
         }
-        if (!steps.some((step) => step.key === selectedVehicleRouteStepKey.value)) {
+        if (
+          !steps.some((step) => step.key === selectedVehicleRouteStepKey.value)
+        ) {
           selectedVehicleRouteStepKey.value = "";
         }
       },
-      { immediate: true }
+      { immediate: true },
     );
     watch(
       visibleVehicleRouteSteps,
@@ -1851,11 +2102,13 @@ createApp({
           selectedVehicleRouteStepKey.value = "";
           return;
         }
-        if (!steps.some((step) => step.key === selectedVehicleRouteStepKey.value)) {
+        if (
+          !steps.some((step) => step.key === selectedVehicleRouteStepKey.value)
+        ) {
           selectedVehicleRouteStepKey.value = "";
         }
       },
-      { immediate: true }
+      { immediate: true },
     );
 
     function selectRequest(requestId) {
@@ -1866,7 +2119,10 @@ createApp({
     }
 
     function selectVehicleRouteStep(stepKey) {
-      if (!stepKey || !visibleVehicleRouteSteps.value.some((step) => step.key === stepKey)) {
+      if (
+        !stepKey ||
+        !visibleVehicleRouteSteps.value.some((step) => step.key === stepKey)
+      ) {
         return;
       }
       mapDisplayMode.value = "operation";
@@ -1876,7 +2132,11 @@ createApp({
     }
 
     function canCancelRequest(row) {
-      return row.status !== "CANCELLED" && row.status !== "COMPLETED" && row.status !== "PICKED_UP";
+      return (
+        row.status !== "CANCELLED" &&
+        row.status !== "COMPLETED" &&
+        row.status !== "PICKED_UP"
+      );
     }
 
     const mapRows = computed(() =>
@@ -1888,12 +2148,15 @@ createApp({
         pickupPoint: row.pickupPoint,
         dropoffPoint: row.dropoffPoint,
         pickupStopId: row.pickupStopId,
-        dropoffStopId: row.dropoffStopId
-      }))
+        dropoffStopId: row.dropoffStopId,
+      })),
     );
 
-    const selectedDispatchOption = computed(() =>
-      dispatchOptions.value.find((option) => option.optionId === selectedDispatchOptionId.value) ?? null
+    const selectedDispatchOption = computed(
+      () =>
+        dispatchOptions.value.find(
+          (option) => option.optionId === selectedDispatchOptionId.value,
+        ) ?? null,
     );
     const dispatchOptionDateSections = computed(() => {
       const sectionIndex = new Map();
@@ -1908,7 +2171,7 @@ createApp({
           const nextSection = {
             dateKey: key,
             dateLabel: plannedAt ? formatDateLabel(plannedAt) : "日付未設定",
-            options: []
+            options: [],
           };
           sectionIndex.set(key, nextSection);
           sections.push(nextSection);
@@ -1930,7 +2193,7 @@ createApp({
           const nextSection = {
             dateKey: key,
             dateLabel: plannedAt ? formatDateLabel(plannedAt) : "日付未設定",
-            options: []
+            options: [],
           };
           sectionIndex.set(key, nextSection);
           sections.push(nextSection);
@@ -1946,28 +2209,37 @@ createApp({
           : "";
       return label;
     });
-    const previewSimulation = computed(() => dispatchPreview.value?.simulation ?? null);
-    const hasAssignablePreview = computed(() => dispatchPreview.value?.status === "ASSIGNABLE");
-    const previewStatusLabel = computed(() => statusLabel(dispatchPreview.value?.status));
+    const previewSimulation = computed(
+      () => dispatchPreview.value?.simulation ?? null,
+    );
+    const hasAssignablePreview = computed(
+      () => dispatchPreview.value?.status === "ASSIGNABLE",
+    );
+    const previewStatusLabel = computed(() =>
+      statusLabel(dispatchPreview.value?.status),
+    );
     const previewVehicleLabel = computed(() =>
-      resolveVehicleDisplayName(previewSimulation.value?.vehicleId ?? "-", { includeId: false })
+      resolveVehicleDisplayName(previewSimulation.value?.vehicleId ?? "-", {
+        includeId: false,
+      }),
     );
-    const previewPickupClock = computed(
-      () => formatDateTimeLabel(previewSimulation.value?.plannedPickupAt)
+    const previewPickupClock = computed(() =>
+      formatDateTimeLabel(previewSimulation.value?.plannedPickupAt),
     );
-    const previewDropoffClock = computed(
-      () => formatDateTimeLabel(previewSimulation.value?.plannedDropoffAt)
+    const previewDropoffClock = computed(() =>
+      formatDateTimeLabel(previewSimulation.value?.plannedDropoffAt),
     );
-    const previewAlgorithmLabel = computed(
-      () => dispatchAlgorithmLabel(previewSimulation.value?.selectedAlgorithm)
+    const previewAlgorithmLabel = computed(() =>
+      dispatchAlgorithmLabel(previewSimulation.value?.selectedAlgorithm),
     );
-    const previewAlgorithmPhaseLabel = computed(
-      () => dispatchAlgorithmPhaseLabel(previewSimulation.value?.algorithmPhase)
+    const previewAlgorithmPhaseLabel = computed(() =>
+      dispatchAlgorithmPhaseLabel(previewSimulation.value?.algorithmPhase),
     );
     const previewRouteDateKey = computed(() => {
       const baseTimeValue =
         selectedDispatchOption.value?.plannedPickupAt ??
         previewSimulation.value?.plannedPickupAt ??
+        previewPayload.value?.desiredPickupAt ??
         previewPayload.value?.desiredDropoffAt ??
         null;
       const timestamp = parseTimeValueMs(baseTimeValue);
@@ -1996,7 +2268,7 @@ createApp({
       const sourceSteps = sameDateSteps.length ? sameDateSteps : routeAfter;
       return sourceSteps.map((step, index) => ({
         ...step,
-        displaySequence: index + 1
+        displaySequence: index + 1,
       }));
     });
     const previewDropoffSuggestion = computed(() => {
@@ -2005,14 +2277,16 @@ createApp({
         return null;
       }
       const suggestedDropoffAt =
-        typeof suggestion.suggestedDropoffAt === "string" && suggestion.suggestedDropoffAt
+        typeof suggestion.suggestedDropoffAt === "string" &&
+        suggestion.suggestedDropoffAt
           ? suggestion.suggestedDropoffAt
           : null;
       if (!suggestedDropoffAt) {
         return null;
       }
       const requestedDropoffAt =
-        typeof suggestion.requestedDropoffAt === "string" && suggestion.requestedDropoffAt
+        typeof suggestion.requestedDropoffAt === "string" &&
+        suggestion.requestedDropoffAt
           ? suggestion.requestedDropoffAt
           : null;
       const exceededByMinutesRaw = Number(suggestion.exceededByMinutes);
@@ -2028,18 +2302,23 @@ createApp({
         requestedDropoffAt,
         suggestedDropoffAt,
         exceededByMinutes,
-        message
+        message,
       };
     });
     const previewRejectDiagnostics = computed(() =>
-      dispatchPreview.value?.status === "REJECTED" ? dispatchPreview.value?.diagnostics ?? null : null
+      dispatchPreview.value?.status === "REJECTED"
+        ? (dispatchPreview.value?.diagnostics ?? null)
+        : null,
     );
     const previewRejectSummary = computed(() => {
       const diagnostics = previewRejectDiagnostics.value;
       if (!diagnostics) {
         return "";
       }
-      const summary = typeof diagnostics.summary === "string" ? diagnostics.summary.trim() : "";
+      const summary =
+        typeof diagnostics.summary === "string"
+          ? diagnostics.summary.trim()
+          : "";
       if (summary) {
         return summary;
       }
@@ -2059,7 +2338,9 @@ createApp({
         return [];
       }
 
-      const breakdown = Array.isArray(diagnostics.breakdown) ? diagnostics.breakdown : [];
+      const breakdown = Array.isArray(diagnostics.breakdown)
+        ? diagnostics.breakdown
+        : [];
       const fromBreakdown = breakdown
         .map((item) => {
           const count = Number(item?.count);
@@ -2072,7 +2353,7 @@ createApp({
             code,
             label: previewRejectionCodeLabel(code),
             count: Math.round(count),
-            ratioPercent: Number.isFinite(ratio) ? Math.round(ratio) : null
+            ratioPercent: Number.isFinite(ratio) ? Math.round(ratio) : null,
           };
         })
         .filter(Boolean);
@@ -2083,24 +2364,24 @@ createApp({
       const counts = diagnostics.rejectionCounts ?? {};
       const candidateCount = Number(diagnostics.candidateCount);
       const normalizedCandidateCount =
-        Number.isFinite(candidateCount) && candidateCount > 0 ? candidateCount : 0;
-      return PREVIEW_REJECTION_ORDER
-        .map((code) => {
-          const count = Number(counts[code]);
-          if (!Number.isFinite(count) || count <= 0) {
-            return null;
-          }
-          return {
-            code,
-            label: previewRejectionCodeLabel(code),
-            count: Math.round(count),
-            ratioPercent:
-              normalizedCandidateCount > 0
-                ? Math.round((count / normalizedCandidateCount) * 100)
-                : null
-          };
-        })
-        .filter(Boolean);
+        Number.isFinite(candidateCount) && candidateCount > 0
+          ? candidateCount
+          : 0;
+      return PREVIEW_REJECTION_ORDER.map((code) => {
+        const count = Number(counts[code]);
+        if (!Number.isFinite(count) || count <= 0) {
+          return null;
+        }
+        return {
+          code,
+          label: previewRejectionCodeLabel(code),
+          count: Math.round(count),
+          ratioPercent:
+            normalizedCandidateCount > 0
+              ? Math.round((count / normalizedCandidateCount) * 100)
+              : null,
+        };
+      }).filter(Boolean);
     });
     const previewRejectConstraintSummary = computed(() => {
       const constraints = previewRejectDiagnostics.value?.constraints;
@@ -2139,7 +2420,9 @@ createApp({
       if (!diagnostics) {
         return [];
       }
-      const backendCandidates = Array.isArray(diagnostics.countermeasureCandidates)
+      const backendCandidates = Array.isArray(
+        diagnostics.countermeasureCandidates,
+      )
         ? diagnostics.countermeasureCandidates
             .map((item) => (typeof item === "string" ? item.trim() : ""))
             .filter(Boolean)
@@ -2164,17 +2447,21 @@ createApp({
       };
 
       if (Number(diagnostics.activeVehicleCount) === 0) {
-        addUnique("稼働中の車両を ACTIVE に変更するか、車両を追加してください。");
+        addUnique(
+          "稼働中の車両を ACTIVE に変更するか、車両を追加してください。",
+        );
       }
       if (countOf("MAX_WAIT") > 0) {
         const minEta = Number(observed.minEtaPickupMinutes);
         const maxWait = Number(constraints.maxWaitMinutes);
         if (Number.isFinite(minEta) && Number.isFinite(maxWait)) {
           addUnique(
-            `最短でも乗車まで約${Math.round(minEta)}分です。希望時刻調整または最大待ち時間(${Math.round(maxWait)}分)の見直しを検討してください。`
+            `最短でも乗車まで約${Math.round(minEta)}分です。希望時刻調整または最大待ち時間(${Math.round(maxWait)}分)の見直しを検討してください。`,
           );
         } else {
-          addUnique("乗車希望時刻を調整するか、最大待ち時間の設定を見直してください。");
+          addUnique(
+            "乗車希望時刻を調整するか、最大待ち時間の設定を見直してください。",
+          );
         }
       }
       if (countOf("MAX_DETOUR") > 0) {
@@ -2182,20 +2469,26 @@ createApp({
         const maxDetour = Number(constraints.maxDetourMinutes);
         if (Number.isFinite(minDetour) && Number.isFinite(maxDetour)) {
           addUnique(
-            `既存予約への最小遅延は約${Math.round(minDetour)}分です。地点変更または最大迂回遅延(${Math.round(maxDetour)}分)の見直しを検討してください。`
+            `既存予約への最小遅延は約${Math.round(minDetour)}分です。地点変更または最大迂回遅延(${Math.round(maxDetour)}分)の見直しを検討してください。`,
           );
         } else {
-          addUnique("乗降地点を調整するか、最大迂回遅延の設定を見直してください。");
+          addUnique(
+            "乗降地点を調整するか、最大迂回遅延の設定を見直してください。",
+          );
         }
       }
       if (countOf("CAPACITY") > 0) {
         addUnique("人数を減らすか、同乗上限設定を見直してください。");
       }
       if (countOf("MAX_ADDITIONAL_STOPS") > 0) {
-        addUnique("追加停留所上限の緩和または既存予約完了後の再受付を検討してください。");
+        addUnique(
+          "追加停留所上限の緩和または既存予約完了後の再受付を検討してください。",
+        );
       }
       if (countOf("CONSECUTIVE_PICKUP") > 0) {
-        addUnique("先行予約の降車後に再試算するか、乗車地点・時刻の調整を検討してください。");
+        addUnique(
+          "先行予約の降車後に再試算するか、乗車地点・時刻の調整を検討してください。",
+        );
       }
       if (!items.length) {
         addUnique("車両現在地を更新して再試算してください。");
@@ -2204,7 +2497,7 @@ createApp({
       return items.slice(0, 6);
     });
     const previewRoutePoints = computed(() =>
-      previewRouteAfterSteps.value.map((task) => task.point).filter(hasPoint)
+      previewRouteAfterSteps.value.map((task) => task.point).filter(hasPoint),
     );
     const vehicleOfficeLocations = computed(() =>
       vehicles.value
@@ -2220,22 +2513,24 @@ createApp({
           const vehicleName =
             typeof vehicle?.name === "string" && vehicle.name.trim()
               ? vehicle.name.trim()
-              : vehicle?.id ?? "車両";
+              : (vehicle?.id ?? "車両");
           return {
             vehicle,
             name: `${vehicleName} 事務所`,
             point: {
               lat: Number(sourcePoint.lat),
-              lng: Number(sourcePoint.lng)
-            }
+              lng: Number(sourcePoint.lng),
+            },
           };
         })
-        .filter(Boolean)
+        .filter(Boolean),
     );
 
     const mapSourcePoints = computed(() => {
       const points = [];
-      vehicleOfficeLocations.value.forEach((office) => points.push(office.point));
+      vehicleOfficeLocations.value.forEach((office) =>
+        points.push(office.point),
+      );
       stops.value.forEach((stop) => {
         if (hasPoint(stop)) {
           points.push({ lat: stop.lat, lng: stop.lng });
@@ -2260,7 +2555,9 @@ createApp({
       return points;
     });
 
-    const hasStopData = computed(() => stops.value.some((stop) => hasPoint(stop)));
+    const hasStopData = computed(() =>
+      stops.value.some((stop) => hasPoint(stop)),
+    );
 
     function toPointText(lat, lng) {
       return `${Number(lat).toFixed(6)},${Number(lng).toFixed(6)}`;
@@ -2268,7 +2565,10 @@ createApp({
 
     function buildVehicleEditorItem(vehicle = {}) {
       const id = typeof vehicle.id === "string" ? vehicle.id.trim() : "";
-      const name = typeof vehicle.name === "string" && vehicle.name.trim() ? vehicle.name.trim() : id;
+      const name =
+        typeof vehicle.name === "string" && vehicle.name.trim()
+          ? vehicle.name.trim()
+          : id;
       const iconColor = (() => {
         try {
           return normalizeColorHex(vehicle.iconColor, "#0284c7");
@@ -2285,9 +2585,13 @@ createApp({
         id,
         name,
         iconColor,
-        officePoint: officePoint ? toPointText(officePoint.lat, officePoint.lng) : "",
-        capacity: Number.isFinite(Number(vehicle.capacity)) ? Number(vehicle.capacity) : 4,
-        isExisting: Boolean(id)
+        officePoint: officePoint
+          ? toPointText(officePoint.lat, officePoint.lng)
+          : "",
+        capacity: Number.isFinite(Number(vehicle.capacity))
+          ? Number(vehicle.capacity)
+          : 4,
+        isExisting: Boolean(id),
       };
     }
 
@@ -2298,13 +2602,17 @@ createApp({
           name: "",
           iconColor: "#0284c7",
           officePoint: "",
-          capacity: 4
-        })
+          capacity: 4,
+        }),
       );
     }
 
     function removeVehicleEditorRow(index) {
-      if (!Number.isInteger(index) || index < 0 || index >= vehicleEditor.value.length) {
+      if (
+        !Number.isInteger(index) ||
+        index < 0 ||
+        index >= vehicleEditor.value.length
+      ) {
         return;
       }
       if (vehicleEditor.value[index]?.isExisting) {
@@ -2370,9 +2678,11 @@ createApp({
         return;
       }
 
-      const pointText = isPickup ? form.value.pickupPoint : form.value.dropoffPoint;
+      const pointText = isPickup
+        ? form.value.pickupPoint
+        : form.value.dropoffPoint;
       const currentTitle = normalizeLocationTitle(
-        isPickup ? form.value.pickupTitle : form.value.dropoffTitle
+        isPickup ? form.value.pickupTitle : form.value.dropoffTitle,
       );
       const state = locationTitleState.value[field];
 
@@ -2398,14 +2708,17 @@ createApp({
       try {
         const query = new URLSearchParams({
           lat: String(point.lat),
-          lng: String(point.lng)
+          lng: String(point.lng),
         });
-        const response = await apiGet(`/api/geocode/reverse?${query.toString()}`);
+        const response = await apiGet(
+          `/api/geocode/reverse?${query.toString()}`,
+        );
         if (locationTitleState.value[field].requestId !== requestId) {
           return;
         }
         const suggestedTitle =
-          normalizeLocationTitle(response?.title) || buildFreePointFallbackTitle(point);
+          normalizeLocationTitle(response?.title) ||
+          buildFreePointFallbackTitle(point);
         if (isPickup) {
           form.value.pickupTitle = suggestedTitle;
         } else {
@@ -2440,16 +2753,27 @@ createApp({
     }
 
     function applyMapSelection(field, point) {
-      if (field !== "pickup" && field !== "dropoff" && field !== "vehicleOffice") {
+      if (
+        field !== "pickup" &&
+        field !== "dropoff" &&
+        field !== "vehicleOffice"
+      ) {
         return;
       }
 
       if (field === "vehicleOffice") {
         const index = Number(mapSelectionVehicleIndex.value);
-        if (!Number.isInteger(index) || index < 0 || index >= vehicleEditor.value.length) {
+        if (
+          !Number.isInteger(index) ||
+          index < 0 ||
+          index >= vehicleEditor.value.length
+        ) {
           throw new Error("車両事務所位置の選択対象が見つかりません。");
         }
-        vehicleEditor.value[index].officePoint = toPointText(point.lat, point.lng);
+        vehicleEditor.value[index].officePoint = toPointText(
+          point.lat,
+          point.lng,
+        );
         cancelMapSelection();
         return;
       }
@@ -2460,7 +2784,9 @@ createApp({
       if (mode === "FIXED_STOP") {
         const nearestStop = findNearestStop(point);
         if (!nearestStop) {
-          throw new Error("停留所データがないため、地図からバス停を選択できません。");
+          throw new Error(
+            "停留所データがないため、地図からバス停を選択できません。",
+          );
         }
         if (isPickup) {
           form.value.pickupStopId = nearestStop.id;
@@ -2492,13 +2818,18 @@ createApp({
     }
 
     function toggleMapSelection(field, vehicleIndex = null) {
-      if (field !== "pickup" && field !== "dropoff" && field !== "vehicleOffice") {
+      if (
+        field !== "pickup" &&
+        field !== "dropoff" &&
+        field !== "vehicleOffice"
+      ) {
         return;
       }
       if (!ensureLeafletMap()) {
         return;
       }
-      const nextVehicleIndex = field === "vehicleOffice" ? Number(vehicleIndex) : null;
+      const nextVehicleIndex =
+        field === "vehicleOffice" ? Number(vehicleIndex) : null;
       if (
         field === "vehicleOffice" &&
         (!Number.isInteger(nextVehicleIndex) ||
@@ -2510,7 +2841,8 @@ createApp({
       }
       if (
         mapSelectionField.value === field &&
-        (field !== "vehicleOffice" || mapSelectionVehicleIndex.value === nextVehicleIndex)
+        (field !== "vehicleOffice" ||
+          mapSelectionVehicleIndex.value === nextVehicleIndex)
       ) {
         cancelMapSelection();
         return;
@@ -2534,13 +2866,13 @@ createApp({
 
       leafletMap = leaflet.map(leafletMapEl.value, {
         zoomControl: true,
-        attributionControl: true
+        attributionControl: true,
       });
 
       leaflet
         .tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
           maxZoom: 19,
-          attribution: "&copy; OpenStreetMap contributors"
+          attribution: "&copy; OpenStreetMap contributors",
         })
         .addTo(leafletMap);
 
@@ -2571,7 +2903,7 @@ createApp({
         .filter(hasPoint)
         .map((point) => ({
           lat: Number(point.lat),
-          lng: Number(point.lng)
+          lng: Number(point.lng),
         }));
     }
 
@@ -2586,7 +2918,9 @@ createApp({
     }
 
     function buildVehicleRouteCacheKey(vehicle) {
-      const routePoints = (vehicle?.route ?? []).map((task) => task?.point).filter(hasPoint);
+      const routePoints = (vehicle?.route ?? [])
+        .map((task) => task?.point)
+        .filter(hasPoint);
       return `vehicle:${vehicle?.id ?? ""}|${buildRouteCacheKey(routePoints)}`;
     }
 
@@ -2624,7 +2958,7 @@ createApp({
           nearest = {
             segmentIndex: index,
             distanceMeters: projection.distanceMeters,
-            projectedPoint: projection.projectedPoint
+            projectedPoint: projection.projectedPoint,
           };
         }
       }
@@ -2633,7 +2967,10 @@ createApp({
     }
 
     function buildOnRoutePolyline(currentPoint, cachedPolyline) {
-      const projection = findNearestPolylineProjection(currentPoint, cachedPolyline);
+      const projection = findNearestPolylineProjection(
+        currentPoint,
+        cachedPolyline,
+      );
       if (!projection) {
         return null;
       }
@@ -2645,19 +2982,24 @@ createApp({
       const result = [
         {
           lat: Number(currentPoint.lat),
-          lng: Number(currentPoint.lng)
-        }
+          lng: Number(currentPoint.lng),
+        },
       ];
       if (
         hasPoint(projection.projectedPoint) &&
-        distanceMeters(currentPoint, projection.projectedPoint) > ROUTE_POINT_SNAP_TOLERANCE_METERS
+        distanceMeters(currentPoint, projection.projectedPoint) >
+          ROUTE_POINT_SNAP_TOLERANCE_METERS
       ) {
         result.push({
           lat: Number(projection.projectedPoint.lat),
-          lng: Number(projection.projectedPoint.lng)
+          lng: Number(projection.projectedPoint.lng),
         });
       }
-      for (let index = projection.segmentIndex + 1; index < normalized.length; index += 1) {
+      for (
+        let index = projection.segmentIndex + 1;
+        index < normalized.length;
+        index += 1
+      ) {
         result.push(normalized[index]);
       }
 
@@ -2676,7 +3018,7 @@ createApp({
       "#dc2626",
       "#0f766e",
       "#b45309",
-      "#2563eb"
+      "#2563eb",
     ];
 
     function hashVehicleColorSeed(value) {
@@ -2699,7 +3041,8 @@ createApp({
         // Fallback to deterministic hashed color.
       }
       const seed = typeof vehicle?.id === "string" ? vehicle.id : "veh";
-      const index = Math.abs(hashVehicleColorSeed(seed)) % BUS_ICON_COLORS.length;
+      const index =
+        Math.abs(hashVehicleColorSeed(seed)) % BUS_ICON_COLORS.length;
       return BUS_ICON_COLORS[index];
     }
 
@@ -2715,11 +3058,11 @@ createApp({
           `background:${color};border:2px solid ${borderColor};` +
           "box-shadow:0 3px 10px rgba(15,23,42,0.35);" +
           "display:flex;align-items:center;justify-content:center;" +
-          "color:#ffffff;font-size:16px;line-height:1;\">" +
-          "<span class=\"mdi mdi-bus\"></span></div>",
+          'color:#ffffff;font-size:16px;line-height:1;">' +
+          '<span class="mdi mdi-bus"></span></div>',
         iconSize: [size, size],
         iconAnchor: [size / 2, size / 2],
-        popupAnchor: [0, -size / 2]
+        popupAnchor: [0, -size / 2],
       });
     }
 
@@ -2749,7 +3092,7 @@ createApp({
       }
 
       setRouteCacheEntry(cacheKey, {
-        status: "pending"
+        status: "pending",
       });
 
       try {
@@ -2758,18 +3101,18 @@ createApp({
         if (polyline.length > 1) {
           setRouteCacheEntry(cacheKey, {
             status: "ready",
-            polyline
+            polyline,
           });
         } else {
           setRouteCacheEntry(cacheKey, {
             status: "failed",
-            failedAt: Date.now()
+            failedAt: Date.now(),
           });
         }
       } catch (_error) {
         setRouteCacheEntry(cacheKey, {
           status: "failed",
-          failedAt: Date.now()
+          failedAt: Date.now(),
         });
       } finally {
         scheduleRouteMapRefresh();
@@ -2782,7 +3125,7 @@ createApp({
       points,
       style,
       cacheKey = "",
-      keepCurrentPointOnCachedRoute = false
+      keepCurrentPointOnCachedRoute = false,
     }) {
       const normalized = normalizeRoutePoints(points);
       if (normalized.length < 2) {
@@ -2790,19 +3133,31 @@ createApp({
       }
 
       const cachePoints =
-        keepCurrentPointOnCachedRoute && normalized.length > 2 ? normalized.slice(1) : normalized;
+        keepCurrentPointOnCachedRoute && normalized.length > 2
+          ? normalized.slice(1)
+          : normalized;
       const resolvedCacheKey = cacheKey || buildRouteCacheKey(cachePoints);
       const cached = routeGeometryCache.get(resolvedCacheKey);
       let drawPoints = normalized;
-      if (cached?.status === "ready" && Array.isArray(cached.polyline) && cached.polyline.length > 1) {
+      if (
+        cached?.status === "ready" &&
+        Array.isArray(cached.polyline) &&
+        cached.polyline.length > 1
+      ) {
         if (keepCurrentPointOnCachedRoute) {
           const reused = buildOnRoutePolyline(normalized[0], cached.polyline);
           if (reused) {
             drawPoints = reused;
           } else {
-            const connector = normalizeRoutePoints([normalized[0], cached.polyline[0]]);
+            const connector = normalizeRoutePoints([
+              normalized[0],
+              cached.polyline[0],
+            ]);
             if (connector.length > 1) {
-              drawPoints = normalizeRoutePoints([...connector, ...cached.polyline.slice(1)]);
+              drawPoints = normalizeRoutePoints([
+                ...connector,
+                ...cached.polyline.slice(1),
+              ]);
             } else {
               drawPoints = cached.polyline;
             }
@@ -2814,12 +3169,13 @@ createApp({
         void requestRouteGeometry(resolvedCacheKey, normalized);
       }
 
-      leaflet
-        .polyline(drawPoints.map(toLeafletLatLng), style)
-        .addTo(layer);
+      leaflet.polyline(drawPoints.map(toLeafletLatLng), style).addTo(layer);
     }
 
-    function refreshLeafletMap({ fitToData = false, focusSelected = false } = {}) {
+    function refreshLeafletMap({
+      fitToData = false,
+      focusSelected = false,
+    } = {}) {
       if (!ensureLeafletMap()) {
         return;
       }
@@ -2828,20 +3184,27 @@ createApp({
       clearLeafletLayers();
 
       const requestRoutePoints = selectedRequest.value
-        ? normalizeRoutePoints([selectedRequest.value.pickupPoint, selectedRequest.value.dropoffPoint])
+        ? normalizeRoutePoints([
+            selectedRequest.value.pickupPoint,
+            selectedRequest.value.dropoffPoint,
+          ])
         : [];
       const operationRoutePoints = selectedVehicleRoutePoints.value;
       const selectedStep = selectedVehicleRouteStep.value;
-      const selectedRouteVehicle =
-        selectedVehicleRoutePlan.value?.vehicleId
-          ? vehicleIndex.value.get(selectedVehicleRoutePlan.value.vehicleId) ?? null
-          : null;
+      const selectedRouteVehicle = selectedVehicleRoutePlan.value?.vehicleId
+        ? (vehicleIndex.value.get(selectedVehicleRoutePlan.value.vehicleId) ??
+          null)
+        : null;
       const selectedRouteVehicleId = selectedRouteVehicle?.id ?? "";
       const isRequestRouteMode =
         mapDisplayMode.value === "request" && requestRoutePoints.length > 1;
-      const selectedRoutePoints = isRequestRouteMode ? requestRoutePoints : operationRoutePoints;
+      const selectedRoutePoints = isRequestRouteMode
+        ? requestRoutePoints
+        : operationRoutePoints;
       const selectedStepRouteIndex = selectedStep
-        ? visibleVehicleRouteSteps.value.findIndex((step) => step.key === selectedStep.key)
+        ? visibleVehicleRouteSteps.value.findIndex(
+            (step) => step.key === selectedStep.key,
+          )
         : -1;
       const selectedStepPointIndex =
         Number.isInteger(selectedStepRouteIndex) && selectedStepRouteIndex >= 0
@@ -2852,7 +3215,7 @@ createApp({
           ? normalizeRoutePoints([
               selectedRoutePoints[selectedStepPointIndex - 1],
               selectedRoutePoints[selectedStepPointIndex],
-              selectedRoutePoints[selectedStepPointIndex + 1]
+              selectedRoutePoints[selectedStepPointIndex + 1],
             ])
           : [];
       const selectedRouteFocusPoints = isRequestRouteMode
@@ -2878,7 +3241,10 @@ createApp({
         const isSelected = selectedStopIds.has(stop.id);
         const onStopClick = () => {
           if (mapSelectionField.value) {
-            applyMapSelection(mapSelectionField.value, { lat: stop.lat, lng: stop.lng });
+            applyMapSelection(mapSelectionField.value, {
+              lat: stop.lat,
+              lng: stop.lng,
+            });
           }
         };
 
@@ -2888,7 +3254,7 @@ createApp({
             color: "transparent",
             weight: 0,
             fillColor: "transparent",
-            fillOpacity: 0
+            fillOpacity: 0,
           })
           .on("click", onStopClick)
           .addTo(mapLayers.stops);
@@ -2899,7 +3265,7 @@ createApp({
             color: isSelected ? "#1d4ed8" : "#1e3a8a",
             weight: isSelected ? 3 : 2,
             fillColor: isSelected ? "#f97316" : "#facc15",
-            fillOpacity: isSelected ? 0.98 : 0.9
+            fillOpacity: isSelected ? 0.98 : 0.9,
           })
           .bindTooltip(stop.name, { direction: "top", offset: [0, -6] })
           .on("click", onStopClick)
@@ -2914,14 +3280,14 @@ createApp({
             color: "#0f172a",
             weight: 2,
             fillColor: officeColor,
-            fillOpacity: 0.85
+            fillOpacity: 0.85,
           })
           .bindTooltip(office.name, {
             direction: "top",
-            offset: [0, -8]
+            offset: [0, -8],
           })
           .bindPopup(
-            `<strong>${office.name}</strong><br>ID: ${office.vehicle.id}<br>座標: ${formatCoordinate(office.point.lat)}, ${formatCoordinate(office.point.lng)}`
+            `<strong>${office.name}</strong><br>ID: ${office.vehicle.id}<br>座標: ${formatCoordinate(office.point.lat)}, ${formatCoordinate(office.point.lng)}`,
           )
           .addTo(mapLayers.office);
       });
@@ -2932,7 +3298,9 @@ createApp({
         }
 
         const vehicleName =
-          typeof vehicle.name === "string" && vehicle.name.trim() ? vehicle.name.trim() : vehicle.id;
+          typeof vehicle.name === "string" && vehicle.name.trim()
+            ? vehicle.name.trim()
+            : vehicle.id;
         const tooltipText = `${vehicleName} 現在地 ${formatTimeLabel(vehicle.lastLocationAt)}`;
         const vehicleColor = resolveVehicleColor(vehicle);
 
@@ -2940,47 +3308,52 @@ createApp({
           .marker(toLeafletLatLng(vehicle.currentLocation), {
             icon: buildVehicleBusIcon({
               leaflet,
-              vehicle
+              vehicle,
             }),
-            zIndexOffset: 500
+            zIndexOffset: 500,
           })
           .bindTooltip(tooltipText, {
             direction: "right",
-            offset: [8, 0]
+            offset: [8, 0],
           })
           .bindPopup(
-            `<strong>${vehicleName}</strong><br>ID: ${vehicle.id}<br>現在地: ${formatCoordinate(vehicle.currentLocation.lat)}, ${formatCoordinate(vehicle.currentLocation.lng)}<br>最終更新: ${vehicle.lastLocationAt ?? "-"}`
+            `<strong>${vehicleName}</strong><br>ID: ${vehicle.id}<br>現在地: ${formatCoordinate(vehicle.currentLocation.lat)}, ${formatCoordinate(vehicle.currentLocation.lng)}<br>最終更新: ${vehicle.lastLocationAt ?? "-"}`,
           );
         vehicleMarker.addTo(mapLayers.vehicles);
 
         const isSelectedRouteVehicle = vehicle.id === selectedRouteVehicleId;
         const routeLatLngs = isSelectedRouteVehicle
           ? operationRoutePoints
-          : [vehicle.currentLocation, ...(vehicle.route ?? []).map((task) => task.point)].filter(hasPoint);
+          : [
+              vehicle.currentLocation,
+              ...(vehicle.route ?? []).map((task) => task.point),
+            ].filter(hasPoint);
         if (routeLatLngs.length > 1) {
           drawRoutePolyline({
             leaflet,
             layer: mapLayers.vehicleRoutes,
             points: routeLatLngs,
-            cacheKey: isSelectedRouteVehicle ? "" : buildVehicleRouteCacheKey(vehicle),
+            cacheKey: isSelectedRouteVehicle
+              ? ""
+              : buildVehicleRouteCacheKey(vehicle),
             keepCurrentPointOnCachedRoute: true,
             style: {
               color: vehicleColor,
               weight: 3,
               opacity: 0.38,
-              dashArray: "8 8"
-            }
+              dashArray: "8 8",
+            },
           });
         }
       });
 
       if (hasAssignablePreview.value && previewSimulation.value) {
         const previewVehicle = vehicles.value.find(
-          (vehicle) => vehicle.id === previewSimulation.value.vehicleId
+          (vehicle) => vehicle.id === previewSimulation.value.vehicleId,
         );
         const previewPath = [
           previewVehicle?.currentLocation,
-          ...previewRouteAfterSteps.value.map((task) => task.point)
+          ...previewRouteAfterSteps.value.map((task) => task.point),
         ].filter(hasPoint);
 
         if (previewPath.length > 1) {
@@ -2991,8 +3364,8 @@ createApp({
             style: {
               color: "#f59e0b",
               weight: 5,
-              opacity: 0.8
-            }
+              opacity: 0.8,
+            },
           });
         }
 
@@ -3007,13 +3380,13 @@ createApp({
               color: "#fef3c7",
               weight: 2,
               fillColor: task.type === "PICKUP" ? "#047857" : "#b45309",
-              fillOpacity: 0.95
+              fillOpacity: 0.95,
             })
             .bindTooltip(
               `${task.displaySequence}. ${taskTypeLabel} ${task.locationLabel} (${formatTimeLabel(task.etaAt)})`,
               {
-                direction: "top"
-              }
+                direction: "top",
+              },
             )
             .addTo(mapLayers.previewRoute);
         });
@@ -3022,9 +3395,14 @@ createApp({
       if (isRequestRouteMode) {
         mapRows.value
           .filter((row) => row.id !== selectedRequest.value?.id)
-          .filter((row) => row.status === "ASSIGNED" || row.status === "PICKED_UP")
+          .filter(
+            (row) => row.status === "ASSIGNED" || row.status === "PICKED_UP",
+          )
           .forEach((row) => {
-            const routePoints = normalizeRoutePoints([row.pickupPoint, row.dropoffPoint]);
+            const routePoints = normalizeRoutePoints([
+              row.pickupPoint,
+              row.dropoffPoint,
+            ]);
             if (routePoints.length < 2) {
               return;
             }
@@ -3035,8 +3413,8 @@ createApp({
               style: {
                 color: "#0e7490",
                 weight: 4,
-                opacity: 0.45
-              }
+                opacity: 0.45,
+              },
             });
           });
       }
@@ -3049,46 +3427,52 @@ createApp({
           ...(isRequestRouteMode
             ? {}
             : {
-                keepCurrentPointOnCachedRoute: true
+                keepCurrentPointOnCachedRoute: true,
               }),
           style: {
             color: "#ea580c",
             weight: 6,
-            opacity: 0.9
-          }
+            opacity: 0.9,
+          },
         });
       }
 
       if (isRequestRouteMode) {
-        if (selectedRequest.value?.pickupPoint && hasPoint(selectedRequest.value.pickupPoint)) {
+        if (
+          selectedRequest.value?.pickupPoint &&
+          hasPoint(selectedRequest.value.pickupPoint)
+        ) {
           leaflet
             .circleMarker(toLeafletLatLng(selectedRequest.value.pickupPoint), {
               radius: 8,
               color: "#ecfdf5",
               weight: 2,
               fillColor: "#0f766e",
-              fillOpacity: 0.95
+              fillOpacity: 0.95,
             })
             .bindTooltip(`乗車: ${selectedRequest.value.pickupLabel}`, {
               permanent: true,
               direction: "top",
-              offset: [0, -8]
+              offset: [0, -8],
             })
             .addTo(mapLayers.focus);
         }
-        if (selectedRequest.value?.dropoffPoint && hasPoint(selectedRequest.value.dropoffPoint)) {
+        if (
+          selectedRequest.value?.dropoffPoint &&
+          hasPoint(selectedRequest.value.dropoffPoint)
+        ) {
           leaflet
             .circleMarker(toLeafletLatLng(selectedRequest.value.dropoffPoint), {
               radius: 8,
               color: "#fff7ed",
               weight: 2,
               fillColor: "#ea580c",
-              fillOpacity: 0.95
+              fillOpacity: 0.95,
             })
             .bindTooltip(`降車: ${selectedRequest.value.dropoffLabel}`, {
               permanent: true,
               direction: "top",
-              offset: [0, -8]
+              offset: [0, -8],
             })
             .addTo(mapLayers.focus);
         }
@@ -3104,24 +3488,26 @@ createApp({
               color: isStepSelected ? "#fef3c7" : "#ffffff",
               weight: isStepSelected ? 2.5 : 2,
               fillColor: step.type === "PICKUP" ? "#047857" : "#b45309",
-              fillOpacity: isStepSelected ? 0.95 : 0.85
+              fillOpacity: isStepSelected ? 0.95 : 0.85,
             })
             .bindTooltip(
               `${step.sequence}. ${step.type === "PICKUP" ? "乗車" : "降車"} ${step.locationLabel}`,
               {
                 permanent: isStepSelected,
                 direction: "top",
-                offset: [0, -8]
-              }
+                offset: [0, -8],
+              },
             )
             .addTo(mapLayers.focus);
         });
       }
 
-      const allPoints = mapSourcePoints.value.map((point) => toLeafletLatLng(point));
+      const allPoints = mapSourcePoints.value.map((point) =>
+        toLeafletLatLng(point),
+      );
       if ((fitToData || !hasInitialMapViewport) && allPoints.length) {
         leafletMap.fitBounds(leaflet.latLngBounds(allPoints).pad(0.15), {
-          maxZoom: 15
+          maxZoom: 15,
         });
         hasInitialMapViewport = true;
         return;
@@ -3130,15 +3516,17 @@ createApp({
       if (focusSelected && selectedRouteFocusPoints.length) {
         if (selectedRouteFocusPoints.length === 1) {
           leafletMap.flyTo(toLeafletLatLng(selectedRouteFocusPoints[0]), 16, {
-            duration: 0.45
+            duration: 0.45,
           });
         } else {
           leafletMap.flyToBounds(
-            leaflet.latLngBounds(selectedRouteFocusPoints.map(toLeafletLatLng)).pad(0.42),
+            leaflet
+              .latLngBounds(selectedRouteFocusPoints.map(toLeafletLatLng))
+              .pad(0.42),
             {
               maxZoom: 16,
-              duration: 0.45
-            }
+              duration: 0.45,
+            },
           );
         }
       }
@@ -3149,14 +3537,22 @@ createApp({
       errorMessage.value = "";
 
       try {
-        const [state, stopRes, requestRes, callRes, profileRes, fareRes, vehicleRes] = await Promise.all([
+        const [
+          state,
+          stopRes,
+          requestRes,
+          callRes,
+          profileRes,
+          fareRes,
+          vehicleRes,
+        ] = await Promise.all([
           apiGet("/api/state"),
           apiGet("/api/stops"),
           apiGet("/api/ride-requests"),
           apiGet("/api/call-events"),
           apiGet("/api/service-profiles"),
           apiGet("/api/fare-policies"),
-          apiGet("/api/vehicles")
+          apiGet("/api/vehicles"),
         ]);
 
         summary.value = state;
@@ -3167,32 +3563,55 @@ createApp({
         vehicles.value = vehicleRes.data ?? [];
 
         const activeId = profileRes.activeServiceProfileId;
-        const activeProfile = (profileRes.data ?? []).find((profile) => profile.id === activeId) ?? profileRes.data?.[0] ?? null;
+        const activeProfile =
+          (profileRes.data ?? []).find((profile) => profile.id === activeId) ??
+          profileRes.data?.[0] ??
+          null;
         serviceProfile.value = activeProfile;
 
         if (activeProfile) {
-          const farePolicy = farePolicies.value.find((policy) => policy.id === activeProfile.farePolicyRef);
+          const farePolicy = farePolicies.value.find(
+            (policy) => policy.id === activeProfile.farePolicyRef,
+          );
           profileEditor.value = {
             id: activeProfile.id,
-            maxAdvanceDays: activeProfile.reservationPolicy?.maxAdvanceDays ?? 14,
-            maxActiveVehicles: activeProfile.fleetPolicy?.maxActiveVehicles ?? 10,
-            maxOnboardPerVehicle: activeProfile.poolingPolicy?.maxOnboardPerVehicle ?? 4,
+            maxAdvanceDays:
+              activeProfile.reservationPolicy?.maxAdvanceDays ?? 14,
+            maxActiveVehicles:
+              activeProfile.fleetPolicy?.maxActiveVehicles ?? 10,
+            maxOnboardPerVehicle:
+              activeProfile.poolingPolicy?.maxOnboardPerVehicle ?? 4,
             cruiseSpeedKmh: activeProfile.dispatchPolicy?.cruiseSpeedKmh ?? 25,
-            pickupServiceMinutes: activeProfile.dispatchPolicy?.pickupServiceMinutes ?? 0,
-            dropoffServiceMinutes: activeProfile.dispatchPolicy?.dropoffServiceMinutes ?? 0,
+            pickupServiceMinutes:
+              activeProfile.dispatchPolicy?.pickupServiceMinutes ?? 0,
+            dropoffServiceMinutes:
+              activeProfile.dispatchPolicy?.dropoffServiceMinutes ?? 0,
             locationMode: activeProfile.locationPolicy?.mode ?? "HYBRID",
             fareModel: farePolicy?.model ?? "HYBRID",
             officeName: activeProfile.operationPolicy?.office?.name ?? "事務所",
-            businessHoursEnabled: activeProfile.operationPolicy?.businessHours?.enabled === true,
-            businessHoursStart: activeProfile.operationPolicy?.businessHours?.startLocalTime ?? "08:00",
-            businessHoursEnd: activeProfile.operationPolicy?.businessHours?.endLocalTime ?? "18:00",
-            idleReturnThresholdMinutes: activeProfile.operationPolicy?.idleReturnThresholdMinutes ?? 40,
-            lunchBreakEnabled: activeProfile.operationPolicy?.lunchBreak?.enabled === true,
-            lunchBreakStart: activeProfile.operationPolicy?.lunchBreak?.startLocalTime ?? "11:00",
-            lunchBreakEnd: activeProfile.operationPolicy?.lunchBreak?.endLocalTime ?? "12:00"
+            businessHoursEnabled:
+              activeProfile.operationPolicy?.businessHours?.enabled === true,
+            businessHoursStart:
+              activeProfile.operationPolicy?.businessHours?.startLocalTime ??
+              "08:00",
+            businessHoursEnd:
+              activeProfile.operationPolicy?.businessHours?.endLocalTime ??
+              "18:00",
+            idleReturnThresholdMinutes:
+              activeProfile.operationPolicy?.idleReturnThresholdMinutes ?? 40,
+            lunchBreakEnabled:
+              activeProfile.operationPolicy?.lunchBreak?.enabled === true,
+            lunchBreakStart:
+              activeProfile.operationPolicy?.lunchBreak?.startLocalTime ??
+              "11:00",
+            lunchBreakEnd:
+              activeProfile.operationPolicy?.lunchBreak?.endLocalTime ??
+              "12:00",
           };
         }
-        vehicleEditor.value = vehicles.value.map((vehicle) => buildVehicleEditorItem(vehicle));
+        vehicleEditor.value = vehicles.value.map((vehicle) =>
+          buildVehicleEditorItem(vehicle),
+        );
 
         if (stops.value.length && !form.value.pickupStopId) {
           form.value.pickupStopId = stops.value[0].id;
@@ -3222,7 +3641,7 @@ createApp({
       try {
         const [vehicleRes, requestRes] = await Promise.all([
           apiGet("/api/vehicles"),
-          apiGet("/api/ride-requests")
+          apiGet("/api/ride-requests"),
         ]);
         vehicles.value = vehicleRes.data ?? [];
         requests.value = requestRes.data ?? [];
@@ -3240,42 +3659,61 @@ createApp({
       return {
         mode,
         point: parsePointText(pointText),
-        ...(title ? { title } : {})
+        ...(title ? { title } : {}),
       };
     }
 
     function buildDispatchPayload() {
       const passengerName = form.value.passengerName.trim();
       const passengerPhone = form.value.passengerPhone.trim();
-      const desiredDropoffAt = buildDesiredDropoffAtFromDateAndClock(
-        form.value.desiredDate,
-        `${form.value.desiredHour}:${form.value.desiredMinute}`
+      const desiredTimeMode = normalizeDesiredTimeMode(
+        form.value.desiredTimeMode,
       );
-      const serviceProfileId = serviceProfile.value?.id ?? summary.value.serviceProfileId ?? null;
+      const desiredTimeAt = buildDesiredTimeAtFromDateAndClock(
+        form.value.desiredDate,
+        `${form.value.desiredHour}:${form.value.desiredMinute}`,
+        desiredTimeMode,
+      );
+      const serviceProfileId =
+        serviceProfile.value?.id ?? summary.value.serviceProfileId ?? null;
       return {
         serviceProfileId,
         pickup: buildLocation(
           form.value.pickupMode,
           form.value.pickupStopId,
           form.value.pickupPoint,
-          form.value.pickupTitle
+          form.value.pickupTitle,
         ),
         dropoff: buildLocation(
           form.value.dropoffMode,
           form.value.dropoffStopId,
           form.value.dropoffPoint,
-          form.value.dropoffTitle
+          form.value.dropoffTitle,
         ),
         partySize: Number(form.value.partySize),
         passenger:
           passengerName || passengerPhone
             ? {
                 ...(passengerName ? { name: passengerName } : {}),
-                ...(passengerPhone ? { phoneNumber: passengerPhone } : {})
+                ...(passengerPhone ? { phoneNumber: passengerPhone } : {}),
               }
             : null,
-        desiredDropoffAt
+        requestType: desiredTimeRequestType(desiredTimeMode),
+        desiredDropoffAt: desiredTimeMode === "DROPOFF" ? desiredTimeAt : null,
+        desiredPickupAt: desiredTimeMode === "PICKUP" ? desiredTimeAt : null,
       };
+    }
+
+    function desiredDeltaLabel(option) {
+      const pickupDelta = Number(option?.desiredPickupDeltaMinutes);
+      if (Number.isFinite(pickupDelta)) {
+        return `希望乗車との差 ${formatSignedMinutes(pickupDelta)}`;
+      }
+      const dropoffDelta = Number(option?.desiredDropoffDeltaMinutes);
+      if (Number.isFinite(dropoffDelta)) {
+        return `希望降車との差 ${formatSignedMinutes(dropoffDelta)}`;
+      }
+      return "";
     }
 
     function clearDispatchOptions() {
@@ -3302,8 +3740,10 @@ createApp({
           plannedPickupAt: option.plannedPickupAt ?? null,
           plannedDropoffAt: option.plannedDropoffAt ?? null,
           routeAfter: Array.isArray(option.routeAfter) ? option.routeAfter : [],
-          impactedRequests: Array.isArray(option.impactedRequests) ? option.impactedRequests : []
-        }
+          impactedRequests: Array.isArray(option.impactedRequests)
+            ? option.impactedRequests
+            : [],
+        },
       };
     }
 
@@ -3337,12 +3777,16 @@ createApp({
         previewPayload.value = payload;
         previewDirty.value = false;
 
-        if (result.status !== "ASSIGNABLE" || !Array.isArray(result.options) || !result.options.length) {
+        if (
+          result.status !== "ASSIGNABLE" ||
+          !Array.isArray(result.options) ||
+          !result.options.length
+        ) {
           clearDispatchOptions();
           dispatchPreview.value = {
             status: "REJECTED",
             reason: result.reason ?? "NO_FEASIBLE_VEHICLE",
-            diagnostics: result.diagnostics ?? null
+            diagnostics: result.diagnostics ?? null,
           };
           refreshLeafletMap({ focusSelected: true });
           return;
@@ -3367,13 +3811,15 @@ createApp({
         return;
       }
       if (previewDirty.value) {
-        errorMessage.value = "入力内容が変更されています。再試算してから追加してください。";
+        errorMessage.value =
+          "入力内容が変更されています。再試算してから追加してください。";
         return;
       }
 
       const selectedOption = selectedDispatchOption.value;
       if (!selectedOption) {
-        errorMessage.value = "候補が未選択です。再試算して候補を選んでください。";
+        errorMessage.value =
+          "候補が未選択です。再試算して候補を選んでください。";
         return;
       }
 
@@ -3382,8 +3828,11 @@ createApp({
         const payload = {
           ...previewPayload.value,
           preferredVehicleId: selectedOption.vehicleId ?? null,
-          requestType: selectedOption.requestType ?? "ARRIVE_BY",
-          desiredDropoffAt: selectedOption.desiredDropoffAt ?? null
+          requestType:
+            selectedOption.requestType ??
+            (previewPayload.value.desiredPickupAt ? "DEPART_AT" : "ARRIVE_BY"),
+          desiredDropoffAt: selectedOption.desiredDropoffAt ?? null,
+          desiredPickupAt: selectedOption.desiredPickupAt ?? null,
         };
         await apiPost("/api/ride-requests", payload);
         clearDispatchPreview();
@@ -3408,9 +3857,12 @@ createApp({
       errorMessage.value = "";
       loading.value = true;
       try {
-        await apiPost(`/api/ride-requests/${encodeURIComponent(requestId)}/cancel`, {
-          reason: "OPERATOR_CANCELLED"
-        });
+        await apiPost(
+          `/api/ride-requests/${encodeURIComponent(requestId)}/cancel`,
+          {
+            reason: "OPERATOR_CANCELLED",
+          },
+        );
         clearDispatchPreview();
         await refreshAll();
       } catch (error) {
@@ -3441,7 +3893,7 @@ createApp({
       loading.value = true;
       try {
         await apiPost("/api/ride-requests/reset", {
-          reason: "OPERATOR_RESET"
+          reason: "OPERATOR_RESET",
         });
         resetRequestsDialogOpen.value = false;
         clearDispatchPreview();
@@ -3461,8 +3913,8 @@ createApp({
           adapterType: "WEBHOOK",
           payload: {
             from: callForm.value.callerRaw,
-            to: "0880-11-2222"
-          }
+            to: "0880-11-2222",
+          },
         });
         await refreshAll();
       } catch (error) {
@@ -3474,6 +3926,7 @@ createApp({
       callRideOptions.value = [];
       selectedCallOptionId.value = "";
       callDesiredDropoffAt.value = null;
+      callDesiredPickupAt.value = null;
     }
 
     function buildPhoneRidePayload() {
@@ -3484,12 +3937,20 @@ createApp({
         throw new Error("乗車バス停と降車バス停は別にしてください。");
       }
 
-      const partySize = Math.max(1, Math.trunc(Number(callForm.value.partySize) || 1));
-      const desiredDropoffAt = buildDesiredDropoffAtFromDateAndClock(
-        callForm.value.desiredDate,
-        `${callForm.value.desiredHour}:${callForm.value.desiredMinute}`
+      const partySize = Math.max(
+        1,
+        Math.trunc(Number(callForm.value.partySize) || 1),
       );
-      const serviceProfileId = serviceProfile.value?.id ?? summary.value.serviceProfileId ?? null;
+      const desiredTimeMode = normalizeDesiredTimeMode(
+        callForm.value.desiredTimeMode,
+      );
+      const desiredTimeAt = buildDesiredTimeAtFromDateAndClock(
+        callForm.value.desiredDate,
+        `${callForm.value.desiredHour}:${callForm.value.desiredMinute}`,
+        desiredTimeMode,
+      );
+      const serviceProfileId =
+        serviceProfile.value?.id ?? summary.value.serviceProfileId ?? null;
 
       return {
         serviceProfileId,
@@ -3497,7 +3958,9 @@ createApp({
         pickup: { mode: "FIXED_STOP", stopId: callForm.value.pickupStopId },
         dropoff: { mode: "FIXED_STOP", stopId: callForm.value.dropoffStopId },
         partySize,
-        desiredDropoffAt
+        requestType: desiredTimeRequestType(desiredTimeMode),
+        desiredDropoffAt: desiredTimeMode === "DROPOFF" ? desiredTimeAt : null,
+        desiredPickupAt: desiredTimeMode === "PICKUP" ? desiredTimeAt : null,
       };
     }
 
@@ -3507,14 +3970,21 @@ createApp({
       try {
         const payload = buildPhoneRidePayload();
         const result = await apiPost("/api/phone-rides/options", payload);
-        if (result.status !== "ASSIGNABLE" || !Array.isArray(result.options) || !result.options.length) {
+        if (
+          result.status !== "ASSIGNABLE" ||
+          !Array.isArray(result.options) ||
+          !result.options.length
+        ) {
           clearPhoneRideOptions();
           errorMessage.value = previewReasonLabel(result.reason);
           return;
         }
         callRideOptions.value = result.options;
         selectedCallOptionId.value = result.options[0].optionId;
-        callDesiredDropoffAt.value = result.desiredDropoffAt ?? payload.desiredDropoffAt;
+        callDesiredDropoffAt.value =
+          result.desiredDropoffAt ?? payload.desiredDropoffAt ?? null;
+        callDesiredPickupAt.value =
+          result.desiredPickupAt ?? payload.desiredPickupAt ?? null;
       } catch (error) {
         clearPhoneRideOptions();
         errorMessage.value = error.message;
@@ -3531,10 +4001,11 @@ createApp({
       }
 
       const selectedOption = callRideOptions.value.find(
-        (option) => option.optionId === selectedCallOptionId.value
+        (option) => option.optionId === selectedCallOptionId.value,
       );
       if (!selectedOption) {
-        errorMessage.value = "選択された候補が見つかりません。候補を再取得してください。";
+        errorMessage.value =
+          "選択された候補が見つかりません。候補を再取得してください。";
         return;
       }
 
@@ -3543,8 +4014,10 @@ createApp({
         const payload = buildPhoneRidePayload();
         await apiPost("/api/phone-rides", {
           ...payload,
-          desiredDropoffAt: callDesiredDropoffAt.value ?? payload.desiredDropoffAt,
-          preferredVehicleId: selectedOption.vehicleId
+          desiredDropoffAt:
+            callDesiredDropoffAt.value ?? payload.desiredDropoffAt,
+          desiredPickupAt: callDesiredPickupAt.value ?? payload.desiredPickupAt,
+          preferredVehicleId: selectedOption.vehicleId,
         });
         clearPhoneRideOptions();
         await refreshAll();
@@ -3563,26 +4036,35 @@ createApp({
 
       try {
         const cruiseSpeedKmh = Number(profileEditor.value.cruiseSpeedKmh);
-        const pickupServiceMinutes = Number(profileEditor.value.pickupServiceMinutes);
-        const dropoffServiceMinutes = Number(profileEditor.value.dropoffServiceMinutes);
-        const idleReturnThresholdMinutes = Number(profileEditor.value.idleReturnThresholdMinutes);
+        const pickupServiceMinutes = Number(
+          profileEditor.value.pickupServiceMinutes,
+        );
+        const dropoffServiceMinutes = Number(
+          profileEditor.value.dropoffServiceMinutes,
+        );
+        const idleReturnThresholdMinutes = Number(
+          profileEditor.value.idleReturnThresholdMinutes,
+        );
         const officeName =
-          typeof profileEditor.value.officeName === "string" && profileEditor.value.officeName.trim()
+          typeof profileEditor.value.officeName === "string" &&
+          profileEditor.value.officeName.trim()
             ? profileEditor.value.officeName.trim()
             : "事務所";
         const nextProfile = {
           ...serviceProfile.value,
           reservationPolicy: {
             ...serviceProfile.value.reservationPolicy,
-            maxAdvanceDays: Number(profileEditor.value.maxAdvanceDays)
+            maxAdvanceDays: Number(profileEditor.value.maxAdvanceDays),
           },
           fleetPolicy: {
             ...serviceProfile.value.fleetPolicy,
-            maxActiveVehicles: Number(profileEditor.value.maxActiveVehicles)
+            maxActiveVehicles: Number(profileEditor.value.maxActiveVehicles),
           },
           poolingPolicy: {
             ...serviceProfile.value.poolingPolicy,
-            maxOnboardPerVehicle: Number(profileEditor.value.maxOnboardPerVehicle)
+            maxOnboardPerVehicle: Number(
+              profileEditor.value.maxOnboardPerVehicle,
+            ),
           },
           dispatchPolicy: {
             ...serviceProfile.value.dispatchPolicy,
@@ -3595,21 +4077,23 @@ createApp({
                 ? pickupServiceMinutes
                 : 0,
             dropoffServiceMinutes:
-              Number.isFinite(dropoffServiceMinutes) && dropoffServiceMinutes >= 0
+              Number.isFinite(dropoffServiceMinutes) &&
+              dropoffServiceMinutes >= 0
                 ? dropoffServiceMinutes
-                : 0
+                : 0,
           },
           locationPolicy: {
             ...serviceProfile.value.locationPolicy,
-            mode: profileEditor.value.locationMode
+            mode: profileEditor.value.locationMode,
           },
           operationPolicy: {
             ...(serviceProfile.value.operationPolicy ?? {}),
-            timeZone: serviceProfile.value.operationPolicy?.timeZone ?? "Asia/Tokyo",
+            timeZone:
+              serviceProfile.value.operationPolicy?.timeZone ?? "Asia/Tokyo",
             office: {
               ...(serviceProfile.value.operationPolicy?.office ?? {}),
               name: officeName,
-              point: null
+              point: null,
             },
             businessHours: {
               ...(serviceProfile.value.operationPolicy?.businessHours ?? {}),
@@ -3617,10 +4101,11 @@ createApp({
               startLocalTime: profileEditor.value.businessHoursStart ?? "08:00",
               endLocalTime: profileEditor.value.businessHoursEnd ?? "18:00",
               requireDepartFromOffice: true,
-              requireReturnToOffice: true
+              requireReturnToOffice: true,
             },
             idleReturnThresholdMinutes:
-              Number.isFinite(idleReturnThresholdMinutes) && idleReturnThresholdMinutes >= 0
+              Number.isFinite(idleReturnThresholdMinutes) &&
+              idleReturnThresholdMinutes >= 0
                 ? idleReturnThresholdMinutes
                 : 40,
             lunchBreak: {
@@ -3629,33 +4114,41 @@ createApp({
               startLocalTime: profileEditor.value.lunchBreakStart ?? "11:00",
               endLocalTime: profileEditor.value.lunchBreakEnd ?? "12:00",
               requireReturnToOffice: true,
-              departFromOfficeAtEnd: true
-            }
+              departFromOfficeAtEnd: true,
+            },
           },
           farePolicy: {
             ...(serviceProfile.value.farePolicy ?? {}),
-            model: profileEditor.value.fareModel
-          }
+            model: profileEditor.value.fareModel,
+          },
         };
 
         await apiPost("/api/service-profiles", nextProfile);
 
-        const currentFare = farePolicies.value.find((policy) => policy.id === nextProfile.farePolicyRef);
+        const currentFare = farePolicies.value.find(
+          (policy) => policy.id === nextProfile.farePolicyRef,
+        );
         if (currentFare) {
           await apiPost("/api/fare-policies", {
             ...currentFare,
-            model: profileEditor.value.fareModel
+            model: profileEditor.value.fareModel,
           });
         }
 
         const existingVehicleIds = new Set(
           vehicles.value
-            .map((vehicle) => (typeof vehicle.id === "string" ? vehicle.id.trim() : ""))
-            .filter(Boolean)
+            .map((vehicle) =>
+              typeof vehicle.id === "string" ? vehicle.id.trim() : "",
+            )
+            .filter(Boolean),
         );
         for (const vehicleEntry of vehicleEditor.value) {
-          const id = typeof vehicleEntry.id === "string" ? vehicleEntry.id.trim() : "";
-          const name = typeof vehicleEntry.name === "string" ? vehicleEntry.name.trim() : "";
+          const id =
+            typeof vehicleEntry.id === "string" ? vehicleEntry.id.trim() : "";
+          const name =
+            typeof vehicleEntry.name === "string"
+              ? vehicleEntry.name.trim()
+              : "";
           if (!id && !name) {
             continue;
           }
@@ -3663,19 +4156,27 @@ createApp({
             throw new Error("車両名は必須です。");
           }
           const capacity = Number(vehicleEntry.capacity);
-          const normalizedColor = normalizeColorHex(vehicleEntry.iconColor, "#0284c7");
+          const normalizedColor = normalizeColorHex(
+            vehicleEntry.iconColor,
+            "#0284c7",
+          );
           const officePointText =
             typeof vehicleEntry.officePoint === "string"
               ? vehicleEntry.officePoint.trim()
               : "";
-          const officePoint = officePointText ? parsePointText(officePointText) : null;
+          const officePoint = officePointText
+            ? parsePointText(officePointText)
+            : null;
           const payload = {
             id: id || undefined,
             name,
             iconColor: normalizedColor ?? "#0284c7",
-            capacity: Number.isFinite(capacity) && capacity > 0 ? Math.trunc(capacity) : 4,
+            capacity:
+              Number.isFinite(capacity) && capacity > 0
+                ? Math.trunc(capacity)
+                : 4,
             officePoint,
-            serviceProfileId: nextProfile.id
+            serviceProfileId: nextProfile.id,
           };
 
           if (id && existingVehicleIds.has(id)) {
@@ -3699,7 +4200,7 @@ createApp({
           previewDirty.value = true;
         }
       },
-      { deep: true }
+      { deep: true },
     );
 
     watch(
@@ -3707,7 +4208,7 @@ createApp({
       () => {
         clearPhoneRideOptions();
       },
-      { deep: true }
+      { deep: true },
     );
 
     watch(selectedDispatchOptionId, () => {
@@ -3722,10 +4223,12 @@ createApp({
       () => {
         refreshLeafletMap();
       },
-      { deep: true }
+      { deep: true },
     );
     watch(activePanelDateKey, () => {
-      refreshLeafletMap({ focusSelected: mapDisplayMode.value === "operation" });
+      refreshLeafletMap({
+        focusSelected: mapDisplayMode.value === "operation",
+      });
     });
 
     watch(
@@ -3740,7 +4243,7 @@ createApp({
         if (!normalizeLocationTitle(form.value.pickupTitle)) {
           void suggestLocationTitle("pickup");
         }
-      }
+      },
     );
 
     watch(
@@ -3755,7 +4258,7 @@ createApp({
         if (!normalizeLocationTitle(form.value.dropoffTitle)) {
           void suggestLocationTitle("dropoff");
         }
-      }
+      },
     );
 
     watch(activePanel, () => {
@@ -3807,6 +4310,9 @@ createApp({
       callForm,
       dispatchTimeMenuOpen,
       callTimeMenuOpen,
+      desiredTimeModeOptions,
+      formDesiredTimeModeLabel,
+      callDesiredTimeModeLabel,
       formDesiredTimeLabel,
       callDesiredTimeLabel,
       desiredHourOptions,
@@ -3826,6 +4332,8 @@ createApp({
       callRideOptionDateSections,
       selectedCallOptionId,
       callDesiredDropoffAt,
+      callDesiredPickupAt,
+      desiredDeltaLabel,
       locationTitleState,
       vehicles,
       requests,
@@ -3917,7 +4425,7 @@ createApp({
       createPhoneRide,
       addVehicleEditorRow,
       removeVehicleEditorRow,
-      saveProfile
+      saveProfile,
     };
   },
 
@@ -4272,8 +4780,8 @@ createApp({
                           ({{ dispatchAlgorithmPhaseLabel(option.algorithmPhase) }})
                         </template>
                       </span>
-                      <span v-if="option.desiredDropoffDeltaMinutes !== null">
-                        希望降車との差 {{ formatSignedMinutes(option.desiredDropoffDeltaMinutes) }}
+                      <span v-if="desiredDeltaLabel(option)">
+                        {{ desiredDeltaLabel(option) }}
                       </span>
                       <span v-else>{{ option.strategyDescription || '最短案内' }}</span>
                     </div>
@@ -4654,7 +5162,17 @@ createApp({
             <v-text-field type="number" min="1" v-model="form.partySize" density="compact" variant="outlined" hide-details />
           </div>
           <div class="rq-form-section" style="flex:1">
-            <div class="rq-form-label">希望降車時刻</div>
+            <div class="rq-form-label">時刻指定基準</div>
+            <v-select
+              :items="desiredTimeModeOptions"
+              v-model="form.desiredTimeMode"
+              item-title="title"
+              item-value="value"
+              density="compact"
+              variant="outlined"
+              hide-details
+            />
+            <div class="rq-form-label mt-2">{{ formDesiredTimeModeLabel }}</div>
             <v-menu
               v-model="dispatchTimeMenuOpen"
               :close-on-content-click="false"
@@ -4773,7 +5291,17 @@ createApp({
             <v-text-field type="number" min="1" v-model="callForm.partySize" density="compact" variant="outlined" hide-details />
           </div>
           <div class="rq-form-section" style="flex:1">
-            <div class="rq-form-label">希望降車時刻</div>
+            <div class="rq-form-label">時刻指定基準</div>
+            <v-select
+              :items="desiredTimeModeOptions"
+              v-model="callForm.desiredTimeMode"
+              item-title="title"
+              item-value="value"
+              density="compact"
+              variant="outlined"
+              hide-details
+            />
+            <div class="rq-form-label mt-2">{{ callDesiredTimeModeLabel }}</div>
             <v-menu
               v-model="callTimeMenuOpen"
               :close-on-content-click="false"
@@ -4859,7 +5387,7 @@ createApp({
           />
         </div>
         <v-btn color="secondary" block variant="tonal" prepend-icon="mdi-format-list-bulleted-square" :loading="loading" size="small" density="comfortable" @click="fetchPhoneRideOptions" class="rq-action-btn">
-          降車時刻ベースで候補取得
+          時刻条件で候補取得
         </v-btn>
         <div class="rq-form-section rq-call-options-panel">
           <div class="rq-form-label">
@@ -4897,15 +5425,17 @@ createApp({
                         ({{ dispatchAlgorithmPhaseLabel(option.algorithmPhase) }})
                       </template>
                     </span>
-                    <span v-if="option.desiredDropoffDeltaMinutes !== null">
-                      希望降車との差 {{ formatSignedMinutes(option.desiredDropoffDeltaMinutes) }}
+                    <span v-if="desiredDeltaLabel(option)">
+                      {{ desiredDeltaLabel(option) }}
                     </span>
                   </div>
                 </div>
               </label>
             </div>
           </div>
-          <div v-else class="rq-inline-help">人数・予約日・希望降車時刻を入力して候補を取得してください。</div>
+          <div v-else class="rq-inline-help">
+            人数・予約日・{{ callDesiredTimeModeLabel }}を入力して候補を取得してください。
+          </div>
         </div>
         <v-btn color="primary" block prepend-icon="mdi-phone-plus" :loading="loading" size="small" density="comfortable" @click="createPhoneRide" class="rq-submit-btn rq-action-btn">
           選択した候補で予約確定
@@ -5154,5 +5684,7 @@ createApp({
 
   </div>
 </v-app>
-  `
-}).use(vuetify).mount("#app");
+  `,
+})
+  .use(vuetify)
+  .mount("#app");

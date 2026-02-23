@@ -20,22 +20,36 @@ function generatePreviewRequestId() {
   return `preview_${stamp}_${nonce}`;
 }
 
-function normalizeDesiredDropoffAt(value) {
+function normalizeDesiredDateTime(value, fieldName) {
   if (!value) {
     return null;
   }
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
-    throw new Error("desiredDropoffAt must be a valid ISO datetime");
+    throw new Error(`${fieldName} must be a valid ISO datetime`);
   }
   return date.toISOString();
 }
 
-function resolvePhoneRequestType({ requestType, desiredDropoffAt }) {
+function normalizeDesiredDropoffAt(value) {
+  return normalizeDesiredDateTime(value, "desiredDropoffAt");
+}
+
+function normalizeDesiredPickupAt(value) {
+  return normalizeDesiredDateTime(value, "desiredPickupAt");
+}
+
+function resolvePhoneRequestType({ requestType, desiredDropoffAt = null, desiredPickupAt = null }) {
   if (typeof requestType === "string" && requestType.trim()) {
     return requestType.trim().toUpperCase();
   }
-  return desiredDropoffAt ? "ARRIVE_BY" : "ASAP";
+  if (desiredDropoffAt) {
+    return "ARRIVE_BY";
+  }
+  if (desiredPickupAt) {
+    return "DEPART_AT";
+  }
+  return "ASAP";
 }
 
 function resolveRequestTimeWindow({
@@ -43,20 +57,21 @@ function resolveRequestTimeWindow({
   desiredDropoffAt = null,
   desiredPickupAt = null
 }) {
-  const normalizedDesiredDropoffAt = normalizeDesiredDropoffAt(
-    desiredDropoffAt ?? desiredPickupAt ?? null
-  );
+  const normalizedDesiredDropoffAt = normalizeDesiredDropoffAt(desiredDropoffAt);
+  const normalizedDesiredPickupAt = normalizeDesiredPickupAt(desiredPickupAt);
   const hasRequestedType = typeof requestType === "string" && requestType.trim().length > 0;
-  if (!normalizedDesiredDropoffAt && !hasRequestedType) {
+  if (!normalizedDesiredDropoffAt && !normalizedDesiredPickupAt && !hasRequestedType) {
     return null;
   }
   return {
     requestType: resolvePhoneRequestType({
       requestType,
-      desiredDropoffAt: normalizedDesiredDropoffAt
+      desiredDropoffAt: normalizedDesiredDropoffAt,
+      desiredPickupAt: normalizedDesiredPickupAt
     }),
     scheduledAt: null,
-    desiredDropoffAt: normalizedDesiredDropoffAt
+    desiredDropoffAt: normalizedDesiredDropoffAt,
+    desiredPickupAt: normalizedDesiredPickupAt
   };
 }
 
@@ -96,23 +111,25 @@ function isSameLocalDate(left, right) {
   );
 }
 
-function shouldIncludeFastestStrategy(requestedDesiredDropoffAt, now = new Date()) {
-  const requestedTs = toTimestamp(requestedDesiredDropoffAt);
+function shouldIncludeFastestStrategy(requestedDesiredTimeAt, now = new Date()) {
+  const requestedTs = toTimestamp(requestedDesiredTimeAt);
   if (!Number.isFinite(requestedTs)) {
     return true;
   }
   return isSameLocalDate(new Date(requestedTs), now);
 }
 
-function absoluteDropoffDeltaMinutes(option, desiredDropoffTs) {
-  if (!Number.isFinite(desiredDropoffTs)) {
+function absoluteTimeDeltaMinutes(option, desiredTs, target = "DROPOFF") {
+  if (!Number.isFinite(desiredTs)) {
     return Number.POSITIVE_INFINITY;
   }
-  const dropoffTs = toTimestamp(option?.plannedDropoffAt);
-  if (!Number.isFinite(dropoffTs)) {
+  const plannedTs = toTimestamp(
+    target === "PICKUP" ? option?.plannedPickupAt : option?.plannedDropoffAt
+  );
+  if (!Number.isFinite(plannedTs)) {
     return Number.POSITIVE_INFINITY;
   }
-  return Math.abs((dropoffTs - desiredDropoffTs) / (60 * 1000));
+  return Math.abs((plannedTs - desiredTs) / (60 * 1000));
 }
 
 function buildPreviewRideRequest({
@@ -295,8 +312,25 @@ export async function listRideRequestOptions({
   });
   const normalizedLimit = normalizeOptionLimit(optionLimit, 5);
   const requestedDesiredDropoffAt = requestedTimeWindow?.desiredDropoffAt ?? null;
-  const requestedDesiredDropoffTs = toTimestamp(requestedDesiredDropoffAt);
-  const includeFastestStrategy = shouldIncludeFastestStrategy(requestedDesiredDropoffAt);
+  const requestedDesiredPickupAt = requestedTimeWindow?.desiredPickupAt ?? null;
+  const requestedType =
+    typeof requestedTimeWindow?.requestType === "string"
+      ? requestedTimeWindow.requestType.trim().toUpperCase()
+      : "";
+  const requestedTimeTarget =
+    requestedType === "ARRIVE_BY" && requestedDesiredDropoffAt
+      ? "DROPOFF"
+      : requestedType === "DEPART_AT" && requestedDesiredPickupAt
+        ? "PICKUP"
+        : requestedDesiredDropoffAt
+          ? "DROPOFF"
+          : requestedDesiredPickupAt
+            ? "PICKUP"
+            : null;
+  const requestedTimeAt =
+    requestedTimeTarget === "PICKUP" ? requestedDesiredPickupAt : requestedDesiredDropoffAt;
+  const requestedTimeTs = toTimestamp(requestedTimeAt);
+  const includeFastestStrategy = shouldIncludeFastestStrategy(requestedTimeAt);
 
   const strategies = [];
   if (includeFastestStrategy) {
@@ -307,12 +341,13 @@ export async function listRideRequestOptions({
       timeWindow: {
         requestType: "ASAP",
         scheduledAt: null,
-        desiredDropoffAt: null
+        desiredDropoffAt: null,
+        desiredPickupAt: null
       }
     });
   }
 
-  if (requestedDesiredDropoffAt) {
+  if (requestedTimeTarget === "DROPOFF" && requestedDesiredDropoffAt) {
     strategies.push({
       key: "REQUESTED_TIME",
       label: "希望時刻に近づける",
@@ -320,7 +355,20 @@ export async function listRideRequestOptions({
       timeWindow: {
         requestType: "ARRIVE_BY",
         scheduledAt: null,
-        desiredDropoffAt: requestedDesiredDropoffAt
+        desiredDropoffAt: requestedDesiredDropoffAt,
+        desiredPickupAt: null
+      }
+    });
+  } else if (requestedTimeTarget === "PICKUP" && requestedDesiredPickupAt) {
+    strategies.push({
+      key: "REQUESTED_TIME",
+      label: "希望時刻に近づける",
+      description: "希望乗車時刻を優先する案",
+      timeWindow: {
+        requestType: "DEPART_AT",
+        scheduledAt: null,
+        desiredDropoffAt: null,
+        desiredPickupAt: requestedDesiredPickupAt
       }
     });
   }
@@ -333,7 +381,8 @@ export async function listRideRequestOptions({
       timeWindow: {
         requestType: "ASAP",
         scheduledAt: null,
-        desiredDropoffAt: null
+        desiredDropoffAt: null,
+        desiredPickupAt: null
       }
     });
   }
@@ -357,6 +406,7 @@ export async function listRideRequestOptions({
       serviceProfile,
       context,
       desiredDropoffAt: strategy.timeWindow.desiredDropoffAt,
+      desiredPickupAt: strategy.timeWindow.desiredPickupAt,
       optionLimit: normalizedLimit
     });
     strategyResults.push({
@@ -371,27 +421,29 @@ export async function listRideRequestOptions({
               strategyLabel: strategy.label,
               strategyDescription: strategy.description,
               requestType: strategy.timeWindow.requestType,
-              desiredDropoffAt: strategy.timeWindow.desiredDropoffAt
+              desiredDropoffAt: strategy.timeWindow.desiredDropoffAt,
+              desiredPickupAt: strategy.timeWindow.desiredPickupAt
             }))
           : []
     });
   }
 
-  if (Number.isFinite(requestedDesiredDropoffTs)) {
+  if (Number.isFinite(requestedTimeTs) && requestedTimeTarget) {
     const fastestEntry =
       strategyResults.find((entry) => entry.strategy.key === "FASTEST") ?? null;
     const requestedEntry =
       strategyResults.find((entry) => entry.strategy.key === "REQUESTED_TIME") ?? null;
     if (fastestEntry && requestedEntry && Array.isArray(requestedEntry.options)) {
       const fastestBestDelta = fastestEntry.options.reduce((best, option) => {
-        const delta = absoluteDropoffDeltaMinutes(option, requestedDesiredDropoffTs);
+        const delta = absoluteTimeDeltaMinutes(option, requestedTimeTs, requestedTimeTarget);
         return Math.min(best, delta);
       }, Number.POSITIVE_INFINITY);
 
       if (Number.isFinite(fastestBestDelta)) {
         requestedEntry.options = requestedEntry.options.filter(
           (option) =>
-            absoluteDropoffDeltaMinutes(option, requestedDesiredDropoffTs) < fastestBestDelta
+            absoluteTimeDeltaMinutes(option, requestedTimeTs, requestedTimeTarget) <
+            fastestBestDelta
         );
       }
     }
@@ -431,6 +483,7 @@ export async function listRideRequestOptions({
     return {
       status: "ASSIGNABLE",
       desiredDropoffAt: requestedDesiredDropoffAt,
+      desiredPickupAt: requestedDesiredPickupAt,
       options
     };
   }
@@ -446,6 +499,7 @@ export async function listRideRequestOptions({
     diagnostics: rejected?.result?.diagnostics ?? null,
     resolvedLocations: rejected?.result?.resolvedLocations ?? null,
     desiredDropoffAt: requestedDesiredDropoffAt,
+    desiredPickupAt: requestedDesiredPickupAt,
     options: []
   };
 }
@@ -778,12 +832,15 @@ export async function createPhoneRideRequest({
     passenger && typeof passenger === "object"
       ? { ...passengerFromCaller, ...passenger }
       : passengerFromCaller;
-  const normalizedDesiredDropoffAt = normalizeDesiredDropoffAt(
-    desiredDropoffAt ?? desiredPickupAt ?? null
-  );
-  const resolvedRequestType = resolvePhoneRequestType({
+  const resolvedTimeWindow = resolveRequestTimeWindow({
     requestType,
-    desiredDropoffAt: normalizedDesiredDropoffAt
+    desiredDropoffAt,
+    desiredPickupAt
+  });
+  const resolvedRequestType = resolvePhoneRequestType({
+    requestType: resolvedTimeWindow?.requestType ?? requestType,
+    desiredDropoffAt: resolvedTimeWindow?.desiredDropoffAt ?? null,
+    desiredPickupAt: resolvedTimeWindow?.desiredPickupAt ?? null
   });
   const allowedVehicleId = normalizePreferredVehicleId(preferredVehicleId);
 
@@ -797,7 +854,8 @@ export async function createPhoneRideRequest({
     partySize,
     passenger: resolvedPassenger,
     requestType: resolvedRequestType,
-    desiredDropoffAt: normalizedDesiredDropoffAt
+    desiredDropoffAt: resolvedTimeWindow?.desiredDropoffAt ?? null,
+    desiredPickupAt: resolvedTimeWindow?.desiredPickupAt ?? null
   });
 
   return dispatchRideRequest({
@@ -838,12 +896,15 @@ export async function listPhoneRideOptions({
     passenger && typeof passenger === "object"
       ? { ...passengerFromCaller, ...passenger }
       : passengerFromCaller;
-  const normalizedDesiredDropoffAt = normalizeDesiredDropoffAt(
-    desiredDropoffAt ?? desiredPickupAt ?? null
-  );
-  const resolvedRequestType = resolvePhoneRequestType({
+  const resolvedTimeWindow = resolveRequestTimeWindow({
     requestType,
-    desiredDropoffAt: normalizedDesiredDropoffAt
+    desiredDropoffAt,
+    desiredPickupAt
+  });
+  const resolvedRequestType = resolvePhoneRequestType({
+    requestType: resolvedTimeWindow?.requestType ?? requestType,
+    desiredDropoffAt: resolvedTimeWindow?.desiredDropoffAt ?? null,
+    desiredPickupAt: resolvedTimeWindow?.desiredPickupAt ?? null
   });
   const linkedUser = callerE164 ? repository.findUserByPhone(callerE164) : null;
   const normalizedOptionLimit = normalizeOptionLimit(optionLimit, 5);
@@ -862,12 +923,14 @@ export async function listPhoneRideOptions({
       timeWindow: {
         requestType: resolvedRequestType,
         scheduledAt: null,
-        desiredDropoffAt: normalizedDesiredDropoffAt
+        desiredDropoffAt: resolvedTimeWindow?.desiredDropoffAt ?? null,
+        desiredPickupAt: resolvedTimeWindow?.desiredPickupAt ?? null
       }
     }),
     serviceProfile,
     context,
-    desiredDropoffAt: normalizedDesiredDropoffAt,
+    desiredDropoffAt: resolvedTimeWindow?.desiredDropoffAt ?? null,
+    desiredPickupAt: resolvedTimeWindow?.desiredPickupAt ?? null,
     optionLimit: normalizedOptionLimit
   });
 }
