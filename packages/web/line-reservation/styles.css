@@ -179,6 +179,18 @@ body {
   box-shadow: 0 12px 28px rgba(15, 23, 42, 0.18);
 }
 
+.lr-fallback-link {
+  margin-top: 10px;
+  color: #0369a1;
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.lr-fallback-link:hover {
+  text-decoration: underline;
+}
+
 .lr-note {
   margin: 10px 0 0;
   color: var(--lr-muted);

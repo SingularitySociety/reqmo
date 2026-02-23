@@ -4,6 +4,7 @@ const API_BASE =
 const elements = {
   guestEntryPanel: document.getElementById("guest-entry-panel"),
   friendAddQrImage: document.getElementById("friend-add-qr-image"),
+  friendAddFallbackLink: document.getElementById("friend-add-fallback-link"),
   lineSessionCard: document.getElementById("line-session-card"),
   reservationFormCard: document.getElementById("reservation-form-card"),
   reservationsCard: document.getElementById("reservations-card"),
@@ -209,12 +210,30 @@ function resolveLineUserIdFromQuery() {
   return (query.get("lineUserId") || "").trim();
 }
 
-function buildQrImageUrl(rawUrl) {
-  const url = typeof rawUrl === "string" ? rawUrl.trim() : "";
+function buildOfficialAccountQrUrl(officialAccountId) {
+  const normalized = typeof officialAccountId === "string" ? officialAccountId.trim() : "";
+  const account = normalized.startsWith("@") ? normalized.slice(1) : normalized;
+  if (!account) {
+    return "";
+  }
+  return `https://qr-official.line.me/gs/M_${encodeURIComponent(account)}_GW.png`;
+}
+
+function buildQrImageByFriendAddUrl(friendAddUrl) {
+  const url = typeof friendAddUrl === "string" ? friendAddUrl.trim() : "";
   if (!url) {
     return "";
   }
   return `https://api.qrserver.com/v1/create-qr-code/?size=300x300&format=png&data=${encodeURIComponent(url)}`;
+}
+
+function resolveGuestQrSources() {
+  const officialQrUrl = buildOfficialAccountQrUrl(state.config.officialAccountId);
+  const fallbackQrUrl = buildQrImageByFriendAddUrl(state.config.friendAddUrl);
+  return {
+    primary: officialQrUrl || fallbackQrUrl,
+    fallback: fallbackQrUrl
+  };
 }
 
 function setSectionVisibility(element, visible) {
@@ -241,10 +260,17 @@ function renderGuestEntry() {
     return;
   }
 
-  const qrUrl = buildQrImageUrl(state.config.friendAddUrl);
+  const qrSource = resolveGuestQrSources();
   if (elements.friendAddQrImage) {
-    elements.friendAddQrImage.src = qrUrl;
-    elements.friendAddQrImage.hidden = !qrUrl;
+    elements.friendAddQrImage.src = qrSource.primary;
+    elements.friendAddQrImage.hidden = !qrSource.primary;
+    elements.friendAddQrImage.dataset.fallbackQr = qrSource.fallback || "";
+  }
+  if (elements.friendAddFallbackLink) {
+    const url = state.config.friendAddUrl;
+    const hasUrl = typeof url === "string" && url.trim();
+    elements.friendAddFallbackLink.hidden = !hasUrl;
+    elements.friendAddFallbackLink.href = hasUrl ? url.trim() : "#";
   }
 }
 
@@ -769,6 +795,17 @@ function registerEvents() {
         return;
       }
       cancelReservationById(requestId);
+    });
+  }
+
+  if (elements.friendAddQrImage) {
+    elements.friendAddQrImage.addEventListener("error", () => {
+      const fallbackQr = elements.friendAddQrImage.dataset.fallbackQr || "";
+      if (fallbackQr && elements.friendAddQrImage.src !== fallbackQr) {
+        elements.friendAddQrImage.src = fallbackQr;
+        return;
+      }
+      elements.friendAddQrImage.hidden = true;
     });
   }
 }
