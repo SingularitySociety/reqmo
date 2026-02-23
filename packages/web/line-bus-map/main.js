@@ -121,6 +121,18 @@ function normalizeVehicleStatus(value) {
   return normalized || "UNKNOWN";
 }
 
+function resolveVehicleDisplayName(vehicle) {
+  const name = typeof vehicle?.name === "string" ? vehicle.name.trim() : "";
+  if (name) {
+    return name;
+  }
+  const id = typeof vehicle?.id === "string" ? vehicle.id.trim() : "";
+  if (id) {
+    return id;
+  }
+  return "車両";
+}
+
 function resolveVehicleStatusTone(status) {
   if (status === "ACTIVE") {
     return "active";
@@ -133,6 +145,7 @@ function resolveVehicleStatusTone(status) {
 
 function buildVehiclePopup(vehicle, point) {
   const status = normalizeVehicleStatus(vehicle?.status);
+  const displayName = resolveVehicleDisplayName(vehicle);
   const id = escapeHtml(vehicle?.id || "-");
   const onboardCount = Number.isFinite(Number(vehicle?.onboardCount))
     ? Number(vehicle.onboardCount)
@@ -145,7 +158,8 @@ function buildVehiclePopup(vehicle, point) {
   const lng = formatCoordinate(point?.lng);
   return [
     `<div class="lb-popup">`,
-    `<strong>${id}</strong>`,
+    `<strong>${escapeHtml(displayName)}</strong>`,
+    `<div>ID: ${id}</div>`,
     `<div>状態: ${escapeHtml(status)}</div>`,
     `<div>乗車人数: ${escapeHtml(String(occupancy))}</div>`,
     `<div>座標: ${escapeHtml(lat)}, ${escapeHtml(lng)}</div>`,
@@ -206,6 +220,7 @@ function renderVehicleList(vehicles) {
   }
   elements.vehicleList.innerHTML = list
     .map((vehicle) => {
+      const displayName = resolveVehicleDisplayName(vehicle);
       const id = escapeHtml(vehicle?.id || "-");
       const status = normalizeVehicleStatus(vehicle?.status);
       const tone = resolveVehicleStatusTone(status);
@@ -223,9 +238,10 @@ function renderVehicleList(vehicles) {
       return [
         '<li class="lb-vehicle-item">',
         '<div class="lb-vehicle-head">',
-        `<span class="lb-vehicle-id">${id}</span>`,
+        `<span class="lb-vehicle-id">${escapeHtml(displayName)}</span>`,
         `<span class="lb-status-pill lb-status-pill-${tone}">${escapeHtml(status)}</span>`,
         "</div>",
+        `<div class="lb-vehicle-meta">ID: ${id}</div>`,
         `<div class="lb-vehicle-meta">乗車人数: ${escapeHtml(String(occupancy))}</div>`,
         `<div class="lb-vehicle-meta">座標: ${escapeHtml(lat)}, ${escapeHtml(lng)}</div>`,
         `<div class="lb-vehicle-meta">更新: ${escapeHtml(updatedAt)}</div>`,
