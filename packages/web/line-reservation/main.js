@@ -27,6 +27,20 @@ const state = {
   session: null,
 };
 
+function getErrorMessage(error) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  return "";
+}
+
+function isAccessTokenRevokedError(error) {
+  return /access token revoked/i.test(getErrorMessage(error));
+}
+
 function setStatus(message, tone = "info") {
   elements.statusMessage.textContent = message || "";
   elements.statusMessage.dataset.tone = tone;
@@ -217,12 +231,31 @@ async function resolveLiffProfile() {
       setStatus("LINEログインでユーザー連携できます。", "warn");
       return;
     }
-    const profile = await window.liff.getProfile();
+    let profile = null;
+    try {
+      profile = await window.liff.getProfile();
+    } catch (error) {
+      if (isAccessTokenRevokedError(error)) {
+        try {
+          window.liff.logout();
+        } catch {
+          // ignore logout failure and continue with login prompt
+        }
+        state.lineUserId = "";
+        state.displayName = "";
+        setStatus(
+          "LINEセッションの有効期限が切れました。LINEログインを押して再ログインしてください。",
+          "warn"
+        );
+        return;
+      }
+      throw error;
+    }
     state.lineUserId = profile?.userId || "";
     state.displayName = profile?.displayName || "";
     setStatus("LINEプロフィールを取得しました。", "ok");
   } catch (error) {
-    setStatus(`LIFF初期化に失敗: ${error.message}`, "error");
+    setStatus(`LIFF初期化に失敗: ${getErrorMessage(error)}`, "error");
   }
 }
 
@@ -290,9 +323,11 @@ function registerEvents() {
       return;
     }
     if (window.liff.isLoggedIn()) {
-      loadSession().catch((error) => {
-        setStatus(`更新に失敗しました: ${error.message}`, "error");
-      });
+      resolveLiffProfile()
+        .then(() => loadSession())
+        .catch((error) => {
+          setStatus(`更新に失敗しました: ${getErrorMessage(error)}`, "error");
+        });
       return;
     }
     window.liff.login({ redirectUri: window.location.href });
