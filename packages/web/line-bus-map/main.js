@@ -6,6 +6,16 @@ const SHIMANTO_FALLBACK_POINT = {
   lat: 32.9912,
   lng: 132.9339
 };
+const BUS_ICON_COLORS = [
+  "#0284c7",
+  "#059669",
+  "#ea580c",
+  "#7c3aed",
+  "#dc2626",
+  "#0f766e",
+  "#b45309",
+  "#2563eb"
+];
 
 const elements = {
   statusMessage: document.getElementById("status-message"),
@@ -62,6 +72,20 @@ async function apiGet(path) {
 function toFiniteNumber(value) {
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
+}
+
+function normalizeColorHex(value, fallback = null) {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+  const text = value.trim();
+  if (!text) {
+    return fallback;
+  }
+  if (!/^#([0-9a-fA-F]{6})$/.test(text)) {
+    return fallback;
+  }
+  return text.toLowerCase();
 }
 
 function resolveVehiclePoint(vehicle) {
@@ -121,6 +145,26 @@ function normalizeVehicleStatus(value) {
   return normalized || "UNKNOWN";
 }
 
+function hashVehicleColorSeed(value) {
+  const text = String(value ?? "");
+  let hash = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    hash = (hash << 5) - hash + text.charCodeAt(i);
+    hash |= 0;
+  }
+  return hash;
+}
+
+function resolveVehicleColor(vehicle) {
+  const configured = normalizeColorHex(vehicle?.iconColor);
+  if (configured) {
+    return configured;
+  }
+  const seed = typeof vehicle?.id === "string" ? vehicle.id : "veh";
+  const index = Math.abs(hashVehicleColorSeed(seed)) % BUS_ICON_COLORS.length;
+  return BUS_ICON_COLORS[index];
+}
+
 function resolveVehicleDisplayName(vehicle) {
   const name = typeof vehicle?.name === "string" ? vehicle.name.trim() : "";
   if (name) {
@@ -167,15 +211,21 @@ function buildVehiclePopup(vehicle, point) {
   ].join("");
 }
 
-function createMarker(point, status) {
-  const tone = resolveVehicleStatusTone(status);
-  const color = tone === "active" ? "#0ea5e9" : tone === "inactive" ? "#94a3b8" : "#f59e0b";
-  return window.L.circleMarker([point.lat, point.lng], {
-    radius: 9,
-    color,
-    fillColor: color,
-    fillOpacity: 0.9,
-    weight: 2
+function buildVehicleBusIcon(vehicle) {
+  const color = resolveVehicleColor(vehicle);
+  const size = 28;
+  return window.L.divIcon({
+    className: "rq-bus-icon",
+    html:
+      `<div style="width:${size}px;height:${size}px;border-radius:999px;` +
+      `background:${color};border:2px solid #ffffff;` +
+      "box-shadow:0 3px 10px rgba(15,23,42,0.35);" +
+      "display:flex;align-items:center;justify-content:center;" +
+      'color:#ffffff;font-size:16px;line-height:1;">' +
+      '<span class="mdi mdi-bus"></span></div>',
+    iconSize: [size, size],
+    iconAnchor: [size / 2, size / 2],
+    popupAnchor: [0, -size / 2]
   });
 }
 
@@ -184,7 +234,6 @@ function upsertVehicleMarker(vehicle, point) {
     return;
   }
   const key = vehicle.id;
-  const status = normalizeVehicleStatus(vehicle.status);
   const popupHtml = buildVehiclePopup(vehicle, point);
   const existing = state.markers.get(key);
   if (existing) {
@@ -192,7 +241,10 @@ function upsertVehicleMarker(vehicle, point) {
     existing.setPopupContent(popupHtml);
     return;
   }
-  const marker = createMarker(point, status);
+  const marker = window.L.marker([point.lat, point.lng], {
+    icon: buildVehicleBusIcon(vehicle),
+    zIndexOffset: 500
+  });
   marker.bindPopup(popupHtml);
   marker.addTo(state.map);
   state.markers.set(key, marker);
