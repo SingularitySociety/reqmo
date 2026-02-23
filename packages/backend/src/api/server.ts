@@ -399,6 +399,70 @@ function resolveLineMiniAppTenantId(value) {
   return configured || "tenant_default";
 }
 
+function resolveLineMiniAppDisplayName(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function resolveLineMiniAppReservationInput({
+  repository,
+  body
+}) {
+  const lineUserId = typeof body?.lineUserId === "string" ? body.lineUserId.trim() : "";
+  if (!lineUserId) {
+    throw new Error("lineUserId is required");
+  }
+  const displayName = resolveLineMiniAppDisplayName(body?.displayName);
+  const pickupStopId = normalizeLineMiniAppStopId(body?.pickupStopId, "pickupStopId");
+  const dropoffStopId = normalizeLineMiniAppStopId(body?.dropoffStopId, "dropoffStopId");
+  if (pickupStopId === dropoffStopId) {
+    throw new Error("pickupStopId and dropoffStopId must be different");
+  }
+
+  const pickupStop =
+    typeof repository?.findStopById === "function"
+      ? repository.findStopById(pickupStopId)
+      : null;
+  if (!pickupStop) {
+    return {
+      status: "STOP_NOT_FOUND",
+      field: "pickupStopId",
+      stopId: pickupStopId
+    };
+  }
+  const dropoffStop =
+    typeof repository?.findStopById === "function"
+      ? repository.findStopById(dropoffStopId)
+      : null;
+  if (!dropoffStop) {
+    return {
+      status: "STOP_NOT_FOUND",
+      field: "dropoffStopId",
+      stopId: dropoffStopId
+    };
+  }
+
+  const desiredMode = normalizeLineMiniAppDesiredMode(body?.desiredMode);
+  const desiredAt = normalizeLineMiniAppDesiredAt(body?.desiredAt);
+  const parsedPartySize = Number(body?.partySize);
+  const partySize =
+    Number.isFinite(parsedPartySize) && parsedPartySize > 0
+      ? Math.max(1, Math.trunc(parsedPartySize))
+      : 1;
+  const tenantId = resolveLineMiniAppTenantId(body?.tenantId);
+
+  return {
+    status: "OK",
+    lineUserId,
+    displayName,
+    pickupStopId,
+    dropoffStopId,
+    desiredMode,
+    desiredAt,
+    partySize,
+    tenantId
+  };
+}
+
 function normalizeAdminUserName(value) {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -546,6 +610,36 @@ function serializeLineReservation(repository, rideRequest) {
     desiredDropoffAt: rideRequest?.timeWindow?.desiredDropoffAt ?? null,
     plannedPickupAt: rideRequest?.assignment?.plannedPickupAt ?? null,
     plannedDropoffAt: rideRequest?.assignment?.plannedDropoffAt ?? null
+  };
+}
+
+function serializeLineReservationPreview({
+  repository,
+  reservationInput,
+  simulation
+}) {
+  return {
+    pickupLabel: resolveLocationLabelForResponse(repository, {
+      mode: "FIXED_STOP",
+      stopId: reservationInput.pickupStopId
+    }),
+    dropoffLabel: resolveLocationLabelForResponse(repository, {
+      mode: "FIXED_STOP",
+      stopId: reservationInput.dropoffStopId
+    }),
+    desiredMode: reservationInput.desiredMode,
+    desiredAt: reservationInput.desiredAt,
+    etaPickupMinutes:
+      Number.isFinite(Number(simulation?.etaPickupMinutes))
+        ? Number(simulation.etaPickupMinutes)
+        : null,
+    etaDropoffMinutes:
+      Number.isFinite(Number(simulation?.etaDropoffMinutes))
+        ? Number(simulation.etaDropoffMinutes)
+        : null,
+    plannedPickupAt: simulation?.plannedPickupAt ?? null,
+    plannedDropoffAt: simulation?.plannedDropoffAt ?? null,
+    desiredDropoffSuggestion: simulation?.desiredDropoffSuggestion ?? null
   };
 }
 
@@ -1070,6 +1164,11 @@ export function createReqmoServer({
           lineUserId,
           displayName
         });
+        await tryEnsureLineRichMenuForUser({
+          req,
+          lineUserId,
+          isRegistered: Boolean(session.registration?.isRegistered)
+        });
         await flushRepository(repository);
         return jsonResponse(res, 200, {
           status: "OK",
@@ -1152,10 +1251,7 @@ export function createReqmoServer({
         if (!lineUserId) {
           throw new Error("lineUserId is required");
         }
-        const displayName =
-          typeof body.displayName === "string" && body.displayName.trim()
-            ? body.displayName.trim()
-            : null;
+        const displayName = resolveLineMiniAppDisplayName(body.displayName);
         const result = registerLineMiniAppUser({
           repository,
           lineUserId,
@@ -1183,64 +1279,92 @@ export function createReqmoServer({
         });
       }
 
+      if (req.method === "POST" && pathname === "/api/line/miniapp/reservations/preview") {
+        const body = await parseJsonBody(req);
+        const reservationInput = resolveLineMiniAppReservationInput({
+          repository,
+          body
+        });
+        if (reservationInput.status !== "OK") {
+          return jsonResponse(res, 404, reservationInput);
+        }
+        const { user } = ensureLineUserIdentity({
+          repository,
+          lineUserId: reservationInput.lineUserId,
+          displayName: reservationInput.displayName,
+          source: "LINE_MINIAPP_BOOKING_PREVIEW"
+        });
+        const registration = resolveLineUserRegistrationStatus({
+          repository,
+          lineUserId: reservationInput.lineUserId
+        });
+        if (!registration.isRegistered) {
+          return jsonResponse(res, 403, {
+            status: "REGISTRATION_REQUIRED",
+            registration,
+            message: "予約には利用者登録（名前・電話番号）が必要です。"
+          });
+        }
+
+        const result = await previewRideRequest({
+          repository,
+          serviceProfileId: body.serviceProfileId ?? activeServiceProfileId,
+          tenantId: reservationInput.tenantId,
+          requesterId: user.id,
+          pickup: { mode: "FIXED_STOP", stopId: reservationInput.pickupStopId },
+          dropoff: { mode: "FIXED_STOP", stopId: reservationInput.dropoffStopId },
+          partySize: reservationInput.partySize,
+          passenger:
+            normalizePassenger(body.passenger) ??
+            (user.name
+              ? {
+                  name: user.name
+                }
+              : null),
+          channel: "PASSENGER_APP",
+          requestType: reservationInput.desiredMode === "PICKUP" ? "DEPART_AT" : "ARRIVE_BY",
+          desiredPickupAt: reservationInput.desiredMode === "PICKUP" ? reservationInput.desiredAt : null,
+          desiredDropoffAt: reservationInput.desiredMode === "DROPOFF" ? reservationInput.desiredAt : null,
+          context: requestContext
+        });
+
+        if (result?.status !== "ASSIGNABLE") {
+          return jsonResponse(res, 409, {
+            status: "UNASSIGNABLE",
+            reason: result?.reason ?? "NO_FEASIBLE_VEHICLE",
+            diagnostics: result?.diagnostics ?? null
+          });
+        }
+
+        return jsonResponse(res, 200, {
+          status: "PREVIEWED",
+          preview: serializeLineReservationPreview({
+            repository,
+            reservationInput,
+            simulation: result?.simulation ?? {}
+          })
+        });
+      }
+
       if (req.method === "POST" && pathname === "/api/line/miniapp/reservations") {
         const body = await parseJsonBody(req);
-        const lineUserId = typeof body.lineUserId === "string" ? body.lineUserId.trim() : "";
-        if (!lineUserId) {
-          throw new Error("lineUserId is required");
+        const reservationInput = resolveLineMiniAppReservationInput({
+          repository,
+          body
+        });
+        if (reservationInput.status !== "OK") {
+          return jsonResponse(res, 404, reservationInput);
         }
-
-        const displayName =
-          typeof body.displayName === "string" && body.displayName.trim()
-            ? body.displayName.trim()
-            : null;
-        const pickupStopId = normalizeLineMiniAppStopId(body.pickupStopId, "pickupStopId");
-        const dropoffStopId = normalizeLineMiniAppStopId(body.dropoffStopId, "dropoffStopId");
-        if (pickupStopId === dropoffStopId) {
-          throw new Error("pickupStopId and dropoffStopId must be different");
-        }
-
-        const pickupStop =
-          typeof repository.findStopById === "function"
-            ? repository.findStopById(pickupStopId)
-            : null;
-        if (!pickupStop) {
-          return jsonResponse(res, 404, {
-            status: "STOP_NOT_FOUND",
-            field: "pickupStopId",
-            stopId: pickupStopId
-          });
-        }
-        const dropoffStop =
-          typeof repository.findStopById === "function"
-            ? repository.findStopById(dropoffStopId)
-            : null;
-        if (!dropoffStop) {
-          return jsonResponse(res, 404, {
-            status: "STOP_NOT_FOUND",
-            field: "dropoffStopId",
-            stopId: dropoffStopId
-          });
-        }
-
-        const desiredMode = normalizeLineMiniAppDesiredMode(body.desiredMode);
-        const desiredAt = normalizeLineMiniAppDesiredAt(body.desiredAt);
-        const parsedPartySize = Number(body.partySize);
-        const partySize =
-          Number.isFinite(parsedPartySize) && parsedPartySize > 0
-            ? Math.max(1, Math.trunc(parsedPartySize))
-            : 1;
-        const tenantId = resolveLineMiniAppTenantId(body.tenantId);
 
         const { user } = ensureLineUserIdentity({
           repository,
-          lineUserId,
-          displayName,
+          lineUserId: reservationInput.lineUserId,
+          displayName: reservationInput.displayName,
           source: "LINE_MINIAPP_BOOKING"
         });
         const registration = resolveLineUserRegistrationStatus({
           repository,
-          lineUserId
+          lineUserId: reservationInput.lineUserId
         });
         if (!registration.isRegistered) {
           return jsonResponse(res, 403, {
@@ -1253,11 +1377,11 @@ export function createReqmoServer({
         const result = await createRideRequest({
           repository,
           serviceProfileId: body.serviceProfileId ?? activeServiceProfileId,
-          tenantId,
+          tenantId: reservationInput.tenantId,
           requesterId: user.id,
-          pickup: { mode: "FIXED_STOP", stopId: pickupStopId },
-          dropoff: { mode: "FIXED_STOP", stopId: dropoffStopId },
-          partySize,
+          pickup: { mode: "FIXED_STOP", stopId: reservationInput.pickupStopId },
+          dropoff: { mode: "FIXED_STOP", stopId: reservationInput.dropoffStopId },
+          partySize: reservationInput.partySize,
           passenger:
             normalizePassenger(body.passenger) ??
             (user.name
@@ -1266,9 +1390,11 @@ export function createReqmoServer({
                 }
               : null),
           channel: "PASSENGER_APP",
-          requestType: desiredMode === "PICKUP" ? "DEPART_AT" : "ARRIVE_BY",
-          desiredPickupAt: desiredMode === "PICKUP" ? desiredAt : null,
-          desiredDropoffAt: desiredMode === "DROPOFF" ? desiredAt : null,
+          requestType: reservationInput.desiredMode === "PICKUP" ? "DEPART_AT" : "ARRIVE_BY",
+          desiredPickupAt:
+            reservationInput.desiredMode === "PICKUP" ? reservationInput.desiredAt : null,
+          desiredDropoffAt:
+            reservationInput.desiredMode === "DROPOFF" ? reservationInput.desiredAt : null,
           context: requestContext
         });
 
@@ -1276,6 +1402,63 @@ export function createReqmoServer({
           result && typeof result === "object" && result.rideRequest
             ? result.rideRequest
             : null;
+        const session = buildLineMiniAppSession({
+          repository,
+          lineUserId: reservationInput.lineUserId,
+          displayName: reservationInput.displayName
+        });
+        await tryEnsureLineRichMenuForUser({
+          req,
+          lineUserId: reservationInput.lineUserId,
+          isRegistered: Boolean(session.registration?.isRegistered)
+        });
+
+        await flushRepository(repository);
+        return jsonResponse(res, 200, {
+          status: "CREATED",
+          resultStatus: typeof result?.status === "string" ? result.status : null,
+          reservation: rideRequest ? serializeLineReservation(repository, rideRequest) : null,
+          ...session,
+          config: resolveLinePublicConfig(req)
+        });
+      }
+
+      const lineMiniAppCancelPathMatch = pathname.match(/^\/api\/line\/miniapp\/reservations\/([^/]+)\/cancel$/);
+      if (req.method === "POST" && lineMiniAppCancelPathMatch) {
+        const body = await parseJsonBody(req);
+        const lineUserId = typeof body?.lineUserId === "string" ? body.lineUserId.trim() : "";
+        if (!lineUserId) {
+          throw new Error("lineUserId is required");
+        }
+        const displayName = resolveLineMiniAppDisplayName(body?.displayName);
+        const requestId = decodeURIComponent(lineMiniAppCancelPathMatch[1]);
+        const { user } = ensureLineUserIdentity({
+          repository,
+          lineUserId,
+          displayName,
+          source: "LINE_MINIAPP_CANCEL"
+        });
+
+        const rideRequest =
+          typeof repository?.getRideRequest === "function"
+            ? repository.getRideRequest(requestId)
+            : null;
+        if (!rideRequest || rideRequest.requesterId !== user.id) {
+          return jsonResponse(res, 404, {
+            status: "NOT_FOUND",
+            requestId
+          });
+        }
+
+        const result = await cancelRideRequest({
+          repository,
+          requestId,
+          reason:
+            typeof body?.reason === "string" && body.reason.trim()
+              ? body.reason.trim()
+              : "PASSENGER_CANCELLED",
+          context: requestContext
+        });
         const session = buildLineMiniAppSession({
           repository,
           lineUserId,
@@ -1286,12 +1469,14 @@ export function createReqmoServer({
           lineUserId,
           isRegistered: Boolean(session.registration?.isRegistered)
         });
-
         await flushRepository(repository);
+
         return jsonResponse(res, 200, {
-          status: "CREATED",
+          status: "CANCELLED",
           resultStatus: typeof result?.status === "string" ? result.status : null,
-          reservation: rideRequest ? serializeLineReservation(repository, rideRequest) : null,
+          reservation: result?.rideRequest
+            ? serializeLineReservation(repository, result.rideRequest)
+            : null,
           ...session,
           config: resolveLinePublicConfig(req)
         });

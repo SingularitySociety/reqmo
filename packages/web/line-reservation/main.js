@@ -2,9 +2,13 @@ const API_BASE =
   window.location.protocol === "file:" ? "http://localhost:18787" : "";
 
 const elements = {
-  addFriendButton: document.getElementById("add-friend-button"),
-  openMiniAppButton: document.getElementById("open-miniapp-button"),
-  liffLoginButton: document.getElementById("liff-login-button"),
+  guestEntryPanel: document.getElementById("guest-entry-panel"),
+  friendAddQrImage: document.getElementById("friend-add-qr-image"),
+  lineSessionCard: document.getElementById("line-session-card"),
+  reservationFormCard: document.getElementById("reservation-form-card"),
+  reservationsCard: document.getElementById("reservations-card"),
+  registrationCard: document.getElementById("registration-card"),
+  toggleRegistrationButton: document.getElementById("toggle-registration-button"),
   refreshSessionButton: document.getElementById("refresh-session-button"),
   statusMessage: document.getElementById("status-message"),
   lineUserId: document.getElementById("line-user-id"),
@@ -20,6 +24,14 @@ const elements = {
   desiredTimeInput: document.getElementById("desired-time-input"),
   createReservationButton: document.getElementById("create-reservation-button"),
   reservationCreateMessage: document.getElementById("reservation-create-message"),
+  reservationPreviewPanel: document.getElementById("reservation-preview-panel"),
+  previewPickupLabel: document.getElementById("preview-pickup-label"),
+  previewDropoffLabel: document.getElementById("preview-dropoff-label"),
+  previewPickupAt: document.getElementById("preview-pickup-at"),
+  previewDropoffAt: document.getElementById("preview-dropoff-at"),
+  previewMessage: document.getElementById("preview-message"),
+  confirmReservationButton: document.getElementById("confirm-reservation-button"),
+  clearPreviewButton: document.getElementById("clear-preview-button"),
   summaryText: document.getElementById("summary-text"),
   reservationList: document.getElementById("reservation-list"),
 };
@@ -36,6 +48,8 @@ const state = {
   session: null,
   stops: [],
   initialMode: "",
+  showRegistrationEditor: false,
+  pendingReservationInput: null,
 };
 
 function getErrorMessage(error) {
@@ -53,6 +67,9 @@ function isAccessTokenRevokedError(error) {
 }
 
 function setStatus(message, tone = "info") {
+  if (!elements.statusMessage) {
+    return;
+  }
   elements.statusMessage.textContent = message || "";
   elements.statusMessage.dataset.tone = tone;
 }
@@ -63,59 +80,6 @@ function setCreateMessage(message, tone = "info") {
   }
   elements.reservationCreateMessage.textContent = message || "";
   elements.reservationCreateMessage.dataset.tone = tone;
-}
-
-function setButtonUrl(element, url) {
-  if (!element) {
-    return;
-  }
-  if (!url) {
-    element.href = "#";
-    element.setAttribute("aria-disabled", "true");
-    return;
-  }
-  element.href = url;
-  element.removeAttribute("aria-disabled");
-}
-
-function addLineUserIdQuery(url, lineUserId) {
-  if (!url) {
-    return "";
-  }
-  const base = new URL(url, window.location.origin);
-  if (lineUserId) {
-    base.searchParams.set("lineUserId", lineUserId);
-  }
-  return base.toString();
-}
-
-function addModeQuery(url, mode) {
-  if (!url) {
-    return "";
-  }
-  const base = new URL(url, window.location.origin);
-  const normalizedMode = typeof mode === "string" ? mode.trim() : "";
-  if (normalizedMode) {
-    base.searchParams.set("mode", normalizedMode);
-  }
-  return base.toString();
-}
-
-function formatDateTime(value) {
-  if (!value) {
-    return "時刻未定";
-  }
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return "時刻未定";
-  }
-  return date.toLocaleString("ja-JP", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
 }
 
 function toDateInputText(date) {
@@ -143,6 +107,33 @@ function buildDesiredAtIso(dateText, timeText) {
     return "";
   }
   return parsed.toISOString();
+}
+
+function formatDateTime(value) {
+  if (!value) {
+    return "時刻未定";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "時刻未定";
+  }
+  return date.toLocaleString("ja-JP", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
+function formatEstimateTime(value, etaMinutes) {
+  if (value) {
+    return formatDateTime(value);
+  }
+  if (Number.isFinite(Number(etaMinutes))) {
+    return `約${Math.round(Number(etaMinutes))}分後`;
+  }
+  return "未算出";
 }
 
 function normalizeStopList(rawStops) {
@@ -210,8 +201,51 @@ function resolveDesiredMode() {
 
 function resolveInitialModeFromQuery() {
   const query = new URLSearchParams(window.location.search);
-  const mode = (query.get("mode") || "").trim().toLowerCase();
-  return mode;
+  return (query.get("mode") || "").trim().toLowerCase();
+}
+
+function resolveLineUserIdFromQuery() {
+  const query = new URLSearchParams(window.location.search);
+  return (query.get("lineUserId") || "").trim();
+}
+
+function buildQrImageUrl(rawUrl) {
+  const url = typeof rawUrl === "string" ? rawUrl.trim() : "";
+  if (!url) {
+    return "";
+  }
+  return `https://api.qrserver.com/v1/create-qr-code/?size=300x300&format=png&data=${encodeURIComponent(url)}`;
+}
+
+function setSectionVisibility(element, visible) {
+  if (!element) {
+    return;
+  }
+  element.hidden = !visible;
+}
+
+function clearPreview() {
+  state.pendingReservationInput = null;
+  if (elements.reservationPreviewPanel) {
+    elements.reservationPreviewPanel.hidden = true;
+  }
+  if (elements.confirmReservationButton) {
+    elements.confirmReservationButton.disabled = false;
+  }
+}
+
+function renderGuestEntry() {
+  const isGuest = !state.lineUserId;
+  setSectionVisibility(elements.guestEntryPanel, isGuest);
+  if (!isGuest) {
+    return;
+  }
+
+  const qrUrl = buildQrImageUrl(state.config.friendAddUrl);
+  if (elements.friendAddQrImage) {
+    elements.friendAddQrImage.src = qrUrl;
+    elements.friendAddQrImage.hidden = !qrUrl;
+  }
 }
 
 function setReservationFormEnabled(enabled) {
@@ -228,19 +262,34 @@ function setReservationFormEnabled(enabled) {
     }
     control.disabled = !enabled;
   });
+  if (!enabled) {
+    clearPreview();
+  }
+}
+
+function isRegistered() {
+  return Boolean(state.session?.registration?.isRegistered);
+}
+
+function renderLayoutVisibility() {
+  const authenticated = Boolean(state.lineUserId);
+  setSectionVisibility(elements.lineSessionCard, authenticated);
+  setSectionVisibility(elements.reservationFormCard, authenticated);
+  setSectionVisibility(elements.reservationsCard, authenticated);
+  renderGuestEntry();
 }
 
 function renderRegistrationStatus() {
   const registration = state.session?.registration || null;
-  const isRegistered = Boolean(registration?.isRegistered);
+  const registered = Boolean(registration?.isRegistered);
   const hasName = Boolean(registration?.hasName);
   const hasPhone = Boolean(registration?.hasPhone);
 
   if (elements.registrationStatusText) {
     if (!state.lineUserId) {
-      elements.registrationStatusText.textContent = "LINEログイン後に登録状態を確認できます。";
-      elements.registrationStatusText.dataset.tone = "warn";
-    } else if (isRegistered) {
+      elements.registrationStatusText.textContent = "";
+      elements.registrationStatusText.dataset.tone = "info";
+    } else if (registered) {
       const linkedPhone = registration?.normalizedPhoneE164 || "電話番号未取得";
       elements.registrationStatusText.textContent = `登録済みです（${linkedPhone}）`;
       elements.registrationStatusText.dataset.tone = "ok";
@@ -271,7 +320,146 @@ function renderRegistrationStatus() {
     }
   }
 
-  setReservationFormEnabled(Boolean(isRegistered));
+  const shouldShowRegistrationCard =
+    Boolean(state.lineUserId) && (!registered || state.showRegistrationEditor);
+  setSectionVisibility(elements.registrationCard, shouldShowRegistrationCard);
+
+  if (elements.toggleRegistrationButton) {
+    const canToggle = Boolean(state.lineUserId) && registered;
+    elements.toggleRegistrationButton.hidden = !canToggle;
+    elements.toggleRegistrationButton.textContent = state.showRegistrationEditor
+      ? "登録編集を閉じる"
+      : "登録情報変更";
+  }
+
+  setReservationFormEnabled(Boolean(registered));
+}
+
+function renderIdentity() {
+  if (elements.lineUserId) {
+    elements.lineUserId.textContent = state.lineUserId || "未取得";
+  }
+  if (!elements.linkedUserName) {
+    return;
+  }
+  if (state.session?.user?.name) {
+    elements.linkedUserName.textContent = state.session.user.name;
+    return;
+  }
+  if (state.displayName) {
+    elements.linkedUserName.textContent = state.displayName;
+    return;
+  }
+  elements.linkedUserName.textContent = "未連携";
+}
+
+function isReservationCancellable(reservation) {
+  const status = typeof reservation?.status === "string" ? reservation.status.trim().toUpperCase() : "";
+  return status && status !== "CANCELLED" && status !== "COMPLETED" && status !== "PICKED_UP";
+}
+
+function renderReservations(reservations) {
+  if (!elements.reservationList) {
+    return;
+  }
+  elements.reservationList.innerHTML = "";
+  if (!Array.isArray(reservations) || reservations.length === 0) {
+    const item = document.createElement("li");
+    item.className = "lr-reservation-item";
+    item.innerHTML = `<p class="lr-reservation-title">予約はありません</p>`;
+    elements.reservationList.appendChild(item);
+    return;
+  }
+
+  reservations.forEach((reservation) => {
+    const item = document.createElement("li");
+    item.className = "lr-reservation-item";
+    const primaryAt =
+      reservation.plannedPickupAt ||
+      reservation.desiredPickupAt ||
+      reservation.desiredDropoffAt ||
+      reservation.primaryTimeAt ||
+      null;
+    const cancellable = isReservationCancellable(reservation);
+    item.innerHTML = `
+      <p class="lr-reservation-title">${reservation.statusLabel || reservation.status || "不明"}</p>
+      <dl class="lr-reservation-meta">
+        <div><strong>乗車:</strong> ${reservation.pickupLabel || "未設定"}</div>
+        <div><strong>降車:</strong> ${reservation.dropoffLabel || "未設定"}</div>
+        <div><strong>時刻:</strong> ${formatDateTime(primaryAt)}</div>
+        <div><strong>予約ID:</strong> ${reservation.id || "-"}</div>
+      </dl>
+      ${
+        cancellable
+          ? `<div class="lr-reservation-actions"><button class="lr-button lr-button-danger lr-button-small" type="button" data-cancel-request-id="${reservation.id}">この予約をキャンセル</button></div>`
+          : ""
+      }
+    `;
+    elements.reservationList.appendChild(item);
+  });
+}
+
+function renderPreviewPanel(preview) {
+  if (!elements.reservationPreviewPanel) {
+    return;
+  }
+  if (!preview) {
+    clearPreview();
+    return;
+  }
+  elements.reservationPreviewPanel.hidden = false;
+  if (elements.previewPickupLabel) {
+    elements.previewPickupLabel.textContent = preview.pickupLabel || "-";
+  }
+  if (elements.previewDropoffLabel) {
+    elements.previewDropoffLabel.textContent = preview.dropoffLabel || "-";
+  }
+  if (elements.previewPickupAt) {
+    elements.previewPickupAt.textContent = formatEstimateTime(preview.plannedPickupAt, preview.etaPickupMinutes);
+  }
+  if (elements.previewDropoffAt) {
+    elements.previewDropoffAt.textContent = formatEstimateTime(preview.plannedDropoffAt, preview.etaDropoffMinutes);
+  }
+  if (elements.previewMessage) {
+    const suggestion = preview?.desiredDropoffSuggestion?.message || "";
+    elements.previewMessage.textContent = suggestion
+      ? `${suggestion} この内容で予約しますか？`
+      : "この内容で予約しますか？";
+  }
+}
+
+function renderSession(payload) {
+  if (!payload) {
+    state.session = null;
+    if (elements.summaryText) {
+      elements.summaryText.textContent =
+        "LINE内リンクから開くと予約情報を表示します。";
+    }
+    renderReservations([]);
+    renderIdentity();
+    renderLayoutVisibility();
+    renderRegistrationStatus();
+    return;
+  }
+
+  state.session = payload;
+  if (elements.summaryText) {
+    elements.summaryText.textContent = payload.summaryText || "予約情報を取得しました。";
+  }
+  renderReservations(payload.reservations);
+  renderIdentity();
+  renderLayoutVisibility();
+  renderRegistrationStatus();
+}
+
+function applyPublicConfig(config) {
+  state.config = {
+    liffId: config?.liffId || "",
+    miniAppUrl: config?.miniAppUrl || "",
+    friendAddUrl: config?.friendAddUrl || "",
+    officialAccountId: config?.officialAccountId || "",
+  };
+  renderGuestEntry();
 }
 
 async function apiGet(path) {
@@ -284,7 +472,13 @@ async function apiGet(path) {
     payload = {};
   }
   if (!response.ok) {
-    throw new Error(payload.error || `GET ${path} failed (${response.status})`);
+    throw new Error(
+      payload.message ||
+        payload.error ||
+        payload.reason ||
+        payload.status ||
+        `GET ${path} failed (${response.status})`
+    );
   }
   return payload;
 }
@@ -305,92 +499,15 @@ async function apiPost(path, body) {
     payload = {};
   }
   if (!response.ok) {
-    throw new Error(payload.error || payload.status || `POST ${path} failed (${response.status})`);
+    throw new Error(
+      payload.message ||
+        payload.error ||
+        payload.reason ||
+        payload.status ||
+        `POST ${path} failed (${response.status})`
+    );
   }
   return payload;
-}
-
-function renderIdentity() {
-  elements.lineUserId.textContent = state.lineUserId || "未取得";
-  if (state.session?.user?.name) {
-    elements.linkedUserName.textContent = state.session.user.name;
-    return;
-  }
-  if (state.displayName) {
-    elements.linkedUserName.textContent = state.displayName;
-    return;
-  }
-  elements.linkedUserName.textContent = "未連携";
-}
-
-function renderReservations(reservations) {
-  elements.reservationList.innerHTML = "";
-  if (!Array.isArray(reservations) || reservations.length === 0) {
-    const item = document.createElement("li");
-    item.className = "lr-reservation-item";
-    item.innerHTML = `<p class="lr-reservation-title">予約はありません</p>`;
-    elements.reservationList.appendChild(item);
-    return;
-  }
-
-  reservations.forEach((reservation) => {
-    const item = document.createElement("li");
-    item.className = "lr-reservation-item";
-    const primaryAt =
-      reservation.plannedPickupAt ||
-      reservation.desiredPickupAt ||
-      reservation.desiredDropoffAt ||
-      reservation.primaryTimeAt ||
-      null;
-    item.innerHTML = `
-      <p class="lr-reservation-title">${reservation.statusLabel || reservation.status || "不明"}</p>
-      <dl class="lr-reservation-meta">
-        <div><strong>乗車:</strong> ${reservation.pickupLabel || "未設定"}</div>
-        <div><strong>降車:</strong> ${reservation.dropoffLabel || "未設定"}</div>
-        <div><strong>時刻:</strong> ${formatDateTime(primaryAt)}</div>
-        <div><strong>予約ID:</strong> ${reservation.id || "-"}</div>
-      </dl>
-    `;
-    elements.reservationList.appendChild(item);
-  });
-}
-
-function renderSession(payload) {
-  if (!payload) {
-    state.session = null;
-    elements.summaryText.textContent =
-      "LINEユーザー情報が未取得です。LINEアプリ内で開くか、チャットの「予約確認」から遷移してください。";
-    renderReservations([]);
-    renderIdentity();
-    renderRegistrationStatus();
-    return;
-  }
-
-  state.session = payload;
-  elements.summaryText.textContent =
-    payload.summaryText || "予約情報を取得しました。";
-  renderReservations(payload.reservations);
-  renderIdentity();
-  renderRegistrationStatus();
-}
-
-function applyPublicConfig(config) {
-  state.config = {
-    liffId: config?.liffId || "",
-    miniAppUrl: config?.miniAppUrl || "",
-    friendAddUrl: config?.friendAddUrl || "",
-    officialAccountId: config?.officialAccountId || "",
-  };
-  setButtonUrl(elements.addFriendButton, state.config.friendAddUrl);
-  const reservationUrl = addModeQuery(
-    addLineUserIdQuery(state.config.miniAppUrl, state.lineUserId),
-    "reserve"
-  );
-  setButtonUrl(
-    elements.openMiniAppButton,
-    reservationUrl
-  );
-  elements.liffLoginButton.disabled = !state.config.liffId;
 }
 
 async function loadPublicConfig() {
@@ -404,31 +521,17 @@ async function loadStops() {
   renderStopSelectOptions();
 }
 
-function resolveLineUserIdFromQuery() {
-  const query = new URLSearchParams(window.location.search);
-  return (query.get("lineUserId") || "").trim();
-}
-
 async function resolveLiffProfile() {
   if (state.lineUserId) {
     return;
   }
-  if (!state.config.liffId) {
-    setStatus(
-      "LIFF IDが未設定です。友だち追加後にチャットのリンクから開いてください。",
-      "warn"
-    );
-    return;
-  }
-  if (!window.liff) {
-    setStatus("LIFF SDKの読み込みに失敗しました。", "error");
+  if (!state.config.liffId || !window.liff) {
     return;
   }
 
   try {
     await window.liff.init({ liffId: state.config.liffId });
     if (!window.liff.isLoggedIn()) {
-      setStatus("LINEログインでユーザー連携できます。", "warn");
       return;
     }
     let profile = null;
@@ -439,21 +542,17 @@ async function resolveLiffProfile() {
         try {
           window.liff.logout();
         } catch {
-          // ignore logout failure and continue with login prompt
+          // ignore
         }
         state.lineUserId = "";
         state.displayName = "";
-        setStatus(
-          "LINEセッションの有効期限が切れました。LINEログインを押して再ログインしてください。",
-          "warn"
-        );
+        setStatus("LINEセッションが失効しました。LINEチャットのリンクから開き直してください。", "warn");
         return;
       }
       throw error;
     }
     state.lineUserId = profile?.userId || "";
     state.displayName = profile?.displayName || "";
-    setStatus("LINEプロフィールを取得しました。", "ok");
   } catch (error) {
     setStatus(`LIFF初期化に失敗: ${getErrorMessage(error)}`, "error");
   }
@@ -464,7 +563,6 @@ async function loadSession() {
     renderSession(null);
     return;
   }
-
   const query = new URLSearchParams({
     lineUserId: state.lineUserId,
   });
@@ -474,10 +572,6 @@ async function loadSession() {
 
   const payload = await apiGet(`/api/line/miniapp/session?${query.toString()}`);
   renderSession(payload);
-  setButtonUrl(
-    elements.openMiniAppButton,
-    addModeQuery(addLineUserIdQuery(state.config.miniAppUrl, state.lineUserId), "reserve")
-  );
   setStatus("予約情報を更新しました。", "ok");
 }
 
@@ -490,7 +584,7 @@ async function submitRegistration(event) {
     return;
   }
   if (!state.lineUserId) {
-    setStatus("先にLINEユーザーを取得してください。", "warn");
+    setStatus("LINEユーザー情報が未取得です。LINE内リンクから再度開いてください。", "warn");
     return;
   }
 
@@ -501,71 +595,125 @@ async function submitRegistration(event) {
       phoneNumber,
       displayName: state.displayName || "",
     });
+    state.showRegistrationEditor = false;
     renderSession(payload);
-    setStatus("利用者登録が完了しました。", "ok");
+    setStatus("利用者登録を更新しました。", "ok");
   } catch (error) {
     setStatus(`利用者登録に失敗しました: ${getErrorMessage(error)}`, "error");
   }
 }
 
+function collectReservationInput() {
+  if (!elements.pickupStopSelect || !elements.dropoffStopSelect) {
+    throw new Error("予約フォームの初期化に失敗しました。");
+  }
+  if (!state.lineUserId) {
+    throw new Error("LINEユーザー情報が未取得です。LINE内リンクから開き直してください。");
+  }
+  if (!isRegistered()) {
+    throw new Error("予約前に利用者登録（名前・電話番号）を完了してください。");
+  }
+  if (!elements.pickupStopSelect.value || !elements.dropoffStopSelect.value) {
+    throw new Error("乗車バス停と降車バス停を選択してください。");
+  }
+  if (elements.pickupStopSelect.value === elements.dropoffStopSelect.value) {
+    throw new Error("乗車バス停と降車バス停は別の停留所を選択してください。");
+  }
+  const desiredAt = buildDesiredAtIso(
+    elements.desiredDateInput?.value || "",
+    elements.desiredTimeInput?.value || ""
+  );
+  if (!desiredAt) {
+    throw new Error("希望日と希望時刻を正しく入力してください。");
+  }
+
+  return {
+    lineUserId: state.lineUserId,
+    displayName: state.displayName || "",
+    pickupStopId: elements.pickupStopSelect.value,
+    dropoffStopId: elements.dropoffStopSelect.value,
+    desiredMode: resolveDesiredMode(),
+    desiredAt,
+  };
+}
+
 async function submitCreateReservation(event) {
   event.preventDefault();
   setCreateMessage("", "info");
+  clearPreview();
 
-  if (!elements.pickupStopSelect || !elements.dropoffStopSelect) {
-    setCreateMessage("予約フォームの初期化に失敗しました。ページを再読み込みしてください。", "error");
-    return;
-  }
-
-  if (!state.lineUserId) {
-    setStatus("先にLINEログインを実行してください。", "warn");
-    return;
-  }
-  if (!state.session?.registration?.isRegistered) {
-    setCreateMessage("予約前に利用者登録（名前・電話番号）を完了してください。", "warn");
-    return;
-  }
-  if (!elements.pickupStopSelect.value || !elements.dropoffStopSelect.value) {
-    setCreateMessage("乗車バス停と降車バス停を選択してください。", "warn");
-    return;
-  }
-  if (elements.pickupStopSelect.value === elements.dropoffStopSelect.value) {
-    setCreateMessage("乗車バス停と降車バス停は別の停留所を選択してください。", "warn");
+  let input = null;
+  try {
+    input = collectReservationInput();
+  } catch (error) {
+    setCreateMessage(getErrorMessage(error), "warn");
     return;
   }
 
-  const desiredAt = buildDesiredAtIso(
-    elements.desiredDateInput.value,
-    elements.desiredTimeInput.value
-  );
-  if (!desiredAt) {
-    setCreateMessage("希望日と希望時刻を正しく入力してください。", "warn");
-    return;
-  }
-
-  const desiredMode = resolveDesiredMode();
   if (elements.createReservationButton) {
     elements.createReservationButton.disabled = true;
   }
   try {
-    const payload = await apiPost("/api/line/miniapp/reservations", {
-      lineUserId: state.lineUserId,
-      displayName: state.displayName || "",
-      pickupStopId: elements.pickupStopSelect.value,
-      dropoffStopId: elements.dropoffStopSelect.value,
-      desiredMode,
-      desiredAt,
-    });
+    const payload = await apiPost("/api/line/miniapp/reservations/preview", input);
+    const preview = payload?.preview || null;
+    if (!preview) {
+      throw new Error("予想情報を取得できませんでした。");
+    }
+    state.pendingReservationInput = input;
+    renderPreviewPanel(preview);
+    setCreateMessage("予想時刻を確認してから予約を確定してください。", "ok");
+  } catch (error) {
+    setCreateMessage(`予想の取得に失敗しました: ${getErrorMessage(error)}`, "error");
+  } finally {
+    if (elements.createReservationButton) {
+      elements.createReservationButton.disabled = false;
+    }
+  }
+}
+
+async function confirmReservation() {
+  if (!state.pendingReservationInput) {
+    setCreateMessage("先に予想時刻を確認してください。", "warn");
+    return;
+  }
+  if (elements.confirmReservationButton) {
+    elements.confirmReservationButton.disabled = true;
+  }
+  try {
+    const payload = await apiPost("/api/line/miniapp/reservations", state.pendingReservationInput);
     renderSession(payload);
     const reservationId = payload?.reservation?.id || "-";
+    clearPreview();
     setCreateMessage(`予約を受け付けました（予約ID: ${reservationId}）`, "ok");
     setStatus("予約を登録しました。", "ok");
   } catch (error) {
     setCreateMessage(`予約の登録に失敗しました: ${getErrorMessage(error)}`, "error");
   } finally {
-    if (elements.createReservationButton) {
-      elements.createReservationButton.disabled = false;
+    if (elements.confirmReservationButton) {
+      elements.confirmReservationButton.disabled = false;
     }
+  }
+}
+
+async function cancelReservationById(requestId) {
+  const id = typeof requestId === "string" ? requestId.trim() : "";
+  if (!id) {
+    return;
+  }
+  if (!state.lineUserId) {
+    setStatus("LINEユーザー情報が未取得です。", "warn");
+    return;
+  }
+
+  try {
+    const payload = await apiPost(`/api/line/miniapp/reservations/${encodeURIComponent(id)}/cancel`, {
+      lineUserId: state.lineUserId,
+      displayName: state.displayName || "",
+    });
+    renderSession(payload);
+    setStatus(`予約をキャンセルしました（${id}）`, "ok");
+  } catch (error) {
+    setStatus(`予約キャンセルに失敗しました: ${getErrorMessage(error)}`, "error");
   }
 }
 
@@ -575,6 +723,13 @@ function registerEvents() {
       loadSession().catch((error) => {
         setStatus(`更新に失敗しました: ${getErrorMessage(error)}`, "error");
       });
+    });
+  }
+
+  if (elements.toggleRegistrationButton) {
+    elements.toggleRegistrationButton.addEventListener("click", () => {
+      state.showRegistrationEditor = !state.showRegistrationEditor;
+      renderRegistrationStatus();
     });
   }
 
@@ -590,21 +745,32 @@ function registerEvents() {
     });
   }
 
-  elements.liffLoginButton.addEventListener("click", () => {
-    if (!window.liff || !state.config.liffId) {
-      setStatus("LIFFが未設定です。", "warn");
-      return;
-    }
-    if (window.liff.isLoggedIn()) {
-      resolveLiffProfile()
-        .then(() => loadSession())
-        .catch((error) => {
-          setStatus(`更新に失敗しました: ${getErrorMessage(error)}`, "error");
-        });
-      return;
-    }
-    window.liff.login({ redirectUri: window.location.href });
-  });
+  if (elements.confirmReservationButton) {
+    elements.confirmReservationButton.addEventListener("click", () => {
+      confirmReservation();
+    });
+  }
+
+  if (elements.clearPreviewButton) {
+    elements.clearPreviewButton.addEventListener("click", () => {
+      clearPreview();
+      setCreateMessage("予約条件を修正してください。", "info");
+    });
+  }
+
+  if (elements.reservationList) {
+    elements.reservationList.addEventListener("click", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) {
+        return;
+      }
+      const requestId = target.getAttribute("data-cancel-request-id");
+      if (!requestId) {
+        return;
+      }
+      cancelReservationById(requestId);
+    });
+  }
 }
 
 async function bootstrap() {
@@ -612,6 +778,7 @@ async function bootstrap() {
   setDefaultDesiredDateTime();
   state.initialMode = resolveInitialModeFromQuery();
   state.lineUserId = resolveLineUserIdFromQuery();
+  renderLayoutVisibility();
   renderIdentity();
   renderRegistrationStatus();
 
@@ -629,6 +796,7 @@ async function bootstrap() {
   }
 
   await resolveLiffProfile();
+  renderLayoutVisibility();
   renderIdentity();
 
   try {
@@ -637,9 +805,16 @@ async function bootstrap() {
     setStatus(`予約情報の取得に失敗しました: ${getErrorMessage(error)}`, "error");
   }
 
+  if (!state.lineUserId) {
+    setStatus("初めての方はQRコードから友だち追加してください。", "warn");
+    return;
+  }
+
   if (state.initialMode === "register") {
-    setStatus("初回登録を完了してから予約をご利用ください。", "warn");
-  } else if (state.initialMode === "reserve" && !state.session?.registration?.isRegistered) {
+    state.showRegistrationEditor = true;
+    renderRegistrationStatus();
+    setStatus("登録情報を入力・更新してください。", "warn");
+  } else if (state.initialMode === "reserve" && !isRegistered()) {
     setStatus("予約前に名前と電話番号の登録が必要です。", "warn");
   }
 }

@@ -241,6 +241,122 @@ test("line miniapp reservation can be created with stop and desired time", async
   assert.equal(Boolean(created[0]?.timeWindow?.desiredPickupAt), true);
 });
 
+test("line miniapp reservation preview returns estimated pickup/dropoff before confirmation", async () => {
+  const repository = new InMemoryRepository({
+    stops: [
+      { id: "stop_a", name: "中村駅", lat: 32.9898, lng: 132.9334 },
+      { id: "stop_b", name: "市役所前", lat: 32.9911, lng: 132.9272 }
+    ],
+    vehicles: [
+      {
+        id: "veh_1",
+        status: "ACTIVE",
+        capacity: 6,
+        onboardCount: 0,
+        currentLocation: { lat: 32.9898, lng: 132.9334 },
+        route: []
+      }
+    ],
+    serviceProfiles: [createDefaultServiceProfile()]
+  });
+
+  const { server } = createReqmoServer({ repository });
+  const registerResponse = await invokeServer({
+    server,
+    method: "POST",
+    url: "/api/line/miniapp/register",
+    body: {
+      lineUserId: "U_preview_target_1",
+      displayName: "LINEプレビュー利用者",
+      name: "LINE プレビュー利用者",
+      phoneNumber: "080-2345-6789"
+    }
+  });
+  assert.equal(registerResponse.statusCode, 200);
+
+  const response = await invokeServer({
+    server,
+    method: "POST",
+    url: "/api/line/miniapp/reservations/preview",
+    body: {
+      lineUserId: "U_preview_target_1",
+      displayName: "LINEプレビュー利用者",
+      pickupStopId: "stop_a",
+      dropoffStopId: "stop_b",
+      desiredMode: "DROPOFF",
+      desiredAt: "2026-02-25T01:00:00.000Z"
+    }
+  });
+
+  assert.equal(response.statusCode, 200);
+  const payload = JSON.parse(response.payload);
+  assert.equal(payload.status, "PREVIEWED");
+  assert.equal(payload.preview?.pickupLabel, "中村駅");
+  assert.equal(payload.preview?.dropoffLabel, "市役所前");
+  assert.equal(Boolean(payload.preview?.plannedPickupAt), true);
+  assert.equal(Boolean(payload.preview?.plannedDropoffAt), true);
+});
+
+test("line miniapp reservation can be cancelled by the owner", async () => {
+  const repository = new InMemoryRepository({
+    stops: [
+      { id: "stop_a", name: "中村駅", lat: 32.9898, lng: 132.9334 },
+      { id: "stop_b", name: "市役所前", lat: 32.9911, lng: 132.9272 }
+    ],
+    users: [{ id: "line_cancel_user_1", name: "LINEキャンセル利用者" }],
+    phoneIdentities: [
+      {
+        id: "phone_cancel_1",
+        userId: "line_cancel_user_1",
+        normalizedPhoneE164: "+818012345679",
+        source: "SEED",
+        verified: true,
+        lastSeenAt: "2026-02-21T12:00:00.000Z",
+        blockStatus: "ACTIVE"
+      }
+    ],
+    lineIdentities: [
+      {
+        id: "line_cancel_1",
+        lineUserId: "U_cancel_target_1",
+        userId: "line_cancel_user_1",
+        source: "SEED",
+        verified: true,
+        displayName: "LINEキャンセル利用者",
+        lastSeenAt: "2026-02-21T12:00:00.000Z",
+        blockStatus: "ACTIVE"
+      }
+    ],
+    rideRequests: [
+      {
+        id: "req_cancel_1",
+        requesterId: "line_cancel_user_1",
+        status: "REQUESTED",
+        pickup: { mode: "FIXED_STOP", stopId: "stop_a" },
+        dropoff: { mode: "FIXED_STOP", stopId: "stop_b" }
+      }
+    ],
+    serviceProfiles: [createDefaultServiceProfile()]
+  });
+
+  const { server } = createReqmoServer({ repository });
+  const response = await invokeServer({
+    server,
+    method: "POST",
+    url: "/api/line/miniapp/reservations/req_cancel_1/cancel",
+    body: {
+      lineUserId: "U_cancel_target_1"
+    }
+  });
+
+  assert.equal(response.statusCode, 200);
+  const payload = JSON.parse(response.payload);
+  assert.equal(payload.status, "CANCELLED");
+  assert.equal(payload.reservation?.id, "req_cancel_1");
+  assert.equal(payload.reservation?.status, "CANCELLED");
+  assert.equal(repository.getRideRequest("req_cancel_1")?.status, "CANCELLED");
+});
+
 test("line miniapp reservation requires profile registration", async () => {
   const repository = new InMemoryRepository({
     stops: [

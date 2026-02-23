@@ -9,8 +9,8 @@ const LINE_RICHMENU_ALIAS_ENDPOINT = "https://api.line.me/v2/bot/richmenu/alias"
 const LINE_RICHMENU_CONTENT_BASE = "https://api-data.line.me/v2/bot/richmenu";
 const RICH_MENU_WIDTH = 2500;
 const RICH_MENU_HEIGHT = 843;
-const DEFAULT_REGISTER_RICHMENU_ALIAS = "reqmo_register_v1";
-const DEFAULT_RESERVATION_RICHMENU_ALIAS = "reqmo_reservation_v1";
+const DEFAULT_REGISTER_RICHMENU_ALIAS = "reqmo_register_v2";
+const DEFAULT_RESERVATION_RICHMENU_ALIAS = "reqmo_reservation_v2";
 const richMenuAliasCache = new Map();
 const ACTIVE_RIDE_STATUSES = new Set([
   "REQUESTED",
@@ -252,6 +252,26 @@ function parseHexColor(color, fallback = "#2f855a") {
   };
 }
 
+const FONT_5X7 = {
+  A: ["01110", "10001", "10001", "11111", "10001", "10001", "10001"],
+  B: ["11110", "10001", "10001", "11110", "10001", "10001", "11110"],
+  C: ["01111", "10000", "10000", "10000", "10000", "10000", "01111"],
+  E: ["11111", "10000", "10000", "11110", "10000", "10000", "11111"],
+  F: ["11111", "10000", "10000", "11110", "10000", "10000", "10000"],
+  G: ["01111", "10000", "10000", "10111", "10001", "10001", "01110"],
+  H: ["10001", "10001", "10001", "11111", "10001", "10001", "10001"],
+  I: ["11111", "00100", "00100", "00100", "00100", "00100", "11111"],
+  K: ["10001", "10010", "10100", "11000", "10100", "10010", "10001"],
+  L: ["10000", "10000", "10000", "10000", "10000", "10000", "11111"],
+  O: ["01110", "10001", "10001", "10001", "10001", "10001", "01110"],
+  P: ["11110", "10001", "10001", "11110", "10000", "10000", "10000"],
+  R: ["11110", "10001", "10001", "11110", "10100", "10010", "10001"],
+  S: ["01111", "10000", "10000", "01110", "00001", "00001", "11110"],
+  T: ["11111", "00100", "00100", "00100", "00100", "00100", "00100"],
+  U: ["10001", "10001", "10001", "10001", "10001", "10001", "01110"],
+  " ": ["00000", "00000", "00000", "00000", "00000", "00000", "00000"]
+};
+
 function crc32(buffer) {
   let crc = 0xffffffff;
   for (let index = 0; index < buffer.length; index += 1) {
@@ -270,10 +290,82 @@ function buildPngChunk(type, data) {
   return Buffer.concat([lengthBuffer, typeBuffer, data, crcBuffer]);
 }
 
+function setRgbPixel(rgb, width, height, x, y, color) {
+  const px = Math.trunc(Number(x));
+  const py = Math.trunc(Number(y));
+  if (px < 0 || py < 0 || px >= width || py >= height) {
+    return;
+  }
+  const offset = (py * width + px) * 3;
+  rgb[offset] = color.r;
+  rgb[offset + 1] = color.g;
+  rgb[offset + 2] = color.b;
+}
+
+function drawRect(rgb, width, height, x, y, rectWidth, rectHeight, color) {
+  const startX = Math.max(0, Math.trunc(Number(x)));
+  const startY = Math.max(0, Math.trunc(Number(y)));
+  const endX = Math.min(width, startX + Math.max(0, Math.trunc(Number(rectWidth))));
+  const endY = Math.min(height, startY + Math.max(0, Math.trunc(Number(rectHeight))));
+  for (let py = startY; py < endY; py += 1) {
+    for (let px = startX; px < endX; px += 1) {
+      setRgbPixel(rgb, width, height, px, py, color);
+    }
+  }
+}
+
+function drawText({
+  rgb,
+  width,
+  height,
+  text = "",
+  centerX = 0,
+  centerY = 0,
+  scale = 12,
+  color = { r: 255, g: 255, b: 255 }
+}) {
+  const normalizedText = normalizeTrimmedText(text).toUpperCase();
+  if (!normalizedText) {
+    return;
+  }
+  const safeScale = Math.max(2, Math.trunc(Number(scale) || 12));
+  const glyphWidth = 5 * safeScale;
+  const glyphHeight = 7 * safeScale;
+  const gap = safeScale;
+  const totalWidth = normalizedText.length * glyphWidth + (normalizedText.length - 1) * gap;
+  const startX = Math.trunc(Number(centerX) - totalWidth / 2);
+  const startY = Math.trunc(Number(centerY) - glyphHeight / 2);
+
+  let xOffset = startX;
+  for (const char of normalizedText) {
+    const pattern = FONT_5X7[char] ?? FONT_5X7[" "];
+    for (let row = 0; row < pattern.length; row += 1) {
+      const rowBits = pattern[row];
+      for (let col = 0; col < rowBits.length; col += 1) {
+        if (rowBits[col] !== "1") {
+          continue;
+        }
+        drawRect(
+          rgb,
+          width,
+          height,
+          xOffset + col * safeScale,
+          startY + row * safeScale,
+          safeScale,
+          safeScale,
+          color
+        );
+      }
+    }
+    xOffset += glyphWidth + gap;
+  }
+}
+
 function createStripedPng({
   width = RICH_MENU_WIDTH,
   height = RICH_MENU_HEIGHT,
-  segments = []
+  segments = [],
+  labels = []
 } = {}) {
   const safeWidth = Number.isFinite(Number(width)) ? Math.max(1, Math.trunc(Number(width))) : RICH_MENU_WIDTH;
   const safeHeight = Number.isFinite(Number(height)) ? Math.max(1, Math.trunc(Number(height))) : RICH_MENU_HEIGHT;
@@ -304,27 +396,67 @@ function createStripedPng({
     segmentBounds[segmentBounds.length - 1].end = safeWidth;
   }
 
-  const rowBytes = 1 + safeWidth * 3;
-  const scanline = Buffer.alloc(rowBytes);
-  scanline[0] = 0;
-  let segmentIndex = 0;
-  for (let x = 0; x < safeWidth; x += 1) {
-    while (
-      segmentIndex < segmentBounds.length - 1 &&
-      x >= segmentBounds[segmentIndex].end
-    ) {
-      segmentIndex += 1;
+  const rgb = Buffer.alloc(safeWidth * safeHeight * 3);
+  for (const segment of segmentBounds) {
+    for (let y = 0; y < safeHeight; y += 1) {
+      for (let x = segment.start; x < segment.end; x += 1) {
+        setRgbPixel(rgb, safeWidth, safeHeight, x, y, segment);
+      }
     }
-    const segment = segmentBounds[segmentIndex];
-    const pixelOffset = 1 + x * 3;
-    scanline[pixelOffset] = segment.r;
-    scanline[pixelOffset + 1] = segment.g;
-    scanline[pixelOffset + 2] = segment.b;
   }
 
+  const separatorColor = parseHexColor("#ffffff");
+  segmentBounds.forEach((segment, index) => {
+    if (index === 0) {
+      return;
+    }
+    drawRect(
+      rgb,
+      safeWidth,
+      safeHeight,
+      segment.start - 3,
+      0,
+      6,
+      safeHeight,
+      separatorColor
+    );
+  });
+
+  const labelColor = parseHexColor("#ffffff");
+  const normalizedLabels = Array.isArray(labels) ? labels : [];
+  normalizedLabels.forEach((label, index) => {
+    const targetIndex = Number.isFinite(Number(label?.segmentIndex))
+      ? Math.trunc(Number(label.segmentIndex))
+      : index;
+    const segment = segmentBounds[targetIndex];
+    if (!segment) {
+      return;
+    }
+    const text = normalizeTrimmedText(label?.text);
+    if (!text) {
+      return;
+    }
+    const widthPerChar = Math.max(16, Math.floor((segment.end - segment.start) / Math.max(text.length * 6, 6)));
+    const scale = Math.max(9, Math.min(20, Math.floor(widthPerChar)));
+    drawText({
+      rgb,
+      width: safeWidth,
+      height: safeHeight,
+      text,
+      centerX: Math.floor((segment.start + segment.end) / 2),
+      centerY: Math.floor(safeHeight / 2),
+      scale,
+      color: labelColor
+    });
+  });
+
+  const rowBytes = 1 + safeWidth * 3;
   const raw = Buffer.alloc(rowBytes * safeHeight);
   for (let y = 0; y < safeHeight; y += 1) {
-    scanline.copy(raw, y * rowBytes);
+    const rowOffset = y * rowBytes;
+    raw[rowOffset] = 0;
+    const rgbOffset = y * safeWidth * 3;
+    rgb.copy(raw, rowOffset + 1, rgbOffset, rgbOffset + safeWidth * 3);
   }
   const compressed = deflateSync(raw, { level: 9 });
 
@@ -525,6 +657,10 @@ function buildLineRegistrationRichMenu({ miniAppUrl }) {
       segments: [
         { ratio: 1, color: "#0f766e" },
         { ratio: 1, color: "#1d4ed8" }
+      ],
+      labels: [
+        { segmentIndex: 0, text: "REGISTER" },
+        { segmentIndex: 1, text: "HELP" }
       ]
     })
   };
@@ -586,6 +722,11 @@ function buildLineReservationRichMenu({ miniAppUrl }) {
         { ratio: 1, color: "#0f766e" },
         { ratio: 1, color: "#1d4ed8" },
         { ratio: 1, color: "#b45309" }
+      ],
+      labels: [
+        { segmentIndex: 0, text: "BOOK" },
+        { segmentIndex: 1, text: "STATUS" },
+        { segmentIndex: 2, text: "PROFILE" }
       ]
     })
   };
