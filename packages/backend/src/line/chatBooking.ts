@@ -1459,6 +1459,7 @@ async function buildBookingOptionProposal({
   const dropoffName = resolveStopName(repository, dropoffStopId);
   const desiredLabel = formatDateTime(desiredAt, timeZone);
   const plannedPickupLabel = formatTimeOnly(selected.plannedPickupAt, timeZone);
+  const plannedDropoffLabel = formatTimeOnly(selected.plannedDropoffAt, timeZone);
   const selectedRequestType = resolveOptionRequestType(selected, desiredMode);
   const selectedDesiredAt = resolveOptionDesiredAt(selected, desiredAt, desiredMode);
 
@@ -1466,7 +1467,8 @@ async function buildBookingOptionProposal({
     status: "ASSIGNABLE",
     messageText:
       `${pickupName}から${dropoffName}まで、${desiredLabel}に${partySize}名であれば、` +
-      `${plannedPickupLabel}で予約できます。予約してよろしいでしょうか？最大15分程度遅れる場合もあります。`,
+      `${plannedPickupLabel}で予約できます（降車予定 ${plannedDropoffLabel}）。` +
+      "予約してよろしいでしょうか？最大15分程度遅れる場合もあります。",
     selectedOption: {
       vehicleId: selected.vehicleId ?? null,
       plannedPickupAt: toIsoString(selected.plannedPickupAt),
@@ -2621,6 +2623,10 @@ export async function handleLineChatBookingMessage({
         rideRequest?.assignment?.plannedPickupAt ?? selectedOption.plannedPickupAt,
         timeZone
       );
+      const plannedDropoffLabel = formatTimeOnly(
+        rideRequest?.assignment?.plannedDropoffAt ?? selectedOption.plannedDropoffAt,
+        timeZone
+      );
       const desiredLabel = formatDateTime(selectedDesiredAt, timeZone);
 
       applySessionMutation({
@@ -2638,7 +2644,7 @@ export async function handleLineChatBookingMessage({
         createdRideRequest: rideRequest,
         messageText:
           `${pickupName}から${dropoffName}まで、${desiredLabel}に${selectedOption.partySize}名、` +
-          `${plannedPickupLabel}で予約しました。`
+          `${plannedPickupLabel}で予約しました。降車予定は${plannedDropoffLabel}です。`
       };
     }
 

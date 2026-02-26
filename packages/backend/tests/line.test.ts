@@ -549,6 +549,10 @@ test("line webhook verifies signature and sends reply", async () => {
           postedBody.messages[0].text.includes("予約状況"),
           true
         );
+        assert.equal(
+          postedBody.messages[0].text.includes("降車予定"),
+          true
+        );
       } finally {
         globalThis.fetch = originalFetch;
       }
