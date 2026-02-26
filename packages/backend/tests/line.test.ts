@@ -609,14 +609,14 @@ test("line webhook sends reservation form URL when user sends フォーム予約
               type: "user",
               userId: "U_book_chat_1"
             },
-              message: {
-                type: "text",
-                id: "100002",
-                text: "フォーム予約"
-              }
+            message: {
+              type: "text",
+              id: "100002",
+              text: "フォーム予約"
             }
-          ]
-        };
+          }
+        ]
+      };
       const rawBody = JSON.stringify(webhookPayload);
       const signature = createHmac("sha256", "line_secret_test")
         .update(rawBody)
