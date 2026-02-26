@@ -1080,7 +1080,7 @@ test("line webhook can decompose pickup/dropoff/time/party from one message", as
   );
 });
 
-test("line webhook skips stop confirmation when each stop has a single candidate", async () => {
+test("line webhook skips stop confirmation when each stop is confidently resolved", async () => {
   await withTemporaryEnv(
     {
       LINE_CHANNEL_SECRET: "line_secret_test",
@@ -1092,7 +1092,8 @@ test("line webhook skips stop confirmation when each stop has a single candidate
       const repository = new InMemoryRepository({
         stops: [
           { id: "stop_mac", name: "MAC", lat: 33.0011, lng: 132.9288 },
-          { id: "stop_fuji", name: "フジグラン四万十", lat: 32.9969, lng: 132.9348 }
+          { id: "stop_fuji", name: "フジグラン四万十", lat: 32.9969, lng: 132.9348 },
+          { id: "stop_grand", name: "グランメゾン前", lat: 32.9959, lng: 132.9340 }
         ],
         vehicles: [
           {

@@ -682,7 +682,7 @@ function resolveTimeZoneOffsetMs(date, timeZone) {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
-    hour12: false
+    hourCycle: "h23"
   });
   const parts = formatter.formatToParts(date).reduce((acc, part) => {
     if (part.type !== "literal") {
@@ -724,7 +724,7 @@ function getZonedDateParts(date, timeZone) {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
-    hour12: false
+    hourCycle: "h23"
   });
   const parts = formatter.formatToParts(date).reduce((acc, part) => {
     if (part.type !== "literal") {
@@ -859,7 +859,7 @@ function parseConfirmation(text) {
   return "UNKNOWN";
 }
 
-function parseDesiredMode(text) {
+function fallbackParseDesiredMode(text) {
   const normalized = normalizeTrimmedText(text);
   if (!normalized) {
     return null;
@@ -897,7 +897,7 @@ function sanitizeStopQuery(value) {
     .trim();
 }
 
-function parseStopPairFromText(text) {
+function fallbackParseStopPairFromText(text) {
   const normalized = normalizeTrimmedText(text);
   if (!normalized) {
     return { pickupQuery: null, dropoffQuery: null };
@@ -929,7 +929,7 @@ function parseStopPairFromText(text) {
   };
 }
 
-function parseDesiredTimeFromText(text, { now = new Date(), timeZone = DEFAULT_TIME_ZONE } = {}) {
+function fallbackParseDesiredTimeFromText(text, { now = new Date(), timeZone = DEFAULT_TIME_ZONE } = {}) {
   const normalized = normalizeTrimmedText(text);
   if (!normalized) {
     return null;
@@ -1341,24 +1341,23 @@ function mergeTurnUnderstanding({
   now,
   timeZone
 }) {
-  const parsedConfirmation = parseConfirmation(text);
-  const parsedPartySize = parsePartySizeFromText(text);
-  const parsedDesiredTime = parseDesiredTimeFromText(text, { now, timeZone });
-  const parsedDesiredMode = parseDesiredMode(text);
-
   const llm = llmOutput && typeof llmOutput === "object" ? llmOutput : {};
 
+  const parsedConfirmation = parseConfirmation(text);
   const llmConfirmation = normalizeConfirmation(llm.confirmation);
   const confirmation = parsedConfirmation !== "UNKNOWN" ? parsedConfirmation : llmConfirmation;
 
   const llmPartySize = normalizePartySize(llm.partySize);
-  const partySize = parsedPartySize ?? llmPartySize;
+  const fallbackPartySize = llmPartySize ? null : parsePartySizeFromText(text);
+  const partySize = llmPartySize ?? fallbackPartySize;
 
   const llmDesiredIso = normalizeDesiredIso(llm.desiredAtIso);
-  const desiredAtIso = parsedDesiredTime ?? llmDesiredIso;
+  const fallbackDesiredTime = llmDesiredIso ? null : fallbackParseDesiredTimeFromText(text, { now, timeZone });
+  const desiredAtIso = llmDesiredIso ?? fallbackDesiredTime;
 
   const llmDesiredMode = normalizeDesiredMode(llm.desiredMode);
-  const desiredMode = parsedDesiredMode ?? llmDesiredMode;
+  const fallbackDesiredMode = llmDesiredMode ? null : fallbackParseDesiredMode(text);
+  const desiredMode = llmDesiredMode ?? fallbackDesiredMode;
 
   const allCandidateIds = new Set([
     ...fallbackStopCandidates.map((candidate) => candidate.stopId),
@@ -1370,6 +1369,8 @@ function mergeTurnUnderstanding({
   const llmDropoffStopId = normalizeTrimmedText(llm.dropoffStopId);
   const llmPickupHint = sanitizeStopQuery(llm.pickupHint);
   const llmDropoffHint = sanitizeStopQuery(llm.dropoffHint);
+  const fallbackStopPair =
+    llmPickupHint && llmDropoffHint ? { pickupQuery: null, dropoffQuery: null } : fallbackParseStopPairFromText(text);
   const cancelSelectionIndex = normalizeSelectionIndex(llm.cancelSelectionIndex);
   const cancelRequestId = normalizeTrimmedText(llm.cancelRequestId) || null;
   const nextPrompt = sanitizeNextPrompt(llm.nextPrompt);
@@ -1388,8 +1389,8 @@ function mergeTurnUnderstanding({
     desiredAtIso,
     desiredMode,
     selectedStopId,
-    pickupHint: llmPickupHint,
-    dropoffHint: llmDropoffHint,
+    pickupHint: llmPickupHint || fallbackStopPair.pickupQuery,
+    dropoffHint: llmDropoffHint || fallbackStopPair.dropoffQuery,
     cancelSelectionIndex,
     cancelRequestId,
     nextPrompt
@@ -1412,9 +1413,12 @@ function applyUnderstandingToSessionSlots(session, understanding) {
 }
 
 function resolveCompositeStopQueries({ text, understanding }) {
-  const parsed = parseStopPairFromText(text);
-  const pickupQuery = parsed.pickupQuery || sanitizeStopQuery(understanding?.pickupHint);
-  const dropoffQuery = parsed.dropoffQuery || sanitizeStopQuery(understanding?.dropoffHint);
+  const pickupHint = sanitizeStopQuery(understanding?.pickupHint);
+  const dropoffHint = sanitizeStopQuery(understanding?.dropoffHint);
+  const parsed =
+    pickupHint && dropoffHint ? { pickupQuery: null, dropoffQuery: null } : fallbackParseStopPairFromText(text);
+  const pickupQuery = pickupHint || parsed.pickupQuery;
+  const dropoffQuery = dropoffHint || parsed.dropoffQuery;
   return {
     pickupQuery: pickupQuery || null,
     dropoffQuery: dropoffQuery || null
@@ -2057,23 +2061,7 @@ export async function handleLineChatBookingMessage({
         }
 
         const selectedDropoff = prefilledCandidates[0];
-        if (prefilledCandidates.length === 1) {
-          return proceedAfterDropoffSelection(selectedDropoff.stopId);
-        }
-
-        session.phase = "CONFIRM_DROPOFF";
-        session.pending = {
-          field: "dropoff",
-          options: prefilledCandidates,
-          selectedStopId: selectedDropoff.stopId,
-          selectedOption: null
-        };
-        return {
-          handled: true,
-          clearSession: false,
-          nextSession: session,
-          messageText: buildStopConfirmationPrompt(selectedDropoff.name)
-        };
+        return proceedAfterDropoffSelection(selectedDropoff.stopId);
       }
     }
 
@@ -2348,22 +2336,7 @@ export async function handleLineChatBookingMessage({
         };
       }
       const selected = pickupCandidates[0];
-      if (pickupCandidates.length === 1) {
-        return proceedAfterPickupSelection(selected.stopId);
-      }
-      session.phase = "CONFIRM_PICKUP";
-      session.pending = {
-        field: "pickup",
-        options: pickupCandidates,
-        selectedStopId: selected.stopId,
-        selectedOption: null
-      };
-      return {
-        handled: true,
-        clearSession: false,
-        nextSession: session,
-        messageText: buildStopConfirmationPrompt(selected.name)
-      };
+      return proceedAfterPickupSelection(selected.stopId);
     }
 
     case "DISAMBIG_PICKUP": {
@@ -2459,21 +2432,7 @@ export async function handleLineChatBookingMessage({
       }
 
       const selected = freshCandidates[0];
-      if (freshCandidates.length === 1) {
-        return proceedAfterPickupSelection(selected.stopId);
-      }
-      session.pending = {
-        field: "pickup",
-        options: freshCandidates,
-        selectedStopId: selected.stopId,
-        selectedOption: null
-      };
-      return {
-        handled: true,
-        clearSession: false,
-        nextSession: session,
-        messageText: buildStopConfirmationPrompt(selected.name)
-      };
+      return proceedAfterPickupSelection(selected.stopId);
     }
 
     case "ASK_DROPOFF": {
@@ -2502,22 +2461,7 @@ export async function handleLineChatBookingMessage({
         };
       }
       const selected = dropoffCandidates[0];
-      if (dropoffCandidates.length === 1) {
-        return proceedAfterDropoffSelection(selected.stopId);
-      }
-      session.phase = "CONFIRM_DROPOFF";
-      session.pending = {
-        field: "dropoff",
-        options: dropoffCandidates,
-        selectedStopId: selected.stopId,
-        selectedOption: null
-      };
-      return {
-        handled: true,
-        clearSession: false,
-        nextSession: session,
-        messageText: buildStopConfirmationPrompt(selected.name)
-      };
+      return proceedAfterDropoffSelection(selected.stopId);
     }
 
     case "DISAMBIG_DROPOFF": {
@@ -2610,21 +2554,7 @@ export async function handleLineChatBookingMessage({
       }
 
       const selected = freshCandidates[0];
-      if (freshCandidates.length === 1) {
-        return proceedAfterDropoffSelection(selected.stopId);
-      }
-      session.pending = {
-        field: "dropoff",
-        options: freshCandidates,
-        selectedStopId: selected.stopId,
-        selectedOption: null
-      };
-      return {
-        handled: true,
-        clearSession: false,
-        nextSession: session,
-        messageText: buildStopConfirmationPrompt(selected.name)
-      };
+      return proceedAfterDropoffSelection(selected.stopId);
     }
 
     case "ASK_TIME_AND_PARTY": {
