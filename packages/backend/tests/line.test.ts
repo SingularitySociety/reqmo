@@ -788,31 +788,24 @@ test("line webhook can create reservation via chat conversation with stop/time v
         assert.equal(step2.includes("ロータリー"), true);
 
         const step3 = await sendChatText("ろったり", "reply_token_chat_3");
-        assert.equal(step3.includes("安並運動公園 ロータリー"), true);
+        assert.equal(step3.includes("どこまで行きたいですか"), true);
 
-        const step4 = await sendChatText("はい", "reply_token_chat_4");
-        assert.equal(step4.includes("どこまで行きたいですか"), true);
+        const step4 = await sendChatText("秋田", "reply_token_chat_4");
+        assert.equal(step4.includes("秋田"), true);
+        assert.equal(step4.includes("秋田天満宮"), true);
 
         const step5 = await sendChatText("秋田", "reply_token_chat_5");
-        assert.equal(step5.includes("秋田"), true);
-        assert.equal(step5.includes("秋田天満宮"), true);
+        assert.equal(step5.includes("何名、何時"), true);
 
-        const step6 = await sendChatText("秋田", "reply_token_chat_6");
-        assert.equal(step6.includes("秋田"), true);
-        assert.equal(step6.includes("よろしいですか"), true);
+        const step6 = await sendChatText("昼ごろ", "reply_token_chat_6");
+        assert.equal(step6.includes("何名乗りますか"), true);
 
-        const step7 = await sendChatText("はい", "reply_token_chat_7");
-        assert.equal(step7.includes("何名、何時"), true);
+        const step7 = await sendChatText("3名", "reply_token_chat_7");
+        assert.equal(step7.includes("予約してよろしいでしょうか"), true);
+        assert.equal(step7.includes("最大15分程度遅れる場合もあります"), true);
 
-        const step8 = await sendChatText("昼ごろ", "reply_token_chat_8");
-        assert.equal(step8.includes("何名乗りますか"), true);
-
-        const step9 = await sendChatText("3名", "reply_token_chat_9");
-        assert.equal(step9.includes("予約してよろしいでしょうか"), true);
-        assert.equal(step9.includes("最大15分程度遅れる場合もあります"), true);
-
-        const step10 = await sendChatText("お願い", "reply_token_chat_10");
-        assert.equal(step10.includes("予約しました"), true);
+        const step8 = await sendChatText("お願い", "reply_token_chat_8");
+        assert.equal(step8.includes("予約しました"), true);
 
         const created = repository.listRideRequests();
         assert.equal(created.length, 1);

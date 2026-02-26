@@ -2353,19 +2353,7 @@ export async function handleLineChatBookingMessage({
           messageText: `候補から選んでください。${buildDisambiguationPrompt(pendingCandidates)}`
         };
       }
-      session.phase = "CONFIRM_PICKUP";
-      session.pending = {
-        field: "pickup",
-        options: pendingCandidates,
-        selectedStopId: selected.stopId,
-        selectedOption: null
-      };
-      return {
-        handled: true,
-        clearSession: false,
-        nextSession: session,
-        messageText: buildStopConfirmationPrompt(selected.name)
-      };
+      return proceedAfterPickupSelection(selected.stopId);
     }
 
     case "CONFIRM_PICKUP": {
@@ -2478,19 +2466,7 @@ export async function handleLineChatBookingMessage({
           messageText: `候補から選んでください。${buildDisambiguationPrompt(pendingCandidates)}`
         };
       }
-      session.phase = "CONFIRM_DROPOFF";
-      session.pending = {
-        field: "dropoff",
-        options: pendingCandidates,
-        selectedStopId: selected.stopId,
-        selectedOption: null
-      };
-      return {
-        handled: true,
-        clearSession: false,
-        nextSession: session,
-        messageText: buildStopConfirmationPrompt(selected.name)
-      };
+      return proceedAfterDropoffSelection(selected.stopId);
     }
 
     case "CONFIRM_DROPOFF": {
