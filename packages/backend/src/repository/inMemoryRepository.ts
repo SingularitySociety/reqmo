@@ -9,6 +9,7 @@ export class InMemoryRepository {
     this.trips = new Map();
     this.phoneIdentities = new Map();
     this.lineIdentities = new Map();
+    this.lineChatSessions = new Map();
     this.callEvents = new Map();
     this.serviceProfiles = new Map();
     this.farePolicies = new Map();
@@ -53,6 +54,15 @@ export class InMemoryRepository {
     if (seed.lineIdentities) {
       seed.lineIdentities.forEach((identity) => {
         this.lineIdentities.set(identity.lineUserId, { ...identity });
+      });
+    }
+    if (seed.lineChatSessions) {
+      seed.lineChatSessions.forEach((session) => {
+        const lineUserId = typeof session?.lineUserId === "string" ? session.lineUserId.trim() : "";
+        if (!lineUserId) {
+          return;
+        }
+        this.lineChatSessions.set(lineUserId, { ...session, lineUserId });
       });
     }
   }
@@ -343,6 +353,38 @@ export class InMemoryRepository {
 
   listLineIdentities() {
     return Array.from(this.lineIdentities.values());
+  }
+
+  upsertLineChatSession(lineUserId, session) {
+    const key = typeof lineUserId === "string" ? lineUserId.trim() : "";
+    if (!key) {
+      throw new Error("lineUserId is required");
+    }
+    if (!session || typeof session !== "object") {
+      throw new Error("session is required");
+    }
+    const next = {
+      lineUserId: key,
+      ...session
+    };
+    this.lineChatSessions.set(key, next);
+    return next;
+  }
+
+  getLineChatSession(lineUserId) {
+    const key = typeof lineUserId === "string" ? lineUserId.trim() : "";
+    if (!key) {
+      return null;
+    }
+    return this.lineChatSessions.get(key) ?? null;
+  }
+
+  clearLineChatSession(lineUserId) {
+    const key = typeof lineUserId === "string" ? lineUserId.trim() : "";
+    if (!key) {
+      return false;
+    }
+    return this.lineChatSessions.delete(key);
   }
 
   saveCallEvent(callEvent) {

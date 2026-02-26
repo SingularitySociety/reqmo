@@ -1,0 +1,1995 @@
+import { GraphAI } from "graphai";
+import { geminiAgent } from "@graphai/gemini_agent";
+
+import { createRideRequest, listRideRequestOptions } from "../api/functions.ts";
+import { normalizePhoneNumber } from "../telephony/phoneNumber.ts";
+import { registerLineMiniAppUser } from "./service.ts";
+
+const BOOKING_SESSION_VERSION = 1;
+const DEFAULT_TIME_ZONE = "Asia/Tokyo";
+const DEFAULT_COUNTRY_CODE = "+81";
+const STOP_CANDIDATE_LIMIT = 5;
+const MAX_PARTY_SIZE = 8;
+
+const YES_PATTERN = /^(はい|うん|ok|okay|yes|y|お願い|お願いします|お願い致します|確定|予約して|予約して下さい|予約してください)$/i;
+const NO_PATTERN = /^(いいえ|違う|ちがう|no|n|キャンセル|やめる|やめます|戻る|戻して)$/i;
+const CANCEL_PATTERN = /^(予約キャンセル|予約中断|中断|やめる|キャンセル|cancel)$/i;
+
+const JAPANESE_NUMBER_MAP = {
+  "一": 1,
+  "二": 2,
+  "三": 3,
+  "四": 4,
+  "五": 5,
+  "六": 6,
+  "七": 7,
+  "八": 8,
+  "九": 9,
+  "十": 10
+};
+
+const NLU_RESPONSE_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    intent: {
+      anyOf: [{ type: "string" }, { type: "null" }]
+    },
+    confirmation: {
+      anyOf: [{ type: "string" }, { type: "null" }]
+    },
+    selectedStopId: {
+      anyOf: [{ type: "string" }, { type: "null" }]
+    },
+    pickupStopId: {
+      anyOf: [{ type: "string" }, { type: "null" }]
+    },
+    dropoffStopId: {
+      anyOf: [{ type: "string" }, { type: "null" }]
+    },
+    desiredAtIso: {
+      anyOf: [{ type: "string" }, { type: "null" }]
+    },
+    desiredMode: {
+      anyOf: [{ type: "string" }, { type: "null" }]
+    },
+    partySize: {
+      anyOf: [{ type: "number" }, { type: "null" }]
+    },
+    confidence: {
+      anyOf: [{ type: "number" }, { type: "null" }]
+    },
+    notes: {
+      anyOf: [{ type: "string" }, { type: "null" }]
+    }
+  }
+};
+
+function normalizeTrimmedText(value) {
+  if (typeof value !== "string") {
+    return "";
+  }
+  return value.trim();
+}
+
+function normalizeSessionPhase(value) {
+  const phase = normalizeTrimmedText(value).toUpperCase();
+  const known = new Set([
+    "REGISTER_PHONE",
+    "REGISTER_NAME",
+    "ASK_PICKUP",
+    "DISAMBIG_PICKUP",
+    "CONFIRM_PICKUP",
+    "ASK_DROPOFF",
+    "DISAMBIG_DROPOFF",
+    "CONFIRM_DROPOFF",
+    "ASK_TIME_AND_PARTY",
+    "ASK_TIME",
+    "ASK_PARTY",
+    "CONFIRM_BOOKING"
+  ]);
+  return known.has(phase) ? phase : "ASK_PICKUP";
+}
+
+function toIsoString(dateValue) {
+  const date = dateValue instanceof Date ? dateValue : new Date(dateValue);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+  return date.toISOString();
+}
+
+function clone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function createInitialSession(now = new Date()) {
+  const timestamp = now.toISOString();
+  return {
+    version: BOOKING_SESSION_VERSION,
+    mode: "LINE_CHAT_BOOKING",
+    phase: "REGISTER_PHONE",
+    registration: {
+      name: null,
+      phoneNumber: null
+    },
+    slots: {
+      pickupStopId: null,
+      dropoffStopId: null,
+      desiredAt: null,
+      desiredMode: "PICKUP",
+      partySize: null
+    },
+    pending: {
+      field: null,
+      options: [],
+      selectedStopId: null,
+      selectedOption: null
+    },
+    createdAt: timestamp,
+    updatedAt: timestamp
+  };
+}
+
+function normalizeSession(raw, now = new Date()) {
+  if (!raw || typeof raw !== "object") {
+    return createInitialSession(now);
+  }
+  const base = createInitialSession(now);
+  const slots = raw.slots && typeof raw.slots === "object" ? raw.slots : {};
+  const pending = raw.pending && typeof raw.pending === "object" ? raw.pending : {};
+  const registration = raw.registration && typeof raw.registration === "object" ? raw.registration : {};
+
+  const desiredModeRaw = normalizeTrimmedText(slots.desiredMode).toUpperCase();
+  const desiredMode = desiredModeRaw === "DROPOFF" ? "DROPOFF" : "PICKUP";
+  const desiredAt = toIsoString(slots.desiredAt);
+  const partySizeNum = Number(slots.partySize);
+  const partySize =
+    Number.isFinite(partySizeNum) && partySizeNum > 0
+      ? Math.min(MAX_PARTY_SIZE, Math.max(1, Math.trunc(partySizeNum)))
+      : null;
+
+  const normalizedPendingOptions = Array.isArray(pending.options)
+    ? pending.options
+        .map((item) => {
+          if (!item || typeof item !== "object") {
+            return null;
+          }
+          const stopId = normalizeTrimmedText(item.stopId);
+          const name = normalizeTrimmedText(item.name);
+          if (!stopId || !name) {
+            return null;
+          }
+          const scoreRaw = Number(item.score);
+          const score = Number.isFinite(scoreRaw) ? scoreRaw : 0;
+          return { stopId, name, score };
+        })
+        .filter(Boolean)
+    : [];
+
+  const normalizedSession = {
+    ...base,
+    version: BOOKING_SESSION_VERSION,
+    phase: normalizeSessionPhase(raw.phase),
+    registration: {
+      name: normalizeTrimmedText(registration.name) || null,
+      phoneNumber: normalizeTrimmedText(registration.phoneNumber) || null
+    },
+    slots: {
+      pickupStopId: normalizeTrimmedText(slots.pickupStopId) || null,
+      dropoffStopId: normalizeTrimmedText(slots.dropoffStopId) || null,
+      desiredAt,
+      desiredMode,
+      partySize
+    },
+    pending: {
+      field: normalizeTrimmedText(pending.field) || null,
+      options: normalizedPendingOptions,
+      selectedStopId: normalizeTrimmedText(pending.selectedStopId) || null,
+      selectedOption:
+        pending.selectedOption && typeof pending.selectedOption === "object"
+          ? {
+              ...pending.selectedOption,
+              vehicleId: normalizeTrimmedText(pending.selectedOption.vehicleId) || null,
+              plannedPickupAt: toIsoString(pending.selectedOption.plannedPickupAt),
+              plannedDropoffAt: toIsoString(pending.selectedOption.plannedDropoffAt),
+              desiredAt: toIsoString(pending.selectedOption.desiredAt),
+              desiredMode:
+                normalizeTrimmedText(pending.selectedOption.desiredMode).toUpperCase() === "DROPOFF"
+                  ? "DROPOFF"
+                  : "PICKUP",
+              partySize: (() => {
+                const num = Number(pending.selectedOption.partySize);
+                return Number.isFinite(num) && num > 0 ? Math.min(MAX_PARTY_SIZE, Math.max(1, Math.trunc(num))) : 1;
+              })(),
+              requestType:
+                normalizeTrimmedText(pending.selectedOption.requestType).toUpperCase() === "ARRIVE_BY"
+                  ? "ARRIVE_BY"
+                  : "DEPART_AT"
+            }
+          : null
+    },
+    createdAt: toIsoString(raw.createdAt) ?? base.createdAt,
+    updatedAt: toIsoString(raw.updatedAt) ?? base.updatedAt
+  };
+
+  return normalizedSession;
+}
+
+function touchSession(session, now = new Date()) {
+  return {
+    ...session,
+    updatedAt: now.toISOString()
+  };
+}
+
+function katakanaToHiragana(value) {
+  return value.replace(/[\u30a1-\u30f6]/g, (char) => {
+    return String.fromCharCode(char.charCodeAt(0) - 0x60);
+  });
+}
+
+function normalizeJapaneseText(value) {
+  const trimmed = normalizeTrimmedText(value).toLowerCase();
+  if (!trimmed) {
+    return "";
+  }
+  const hiragana = katakanaToHiragana(trimmed);
+  return hiragana
+    .replace(/[\s\u3000]/g, "")
+    .replace(/[・･\-―ーｰ~〜.,。!?！？()（）「」『』【】\[\]\/]/g, "")
+    .replace(/っ+/g, "っ");
+}
+
+function levenshteinDistance(left, right) {
+  const a = normalizeTrimmedText(left);
+  const b = normalizeTrimmedText(right);
+  const rows = a.length + 1;
+  const cols = b.length + 1;
+  const matrix = Array.from({ length: rows }, () => new Array(cols).fill(0));
+
+  for (let i = 0; i < rows; i += 1) {
+    matrix[i][0] = i;
+  }
+  for (let j = 0; j < cols; j += 1) {
+    matrix[0][j] = j;
+  }
+
+  for (let i = 1; i < rows; i += 1) {
+    for (let j = 1; j < cols; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      matrix[i][j] = Math.min(
+        matrix[i - 1][j] + 1,
+        matrix[i][j - 1] + 1,
+        matrix[i - 1][j - 1] + cost
+      );
+    }
+  }
+
+  return matrix[rows - 1][cols - 1];
+}
+
+function computeStopMatchScore(query, stopName) {
+  const normalizedQuery = normalizeJapaneseText(query);
+  const normalizedStop = normalizeJapaneseText(stopName);
+  if (!normalizedQuery || !normalizedStop) {
+    return 0;
+  }
+
+  let score = 0;
+  if (normalizedStop === normalizedQuery) {
+    score = 1;
+  }
+
+  if (normalizedStop.includes(normalizedQuery)) {
+    score = Math.max(score, 0.9);
+  }
+  if (normalizedQuery.includes(normalizedStop)) {
+    score = Math.max(score, 0.82);
+  }
+
+  const distance = levenshteinDistance(normalizedQuery, normalizedStop);
+  const maxLength = Math.max(normalizedQuery.length, normalizedStop.length);
+  if (maxLength > 0) {
+    score = Math.max(score, 1 - distance / maxLength);
+  }
+
+  const stopWords = normalizeTrimmedText(stopName)
+    .split(/[\s\u3000・･()（）]+/)
+    .map((word) => normalizeJapaneseText(word))
+    .filter(Boolean);
+  stopWords.forEach((word) => {
+    if (!word) {
+      return;
+    }
+    if (word === normalizedQuery) {
+      score = Math.max(score, 0.99);
+      return;
+    }
+    if (word.includes(normalizedQuery)) {
+      score = Math.max(score, 0.93);
+    }
+    if (normalizedQuery.includes(word)) {
+      score = Math.max(score, 0.86);
+    }
+    const wordDistance = levenshteinDistance(normalizedQuery, word);
+    const wordLength = Math.max(normalizedQuery.length, word.length);
+    if (wordLength > 0) {
+      score = Math.max(score, 1 - wordDistance / wordLength);
+    }
+  });
+
+  const queryWords = normalizeTrimmedText(query)
+    .split(/[\s\u3000]+/)
+    .map((word) => normalizeJapaneseText(word))
+    .filter(Boolean);
+  if (queryWords.length > 1) {
+    const matchedWordCount = queryWords.reduce((count, word) => {
+      return count + (normalizedStop.includes(word) ? 1 : 0);
+    }, 0);
+    score = Math.max(score, matchedWordCount / queryWords.length);
+  }
+
+  return Math.max(0, Math.min(1, score));
+}
+
+function buildStopCandidates(stops, text, limit = STOP_CANDIDATE_LIMIT) {
+  if (!Array.isArray(stops) || !stops.length) {
+    return [];
+  }
+  const normalizedText = normalizeTrimmedText(text);
+  if (!normalizedText) {
+    return [];
+  }
+
+  const candidates = stops
+    .map((stop) => {
+      const stopId = normalizeTrimmedText(stop?.id);
+      const stopName = normalizeTrimmedText(stop?.name);
+      if (!stopId || !stopName) {
+        return null;
+      }
+      return {
+        stopId,
+        name: stopName,
+        score: computeStopMatchScore(normalizedText, stopName)
+      };
+    })
+    .filter(Boolean)
+    .filter((candidate) => candidate.score >= 0.25)
+    .sort((left, right) => {
+      if (right.score !== left.score) {
+        return right.score - left.score;
+      }
+      return left.name.localeCompare(right.name, "ja-JP");
+    })
+    .slice(0, limit);
+
+  return candidates;
+}
+
+function shouldAskStopDisambiguation(candidates) {
+  if (!Array.isArray(candidates) || candidates.length <= 1) {
+    return false;
+  }
+  const top = candidates[0];
+  const second = candidates[1];
+  if (!top || !second) {
+    return false;
+  }
+  if (top.score >= 0.92 && top.score - second.score >= 0.12) {
+    return false;
+  }
+  return true;
+}
+
+function resolveStopName(repository, stopId) {
+  if (typeof repository?.findStopById !== "function") {
+    return stopId;
+  }
+  const stop = repository.findStopById(stopId);
+  return stop?.name ?? stopId;
+}
+
+function formatTimeOnly(value, timeZone = DEFAULT_TIME_ZONE) {
+  const iso = toIsoString(value);
+  if (!iso) {
+    return "時刻未定";
+  }
+  return new Date(iso).toLocaleTimeString("ja-JP", {
+    timeZone,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  });
+}
+
+function formatDateTime(value, timeZone = DEFAULT_TIME_ZONE) {
+  const iso = toIsoString(value);
+  if (!iso) {
+    return "時刻未定";
+  }
+  return new Date(iso).toLocaleString("ja-JP", {
+    timeZone,
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  });
+}
+
+function resolveTimeZoneOffsetMs(date, timeZone) {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  });
+  const parts = formatter.formatToParts(date).reduce((acc, part) => {
+    if (part.type !== "literal") {
+      acc[part.type] = Number(part.value);
+    }
+    return acc;
+  }, {});
+  const utcFromZoned = Date.UTC(
+    Number(parts.year),
+    Number(parts.month) - 1,
+    Number(parts.day),
+    Number(parts.hour),
+    Number(parts.minute),
+    Number(parts.second)
+  );
+  return utcFromZoned - date.getTime();
+}
+
+function zonedDateTimeToUtcIso({
+  year,
+  month,
+  day,
+  hour,
+  minute,
+  timeZone
+}) {
+  const utcGuess = Date.UTC(year, month - 1, day, hour, minute, 0, 0);
+  const guessDate = new Date(utcGuess);
+  const offset = resolveTimeZoneOffsetMs(guessDate, timeZone);
+  return new Date(utcGuess - offset).toISOString();
+}
+
+function getZonedDateParts(date, timeZone) {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  });
+  const parts = formatter.formatToParts(date).reduce((acc, part) => {
+    if (part.type !== "literal") {
+      acc[part.type] = Number(part.value);
+    }
+    return acc;
+  }, {});
+
+  return {
+    year: Number(parts.year),
+    month: Number(parts.month),
+    day: Number(parts.day),
+    hour: Number(parts.hour),
+    minute: Number(parts.minute),
+    second: Number(parts.second)
+  };
+}
+
+function shiftDatePartsByDays(parts, deltaDays, timeZone) {
+  const iso = zonedDateTimeToUtcIso({
+    ...parts,
+    timeZone
+  });
+  const shifted = new Date(iso);
+  shifted.setUTCDate(shifted.getUTCDate() + deltaDays);
+  return getZonedDateParts(shifted, timeZone);
+}
+
+function parseJapaneseNumeric(value) {
+  const trimmed = normalizeTrimmedText(value);
+  if (!trimmed) {
+    return null;
+  }
+  if (/^\d+$/.test(trimmed)) {
+    return Number(trimmed);
+  }
+
+  if (trimmed in JAPANESE_NUMBER_MAP) {
+    return JAPANESE_NUMBER_MAP[trimmed];
+  }
+
+  if (/^[一二三四五六七八九]十$/.test(trimmed)) {
+    const head = JAPANESE_NUMBER_MAP[trimmed[0]];
+    return head * 10;
+  }
+
+  if (/^十[一二三四五六七八九]$/.test(trimmed)) {
+    const tail = JAPANESE_NUMBER_MAP[trimmed[1]];
+    return 10 + tail;
+  }
+
+  return null;
+}
+
+function parsePartySizeFromText(text) {
+  const normalized = normalizeTrimmedText(text);
+  if (!normalized) {
+    return null;
+  }
+
+  const digitMatch = normalized.match(/(\d{1,2})\s*(名|人)/);
+  if (digitMatch) {
+    const num = Number(digitMatch[1]);
+    if (Number.isFinite(num) && num > 0) {
+      return Math.min(MAX_PARTY_SIZE, Math.max(1, Math.trunc(num)));
+    }
+  }
+
+  const standaloneDigit = normalized.match(/^(\d{1,2})$/);
+  if (standaloneDigit) {
+    const num = Number(standaloneDigit[1]);
+    if (Number.isFinite(num) && num > 0) {
+      return Math.min(MAX_PARTY_SIZE, Math.max(1, Math.trunc(num)));
+    }
+  }
+
+  const japaneseMatch = normalized.match(/([一二三四五六七八九十]{1,3})\s*(名|人)/);
+  if (japaneseMatch) {
+    const num = parseJapaneseNumeric(japaneseMatch[1]);
+    if (Number.isFinite(num) && num > 0) {
+      return Math.min(MAX_PARTY_SIZE, Math.max(1, Math.trunc(num)));
+    }
+  }
+
+  return null;
+}
+
+function parsePhoneNumberCandidate(text, defaultCountryCode = DEFAULT_COUNTRY_CODE) {
+  const normalized = normalizeTrimmedText(text);
+  if (!normalized) {
+    return null;
+  }
+  const compact = normalized
+    .replace(/[^\d+]/g, "")
+    .replace(/^00/, "+");
+  if (!compact) {
+    return null;
+  }
+  const normalizedPhone = normalizePhoneNumber(compact, defaultCountryCode);
+  return normalizedPhone || null;
+}
+
+function parseNameCandidate(text) {
+  const normalized = normalizeTrimmedText(text)
+    .replace(/^名前(?:は|:|：)?/i, "")
+    .replace(/^私(?:は|の名前は)?/i, "")
+    .replace(/です$/i, "")
+    .trim();
+  if (!normalized) {
+    return null;
+  }
+  if (/\d/.test(normalized)) {
+    return null;
+  }
+  if (normalized.length > 40) {
+    return null;
+  }
+  return normalized;
+}
+
+function parseConfirmation(text) {
+  const normalized = normalizeTrimmedText(text);
+  if (!normalized) {
+    return "UNKNOWN";
+  }
+  if (YES_PATTERN.test(normalized)) {
+    return "YES";
+  }
+  if (NO_PATTERN.test(normalized)) {
+    return "NO";
+  }
+  return "UNKNOWN";
+}
+
+function parseDesiredMode(text) {
+  const normalized = normalizeTrimmedText(text);
+  if (!normalized) {
+    return null;
+  }
+  if (/(到着|着きたい|までに|まで)/.test(normalized)) {
+    return "DROPOFF";
+  }
+  return null;
+}
+
+function parseDesiredTimeFromText(text, { now = new Date(), timeZone = DEFAULT_TIME_ZONE } = {}) {
+  const normalized = normalizeTrimmedText(text);
+  if (!normalized) {
+    return null;
+  }
+
+  if (/(今すぐ|すぐ|できるだけ早く|最短|asap)/i.test(normalized)) {
+    const nearFuture = new Date(now.getTime() + 5 * 60 * 1000);
+    return nearFuture.toISOString();
+  }
+
+  const dayOffset = (() => {
+    if (/明後日|あさって/.test(normalized)) {
+      return 2;
+    }
+    if (/明日|あした/.test(normalized)) {
+      return 1;
+    }
+    return 0;
+  })();
+
+  let hour = null;
+  let minute = 0;
+
+  const hhmm = normalized.match(/(\d{1,2})[:：](\d{1,2})/);
+  if (hhmm) {
+    hour = Number(hhmm[1]);
+    minute = Number(hhmm[2]);
+  }
+
+  if (hour === null) {
+    const half = normalized.match(/(\d{1,2})\s*時\s*半/);
+    if (half) {
+      hour = Number(half[1]);
+      minute = 30;
+    }
+  }
+
+  if (hour === null) {
+    const hourOnly = normalized.match(/(\d{1,2})\s*時(?:\s*(\d{1,2})\s*分)?/);
+    if (hourOnly) {
+      hour = Number(hourOnly[1]);
+      minute = hourOnly[2] ? Number(hourOnly[2]) : 0;
+    }
+  }
+
+  if (hour === null && /昼|正午/.test(normalized)) {
+    hour = 12;
+    minute = 0;
+  }
+  if (hour === null && /朝/.test(normalized)) {
+    hour = 9;
+    minute = 0;
+  }
+  if (hour === null && /夕方|夕刻/.test(normalized)) {
+    hour = 17;
+    minute = 0;
+  }
+  if (hour === null && /夜/.test(normalized)) {
+    hour = 19;
+    minute = 0;
+  }
+
+  if (hour === null || !Number.isFinite(hour) || !Number.isFinite(minute)) {
+    return null;
+  }
+
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+    return null;
+  }
+
+  const zonedNow = getZonedDateParts(now, timeZone);
+  let targetDate = shiftDatePartsByDays(zonedNow, dayOffset, timeZone);
+  const targetIso = zonedDateTimeToUtcIso({
+    year: targetDate.year,
+    month: targetDate.month,
+    day: targetDate.day,
+    hour,
+    minute,
+    timeZone
+  });
+
+  if (dayOffset === 0) {
+    const nowTs = now.getTime();
+    const targetTs = new Date(targetIso).getTime();
+    if (targetTs < nowTs + 5 * 60 * 1000) {
+      targetDate = shiftDatePartsByDays(zonedNow, 1, timeZone);
+      return zonedDateTimeToUtcIso({
+        year: targetDate.year,
+        month: targetDate.month,
+        day: targetDate.day,
+        hour,
+        minute,
+        timeZone
+      });
+    }
+  }
+
+  return targetIso;
+}
+
+function stripJsonFence(text) {
+  const raw = normalizeTrimmedText(text);
+  if (!raw) {
+    return "";
+  }
+  if (!raw.startsWith("```")) {
+    return raw;
+  }
+  return raw
+    .replace(/^```(?:json)?/i, "")
+    .replace(/```$/i, "")
+    .trim();
+}
+
+function parseJsonLoose(text) {
+  const normalized = stripJsonFence(text);
+  if (!normalized) {
+    return null;
+  }
+  try {
+    return JSON.parse(normalized);
+  } catch {
+    const firstBrace = normalized.indexOf("{");
+    const lastBrace = normalized.lastIndexOf("}");
+    if (firstBrace >= 0 && lastBrace > firstBrace) {
+      const sliced = normalized.slice(firstBrace, lastBrace + 1);
+      try {
+        return JSON.parse(sliced);
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+}
+
+function normalizeDesiredIso(value) {
+  const iso = toIsoString(value);
+  return iso || null;
+}
+
+function normalizeDesiredMode(value) {
+  const mode = normalizeTrimmedText(value).toUpperCase();
+  if (mode === "PICKUP" || mode === "DROPOFF") {
+    return mode;
+  }
+  return null;
+}
+
+function normalizePartySize(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num) || num <= 0) {
+    return null;
+  }
+  return Math.min(MAX_PARTY_SIZE, Math.max(1, Math.trunc(num)));
+}
+
+function normalizeConfirmation(value) {
+  const normalized = normalizeTrimmedText(value).toUpperCase();
+  if (normalized === "YES" || normalized === "NO") {
+    return normalized;
+  }
+  if (["OK", "TRUE", "AGREE"].includes(normalized)) {
+    return "YES";
+  }
+  if (["FALSE", "REJECT"].includes(normalized)) {
+    return "NO";
+  }
+  return "UNKNOWN";
+}
+
+function toCandidateBrief(candidates) {
+  if (!Array.isArray(candidates)) {
+    return [];
+  }
+  return candidates.map((candidate) => ({
+    stopId: candidate.stopId,
+    name: candidate.name,
+    score: Number(candidate.score.toFixed(3))
+  }));
+}
+
+function buildNluPrompt({
+  text,
+  phase,
+  slots,
+  stopCandidates,
+  now,
+  timeZone
+}) {
+  const context = {
+    nowIso: now.toISOString(),
+    timeZone,
+    phase,
+    slots,
+    stopCandidates: toCandidateBrief(stopCandidates),
+    userText: text
+  };
+
+  return [
+    "あなたはLINE予約チャットの入力解析器です。",
+    "必ずJSONだけを返してください。説明文は不要です。",
+    "目的: ユーザー入力から確認(YES/NO)、停留所候補、人数、希望時刻を抽出する。",
+    "selectedStopIdは stopCandidates の stopId から選んでください。候補外なら null。",
+    "desiredMode は PICKUP / DROPOFF / null。",
+    "desiredAtIso は ISO8601 UTC文字列。推定不可なら null。",
+    "partySize は 1-8 の整数。",
+    "context:",
+    JSON.stringify(context)
+  ].join("\n");
+}
+
+export function resolveLineBookingConfig({ env = process.env } = {}) {
+  const enabledRaw = normalizeTrimmedText(env.LINE_BOOKING_LLM_ENABLED || "true").toLowerCase();
+  const enabled = enabledRaw !== "false";
+  const apiKey =
+    normalizeTrimmedText(env.LINE_BOOKING_LLM_API_KEY) ||
+    normalizeTrimmedText(env.GOOGLE_GENAI_API_KEY);
+  const model = normalizeTrimmedText(env.LINE_BOOKING_LLM_MODEL) || "gemini-2.5-flash";
+  const temperatureRaw = Number(env.LINE_BOOKING_LLM_TEMPERATURE);
+  const temperature = Number.isFinite(temperatureRaw)
+    ? Math.min(1, Math.max(0, temperatureRaw))
+    : 0;
+  const timeZone = normalizeTrimmedText(env.LINE_BOOKING_TIMEZONE) || DEFAULT_TIME_ZONE;
+
+  return {
+    enabled,
+    apiKey,
+    model,
+    temperature,
+    timeZone,
+    available: enabled && Boolean(apiKey)
+  };
+}
+
+async function runBookingNlu({
+  text,
+  phase,
+  slots,
+  stopCandidates,
+  config,
+  now
+}) {
+  if (!config?.available) {
+    return null;
+  }
+
+  const prompt = buildNluPrompt({
+    text,
+    phase,
+    slots,
+    stopCandidates,
+    now,
+    timeZone: config.timeZone
+  });
+
+  const graphData = {
+    version: 0.5,
+    nodes: {
+      prompt: {
+        value: prompt
+      },
+      llm: {
+        agent: "geminiAgent",
+        params: {
+          model: config.model,
+          temperature: config.temperature,
+          response_format: {
+            type: "json_schema",
+            json_schema: {
+              schema: NLU_RESPONSE_SCHEMA
+            }
+          }
+        },
+        inputs: {
+          prompt: ":prompt"
+        },
+        isResult: true
+      }
+    }
+  };
+
+  try {
+    const graph = new GraphAI(
+      graphData,
+      { geminiAgent },
+      {
+        config: {
+          geminiAgent: {
+            apiKey: config.apiKey
+          }
+        }
+      }
+    );
+    const result = await graph.run();
+    const llmText = normalizeTrimmedText(result?.llm?.text);
+    return parseJsonLoose(llmText);
+  } catch {
+    return null;
+  }
+}
+
+function mergeTurnUnderstanding({
+  text,
+  llmOutput,
+  fallbackStopCandidates,
+  pendingStopCandidates,
+  now,
+  timeZone
+}) {
+  const parsedConfirmation = parseConfirmation(text);
+  const parsedPartySize = parsePartySizeFromText(text);
+  const parsedDesiredTime = parseDesiredTimeFromText(text, { now, timeZone });
+  const parsedDesiredMode = parseDesiredMode(text);
+
+  const llm = llmOutput && typeof llmOutput === "object" ? llmOutput : {};
+
+  const llmConfirmation = normalizeConfirmation(llm.confirmation);
+  const confirmation = parsedConfirmation !== "UNKNOWN" ? parsedConfirmation : llmConfirmation;
+
+  const llmPartySize = normalizePartySize(llm.partySize);
+  const partySize = parsedPartySize ?? llmPartySize;
+
+  const llmDesiredIso = normalizeDesiredIso(llm.desiredAtIso);
+  const desiredAtIso = parsedDesiredTime ?? llmDesiredIso;
+
+  const llmDesiredMode = normalizeDesiredMode(llm.desiredMode);
+  const desiredMode = parsedDesiredMode ?? llmDesiredMode;
+
+  const allCandidateIds = new Set([
+    ...fallbackStopCandidates.map((candidate) => candidate.stopId),
+    ...pendingStopCandidates.map((candidate) => candidate.stopId)
+  ]);
+
+  const llmSelectedStopId = normalizeTrimmedText(llm.selectedStopId);
+  const llmPickupStopId = normalizeTrimmedText(llm.pickupStopId);
+  const llmDropoffStopId = normalizeTrimmedText(llm.dropoffStopId);
+
+  let selectedStopId = null;
+  for (const candidate of [llmSelectedStopId, llmPickupStopId, llmDropoffStopId]) {
+    if (candidate && allCandidateIds.has(candidate)) {
+      selectedStopId = candidate;
+      break;
+    }
+  }
+
+  return {
+    confirmation,
+    partySize,
+    desiredAtIso,
+    desiredMode,
+    selectedStopId
+  };
+}
+
+function buildDisambiguationPrompt(candidates) {
+  if (!Array.isArray(candidates) || !candidates.length) {
+    return "候補の停留所が見つかりませんでした。もう一度入力してください。";
+  }
+  const names = candidates.map((candidate) => candidate.name);
+  if (names.length === 1) {
+    return `${names[0]}ですね。よろしいですか？`;
+  }
+  if (names.length === 2) {
+    return `${names[0]}ですか？${names[1]}ですか？`;
+  }
+  const [first, ...rest] = names;
+  return `${first}ですか？${rest.join("、")}ですか？`;
+}
+
+function buildStopConfirmationPrompt(stopName) {
+  return `${stopName}ですね。よろしいですか？`;
+}
+
+function buildTimeAndPartyPrompt() {
+  return "何名、何時に乗りたいですか？";
+}
+
+function resolveBestCandidate({
+  text,
+  candidates,
+  selectedStopIdFromNlu
+}) {
+  if (!Array.isArray(candidates) || !candidates.length) {
+    return null;
+  }
+
+  if (selectedStopIdFromNlu) {
+    const byId = candidates.find((candidate) => candidate.stopId === selectedStopIdFromNlu);
+    if (byId) {
+      return byId;
+    }
+  }
+
+  const scored = buildStopCandidates(
+    candidates.map((candidate) => ({ id: candidate.stopId, name: candidate.name })),
+    text,
+    candidates.length
+  );
+  return scored[0] ?? null;
+}
+
+async function buildBookingOptionProposal({
+  repository,
+  serviceProfileId,
+  requesterId,
+  tenantId,
+  passenger,
+  session,
+  context,
+  timeZone
+}) {
+  const pickupStopId = session?.slots?.pickupStopId;
+  const dropoffStopId = session?.slots?.dropoffStopId;
+  const desiredAt = session?.slots?.desiredAt;
+  const desiredMode = session?.slots?.desiredMode === "DROPOFF" ? "DROPOFF" : "PICKUP";
+  const partySize = session?.slots?.partySize ?? 1;
+
+  if (!pickupStopId || !dropoffStopId || !desiredAt) {
+    return {
+      status: "INVALID_STATE",
+      messageText: "予約条件が不足しています。もう一度、何名・何時をご入力ください。"
+    };
+  }
+
+  const options = await listRideRequestOptions({
+    repository,
+    serviceProfileId,
+    tenantId,
+    requesterId,
+    pickup: { mode: "FIXED_STOP", stopId: pickupStopId },
+    dropoff: { mode: "FIXED_STOP", stopId: dropoffStopId },
+    partySize,
+    passenger,
+    channel: "LINE_CHAT",
+    requestType: desiredMode === "DROPOFF" ? "ARRIVE_BY" : "DEPART_AT",
+    desiredPickupAt: desiredMode === "PICKUP" ? desiredAt : null,
+    desiredDropoffAt: desiredMode === "DROPOFF" ? desiredAt : null,
+    optionLimit: 3,
+    context
+  });
+
+  if (!options || options.status !== "ASSIGNABLE" || !Array.isArray(options.options) || !options.options.length) {
+    return {
+      status: "UNASSIGNABLE",
+      messageText: "その条件では予約候補を見つけられませんでした。時間を変えてもう一度お願いします。"
+    };
+  }
+
+  const selected = options.options[0];
+  const pickupName = resolveStopName(repository, pickupStopId);
+  const dropoffName = resolveStopName(repository, dropoffStopId);
+  const desiredLabel = formatDateTime(desiredAt, timeZone);
+  const plannedPickupLabel = formatTimeOnly(selected.plannedPickupAt, timeZone);
+
+  return {
+    status: "ASSIGNABLE",
+    messageText:
+      `${pickupName}から${dropoffName}まで、${desiredLabel}に${partySize}名であれば、` +
+      `${plannedPickupLabel}で予約できます。予約してよろしいでしょうか？最大15分程度遅れる場合もあります。`,
+    selectedOption: {
+      vehicleId: selected.vehicleId ?? null,
+      plannedPickupAt: toIsoString(selected.plannedPickupAt),
+      plannedDropoffAt: toIsoString(selected.plannedDropoffAt),
+      requestType: desiredMode === "DROPOFF" ? "ARRIVE_BY" : "DEPART_AT",
+      desiredAt,
+      desiredMode,
+      partySize
+    }
+  };
+}
+
+function getSessionFromRepository(repository, lineUserId) {
+  if (typeof repository?.getLineChatSession === "function") {
+    return repository.getLineChatSession(lineUserId);
+  }
+  return null;
+}
+
+function saveSessionToRepository(repository, lineUserId, session) {
+  if (typeof repository?.upsertLineChatSession === "function") {
+    repository.upsertLineChatSession(lineUserId, session);
+  }
+}
+
+function clearSessionFromRepository(repository, lineUserId) {
+  if (typeof repository?.clearLineChatSession === "function") {
+    repository.clearLineChatSession(lineUserId);
+  }
+}
+
+export function isLineBookingCancelText(text) {
+  return CANCEL_PATTERN.test(normalizeTrimmedText(text));
+}
+
+export function shouldBypassBookingSession(commandType) {
+  const bypass = new Set(["RESERVATION", "BUS_LOCATION", "HELP", "REGISTER", "OPEN_MINIAPP", "LINK_PHONE"]);
+  return bypass.has(normalizeTrimmedText(commandType).toUpperCase());
+}
+
+function resolveRegistrationMissingStatus(registrationStatus = {}) {
+  return {
+    hasName: Boolean(registrationStatus?.hasName),
+    hasPhone: Boolean(registrationStatus?.hasPhone),
+    isRegistered: Boolean(registrationStatus?.isRegistered),
+    userName: normalizeTrimmedText(registrationStatus?.userName) || null,
+    normalizedPhoneE164: normalizeTrimmedText(registrationStatus?.normalizedPhoneE164) || null
+  };
+}
+
+function initializeSessionForRegistration(session, registrationStatus) {
+  const status = resolveRegistrationMissingStatus(registrationStatus);
+  session.registration = {
+    name: status.userName,
+    phoneNumber: status.normalizedPhoneE164
+  };
+  if (!status.hasPhone) {
+    session.phase = "REGISTER_PHONE";
+    return {
+      session,
+      messageText: "予約の前に利用者登録を行います。電話番号を入力してください。"
+    };
+  }
+  if (!status.hasName) {
+    session.phase = "REGISTER_NAME";
+    return {
+      session,
+      messageText: "ありがとうございます。続いてお名前を入力してください。"
+    };
+  }
+  session.phase = "ASK_PICKUP";
+  return {
+    session,
+    messageText: "バス停の予約をします。どこから乗りたいですか？"
+  };
+}
+
+export function startLineChatBookingSession({
+  repository,
+  lineUserId,
+  registrationStatus = {},
+  now = new Date()
+}) {
+  const session = createInitialSession(now);
+  const initialized = initializeSessionForRegistration(session, registrationStatus);
+  saveSessionToRepository(repository, lineUserId, session);
+  return {
+    handled: true,
+    clearSession: false,
+    nextSession: initialized.session,
+    messageText: initialized.messageText
+  };
+}
+
+export function getLineChatBookingSession({ repository, lineUserId, now = new Date() }) {
+  const raw = getSessionFromRepository(repository, lineUserId);
+  if (!raw) {
+    return null;
+  }
+  return normalizeSession(raw, now);
+}
+
+export function clearLineChatBookingSession({ repository, lineUserId }) {
+  clearSessionFromRepository(repository, lineUserId);
+}
+
+function applySessionMutation({ repository, lineUserId, session, clearSession }) {
+  if (clearSession) {
+    clearSessionFromRepository(repository, lineUserId);
+    return;
+  }
+  if (session) {
+    saveSessionToRepository(repository, lineUserId, session);
+  }
+}
+
+export async function handleLineChatBookingMessage({
+  repository,
+  serviceProfileId,
+  lineUserId,
+  requesterId,
+  tenantId = "tenant_default",
+  text,
+  sessionState = null,
+  registrationStatus = {},
+  displayName = null,
+  defaultCountryCode = DEFAULT_COUNTRY_CODE,
+  startIfNeeded = false,
+  context = {},
+  llmConfig = resolveLineBookingConfig(),
+  passenger = null,
+  now = new Date()
+}) {
+  const messageText = normalizeTrimmedText(text);
+  const registration = resolveRegistrationMissingStatus(registrationStatus);
+  if (!messageText) {
+    return {
+      handled: false,
+      clearSession: false,
+      nextSession: sessionState ? normalizeSession(sessionState, now) : null,
+      messageText: ""
+    };
+  }
+
+  const timeZone = llmConfig?.timeZone || DEFAULT_TIME_ZONE;
+  let currentSession = sessionState ? normalizeSession(sessionState, now) : null;
+
+  if (!currentSession && !startIfNeeded) {
+    return {
+      handled: false,
+      clearSession: false,
+      nextSession: null,
+      messageText: ""
+    };
+  }
+
+  if (!currentSession && startIfNeeded) {
+    const started = startLineChatBookingSession({
+      repository,
+      lineUserId,
+      registrationStatus,
+      now
+    });
+    return started;
+  }
+
+  if (isLineBookingCancelText(messageText)) {
+    applySessionMutation({
+      repository,
+      lineUserId,
+      session: null,
+      clearSession: true
+    });
+    return {
+      handled: true,
+      clearSession: true,
+      nextSession: null,
+      messageText: "予約会話を終了しました。もう一度予約する場合は「予約」と送ってください。"
+    };
+  }
+
+  if (startIfNeeded) {
+    currentSession = createInitialSession(now);
+    const initialized = initializeSessionForRegistration(currentSession, registrationStatus);
+    currentSession = touchSession(initialized.session, now);
+    applySessionMutation({
+      repository,
+      lineUserId,
+      session: currentSession,
+      clearSession: false
+    });
+    return {
+      handled: true,
+      clearSession: false,
+      nextSession: currentSession,
+      messageText: initialized.messageText
+    };
+  }
+
+  if (
+    registration.isRegistered &&
+    (currentSession.phase === "REGISTER_PHONE" || currentSession.phase === "REGISTER_NAME")
+  ) {
+    currentSession.phase = "ASK_PICKUP";
+  }
+
+  const allStops = typeof repository?.listStops === "function" ? repository.listStops() : [];
+  const pendingCandidates = Array.isArray(currentSession?.pending?.options)
+    ? currentSession.pending.options
+    : [];
+  const stopCandidates = buildStopCandidates(allStops, messageText, STOP_CANDIDATE_LIMIT);
+
+  const llmOutput = await runBookingNlu({
+    text: messageText,
+    phase: currentSession.phase,
+    slots: currentSession.slots,
+    stopCandidates: pendingCandidates.length ? pendingCandidates : stopCandidates,
+    config: llmConfig,
+    now
+  });
+
+  const understanding = mergeTurnUnderstanding({
+    text: messageText,
+    llmOutput,
+    fallbackStopCandidates: stopCandidates,
+    pendingStopCandidates: pendingCandidates,
+    now,
+    timeZone
+  });
+
+  const session = touchSession(clone(currentSession), now);
+  if (
+    !registration.isRegistered &&
+    session.phase !== "REGISTER_PHONE" &&
+    session.phase !== "REGISTER_NAME"
+  ) {
+    const initialized = initializeSessionForRegistration(session, registrationStatus);
+    return {
+      handled: true,
+      clearSession: false,
+      nextSession: initialized.session,
+      messageText: initialized.messageText
+    };
+  }
+
+  async function proposeWithCurrentSlots() {
+    const proposal = await buildBookingOptionProposal({
+      repository,
+      serviceProfileId,
+      requesterId,
+      tenantId,
+      passenger,
+      session,
+      context,
+      timeZone
+    });
+
+    if (proposal.status !== "ASSIGNABLE") {
+      session.phase = "ASK_TIME_AND_PARTY";
+      session.pending = {
+        field: null,
+        options: [],
+        selectedStopId: null,
+        selectedOption: null
+      };
+      return {
+        handled: true,
+        clearSession: false,
+        nextSession: session,
+        messageText: proposal.messageText
+      };
+    }
+
+    session.phase = "CONFIRM_BOOKING";
+    session.pending = {
+      field: "booking",
+      options: [],
+      selectedStopId: null,
+      selectedOption: proposal.selectedOption
+    };
+
+    return {
+      handled: true,
+      clearSession: false,
+      nextSession: session,
+      messageText: proposal.messageText
+    };
+  }
+
+  switch (session.phase) {
+    case "REGISTER_PHONE": {
+      const normalizedPhoneE164 = parsePhoneNumberCandidate(messageText, defaultCountryCode);
+      if (!normalizedPhoneE164) {
+        return {
+          handled: true,
+          clearSession: false,
+          nextSession: session,
+          messageText: "電話番号を確認できませんでした。例: 080-1234-5678"
+        };
+      }
+      session.registration.phoneNumber = normalizedPhoneE164;
+
+      const resolvedName = session.registration.name || registration.userName;
+      if (!resolvedName) {
+        session.phase = "REGISTER_NAME";
+        return {
+          handled: true,
+          clearSession: false,
+          nextSession: session,
+          messageText: "ありがとうございます。続いてお名前を入力してください。"
+        };
+      }
+
+      try {
+        registerLineMiniAppUser({
+          repository,
+          lineUserId,
+          displayName,
+          name: resolvedName,
+          phoneNumber: normalizedPhoneE164,
+          defaultCountryCode
+        });
+      } catch {
+        return {
+          handled: true,
+          clearSession: false,
+          nextSession: session,
+          messageText: "登録に失敗しました。電話番号を確認してもう一度入力してください。"
+        };
+      }
+
+      session.registration.name = resolvedName;
+      session.phase = "ASK_PICKUP";
+      return {
+        handled: true,
+        clearSession: false,
+        nextSession: session,
+        messageText: "登録しました。バス停の予約をします。どこから乗りたいですか？"
+      };
+    }
+
+    case "REGISTER_NAME": {
+      const name = parseNameCandidate(messageText);
+      if (!name) {
+        return {
+          handled: true,
+          clearSession: false,
+          nextSession: session,
+          messageText: "お名前を入力してください。（例: 山田 花子）"
+        };
+      }
+      session.registration.name = name;
+
+      const resolvedPhone = session.registration.phoneNumber || registration.normalizedPhoneE164;
+      if (!resolvedPhone) {
+        session.phase = "REGISTER_PHONE";
+        return {
+          handled: true,
+          clearSession: false,
+          nextSession: session,
+          messageText: "ありがとうございます。電話番号を入力してください。"
+        };
+      }
+
+      try {
+        registerLineMiniAppUser({
+          repository,
+          lineUserId,
+          displayName,
+          name,
+          phoneNumber: resolvedPhone,
+          defaultCountryCode
+        });
+      } catch {
+        return {
+          handled: true,
+          clearSession: false,
+          nextSession: session,
+          messageText: "登録に失敗しました。お名前を確認してもう一度入力してください。"
+        };
+      }
+
+      session.registration.phoneNumber = resolvedPhone;
+      session.phase = "ASK_PICKUP";
+      return {
+        handled: true,
+        clearSession: false,
+        nextSession: session,
+        messageText: "登録しました。バス停の予約をします。どこから乗りたいですか？"
+      };
+    }
+
+    case "ASK_PICKUP": {
+      if (!stopCandidates.length) {
+        return {
+          handled: true,
+          clearSession: false,
+          nextSession: session,
+          messageText: "乗車するバス停名が見つかりませんでした。もう一度入力してください。"
+        };
+      }
+      if (shouldAskStopDisambiguation(stopCandidates)) {
+        session.phase = "DISAMBIG_PICKUP";
+        session.pending = {
+          field: "pickup",
+          options: stopCandidates,
+          selectedStopId: null,
+          selectedOption: null
+        };
+        return {
+          handled: true,
+          clearSession: false,
+          nextSession: session,
+          messageText: buildDisambiguationPrompt(stopCandidates)
+        };
+      }
+      const selected = stopCandidates[0];
+      session.phase = "CONFIRM_PICKUP";
+      session.pending = {
+        field: "pickup",
+        options: stopCandidates,
+        selectedStopId: selected.stopId,
+        selectedOption: null
+      };
+      return {
+        handled: true,
+        clearSession: false,
+        nextSession: session,
+        messageText: buildStopConfirmationPrompt(selected.name)
+      };
+    }
+
+    case "DISAMBIG_PICKUP": {
+      const selected = resolveBestCandidate({
+        text: messageText,
+        candidates: pendingCandidates,
+        selectedStopIdFromNlu: understanding.selectedStopId
+      });
+      if (!selected) {
+        return {
+          handled: true,
+          clearSession: false,
+          nextSession: session,
+          messageText: `候補から選んでください。${buildDisambiguationPrompt(pendingCandidates)}`
+        };
+      }
+      session.phase = "CONFIRM_PICKUP";
+      session.pending = {
+        field: "pickup",
+        options: pendingCandidates,
+        selectedStopId: selected.stopId,
+        selectedOption: null
+      };
+      return {
+        handled: true,
+        clearSession: false,
+        nextSession: session,
+        messageText: buildStopConfirmationPrompt(selected.name)
+      };
+    }
+
+    case "CONFIRM_PICKUP": {
+      if (understanding.confirmation === "YES") {
+        const selectedStopId = session.pending?.selectedStopId;
+        if (!selectedStopId) {
+          session.phase = "ASK_PICKUP";
+          return {
+            handled: true,
+            clearSession: false,
+            nextSession: session,
+            messageText: "もう一度、乗車するバス停を入力してください。"
+          };
+        }
+        session.slots.pickupStopId = selectedStopId;
+        session.phase = "ASK_DROPOFF";
+        session.pending = {
+          field: null,
+          options: [],
+          selectedStopId: null,
+          selectedOption: null
+        };
+        return {
+          handled: true,
+          clearSession: false,
+          nextSession: session,
+          messageText: "どこまで行きたいですか？"
+        };
+      }
+
+      if (understanding.confirmation === "NO") {
+        session.phase = "ASK_PICKUP";
+        session.pending = {
+          field: null,
+          options: [],
+          selectedStopId: null,
+          selectedOption: null
+        };
+        return {
+          handled: true,
+          clearSession: false,
+          nextSession: session,
+          messageText: "承知しました。どこから乗りたいですか？"
+        };
+      }
+
+      const freshCandidates = buildStopCandidates(allStops, messageText, STOP_CANDIDATE_LIMIT);
+      if (!freshCandidates.length) {
+        return {
+          handled: true,
+          clearSession: false,
+          nextSession: session,
+          messageText: "はい/いいえでお答えいただくか、別の乗車バス停を入力してください。"
+        };
+      }
+      if (shouldAskStopDisambiguation(freshCandidates)) {
+        session.phase = "DISAMBIG_PICKUP";
+        session.pending = {
+          field: "pickup",
+          options: freshCandidates,
+          selectedStopId: null,
+          selectedOption: null
+        };
+        return {
+          handled: true,
+          clearSession: false,
+          nextSession: session,
+          messageText: buildDisambiguationPrompt(freshCandidates)
+        };
+      }
+
+      const selected = freshCandidates[0];
+      session.pending = {
+        field: "pickup",
+        options: freshCandidates,
+        selectedStopId: selected.stopId,
+        selectedOption: null
+      };
+      return {
+        handled: true,
+        clearSession: false,
+        nextSession: session,
+        messageText: buildStopConfirmationPrompt(selected.name)
+      };
+    }
+
+    case "ASK_DROPOFF": {
+      if (!stopCandidates.length) {
+        return {
+          handled: true,
+          clearSession: false,
+          nextSession: session,
+          messageText: "降車するバス停名が見つかりませんでした。もう一度入力してください。"
+        };
+      }
+      if (shouldAskStopDisambiguation(stopCandidates)) {
+        session.phase = "DISAMBIG_DROPOFF";
+        session.pending = {
+          field: "dropoff",
+          options: stopCandidates,
+          selectedStopId: null,
+          selectedOption: null
+        };
+        return {
+          handled: true,
+          clearSession: false,
+          nextSession: session,
+          messageText: buildDisambiguationPrompt(stopCandidates)
+        };
+      }
+      const selected = stopCandidates[0];
+      session.phase = "CONFIRM_DROPOFF";
+      session.pending = {
+        field: "dropoff",
+        options: stopCandidates,
+        selectedStopId: selected.stopId,
+        selectedOption: null
+      };
+      return {
+        handled: true,
+        clearSession: false,
+        nextSession: session,
+        messageText: buildStopConfirmationPrompt(selected.name)
+      };
+    }
+
+    case "DISAMBIG_DROPOFF": {
+      const selected = resolveBestCandidate({
+        text: messageText,
+        candidates: pendingCandidates,
+        selectedStopIdFromNlu: understanding.selectedStopId
+      });
+      if (!selected) {
+        return {
+          handled: true,
+          clearSession: false,
+          nextSession: session,
+          messageText: `候補から選んでください。${buildDisambiguationPrompt(pendingCandidates)}`
+        };
+      }
+      session.phase = "CONFIRM_DROPOFF";
+      session.pending = {
+        field: "dropoff",
+        options: pendingCandidates,
+        selectedStopId: selected.stopId,
+        selectedOption: null
+      };
+      return {
+        handled: true,
+        clearSession: false,
+        nextSession: session,
+        messageText: buildStopConfirmationPrompt(selected.name)
+      };
+    }
+
+    case "CONFIRM_DROPOFF": {
+      if (understanding.confirmation === "YES") {
+        const selectedStopId = session.pending?.selectedStopId;
+        if (!selectedStopId) {
+          session.phase = "ASK_DROPOFF";
+          return {
+            handled: true,
+            clearSession: false,
+            nextSession: session,
+            messageText: "もう一度、降車するバス停を入力してください。"
+          };
+        }
+        if (session.slots.pickupStopId && selectedStopId === session.slots.pickupStopId) {
+          session.phase = "ASK_DROPOFF";
+          session.pending = {
+            field: null,
+            options: [],
+            selectedStopId: null,
+            selectedOption: null
+          };
+          return {
+            handled: true,
+            clearSession: false,
+            nextSession: session,
+            messageText: "乗車バス停と同じ停留所は指定できません。別の降車バス停を入力してください。"
+          };
+        }
+
+        session.slots.dropoffStopId = selectedStopId;
+        session.phase = "ASK_TIME_AND_PARTY";
+        session.pending = {
+          field: null,
+          options: [],
+          selectedStopId: null,
+          selectedOption: null
+        };
+        return {
+          handled: true,
+          clearSession: false,
+          nextSession: session,
+          messageText: buildTimeAndPartyPrompt()
+        };
+      }
+
+      if (understanding.confirmation === "NO") {
+        session.phase = "ASK_DROPOFF";
+        session.pending = {
+          field: null,
+          options: [],
+          selectedStopId: null,
+          selectedOption: null
+        };
+        return {
+          handled: true,
+          clearSession: false,
+          nextSession: session,
+          messageText: "承知しました。どこまで行きたいですか？"
+        };
+      }
+
+      const freshCandidates = buildStopCandidates(allStops, messageText, STOP_CANDIDATE_LIMIT);
+      if (!freshCandidates.length) {
+        return {
+          handled: true,
+          clearSession: false,
+          nextSession: session,
+          messageText: "はい/いいえでお答えいただくか、別の降車バス停を入力してください。"
+        };
+      }
+      if (shouldAskStopDisambiguation(freshCandidates)) {
+        session.phase = "DISAMBIG_DROPOFF";
+        session.pending = {
+          field: "dropoff",
+          options: freshCandidates,
+          selectedStopId: null,
+          selectedOption: null
+        };
+        return {
+          handled: true,
+          clearSession: false,
+          nextSession: session,
+          messageText: buildDisambiguationPrompt(freshCandidates)
+        };
+      }
+
+      const selected = freshCandidates[0];
+      session.pending = {
+        field: "dropoff",
+        options: freshCandidates,
+        selectedStopId: selected.stopId,
+        selectedOption: null
+      };
+      return {
+        handled: true,
+        clearSession: false,
+        nextSession: session,
+        messageText: buildStopConfirmationPrompt(selected.name)
+      };
+    }
+
+    case "ASK_TIME_AND_PARTY": {
+      if (understanding.desiredAtIso) {
+        session.slots.desiredAt = understanding.desiredAtIso;
+      }
+      if (understanding.desiredMode) {
+        session.slots.desiredMode = understanding.desiredMode;
+      }
+      if (understanding.partySize) {
+        session.slots.partySize = understanding.partySize;
+      }
+
+      if (!session.slots.desiredAt && !session.slots.partySize) {
+        return {
+          handled: true,
+          clearSession: false,
+          nextSession: session,
+          messageText: "何時ごろ乗りたいですか？あわせて人数も教えてください。"
+        };
+      }
+
+      if (!session.slots.desiredAt) {
+        session.phase = "ASK_TIME";
+        return {
+          handled: true,
+          clearSession: false,
+          nextSession: session,
+          messageText: "何時に乗りたいですか？"
+        };
+      }
+
+      if (!session.slots.partySize) {
+        session.phase = "ASK_PARTY";
+        return {
+          handled: true,
+          clearSession: false,
+          nextSession: session,
+          messageText: "何名乗りますか？"
+        };
+      }
+
+      return proposeWithCurrentSlots();
+    }
+
+    case "ASK_TIME": {
+      if (!understanding.desiredAtIso) {
+        return {
+          handled: true,
+          clearSession: false,
+          nextSession: session,
+          messageText: "何時に乗りたいですか？（例: 12時、12:30、昼ごろ）"
+        };
+      }
+      session.slots.desiredAt = understanding.desiredAtIso;
+      if (understanding.desiredMode) {
+        session.slots.desiredMode = understanding.desiredMode;
+      }
+
+      if (!session.slots.partySize) {
+        session.phase = "ASK_PARTY";
+        return {
+          handled: true,
+          clearSession: false,
+          nextSession: session,
+          messageText: "何名乗りますか？"
+        };
+      }
+
+      return proposeWithCurrentSlots();
+    }
+
+    case "ASK_PARTY": {
+      if (!understanding.partySize) {
+        return {
+          handled: true,
+          clearSession: false,
+          nextSession: session,
+          messageText: "人数を教えてください。（例: 1名、2名、3名）"
+        };
+      }
+      session.slots.partySize = understanding.partySize;
+
+      if (!session.slots.desiredAt) {
+        session.phase = "ASK_TIME";
+        return {
+          handled: true,
+          clearSession: false,
+          nextSession: session,
+          messageText: "何時に乗りたいですか？"
+        };
+      }
+
+      return proposeWithCurrentSlots();
+    }
+
+    case "CONFIRM_BOOKING": {
+      if (understanding.confirmation !== "YES") {
+        if (understanding.confirmation === "NO") {
+          session.phase = "ASK_TIME_AND_PARTY";
+          session.pending = {
+            field: null,
+            options: [],
+            selectedStopId: null,
+            selectedOption: null
+          };
+          return {
+            handled: true,
+            clearSession: false,
+            nextSession: session,
+            messageText: "承知しました。時間または人数を変更します。何名、何時に乗りたいですか？"
+          };
+        }
+        return {
+          handled: true,
+          clearSession: false,
+          nextSession: session,
+          messageText: "予約してよろしいですか？「はい」または「いいえ」でお答えください。"
+        };
+      }
+
+      const selectedOption = session.pending?.selectedOption;
+      if (!selectedOption) {
+        session.phase = "ASK_TIME_AND_PARTY";
+        return {
+          handled: true,
+          clearSession: false,
+          nextSession: session,
+          messageText: "予約候補の有効期限が切れました。もう一度、何名・何時をご入力ください。"
+        };
+      }
+
+      const createResult = await createRideRequest({
+        repository,
+        serviceProfileId,
+        tenantId,
+        requesterId,
+        pickup: { mode: "FIXED_STOP", stopId: session.slots.pickupStopId },
+        dropoff: { mode: "FIXED_STOP", stopId: session.slots.dropoffStopId },
+        partySize: selectedOption.partySize,
+        passenger,
+        channel: "LINE_CHAT",
+        requestType: selectedOption.requestType,
+        desiredPickupAt: selectedOption.desiredMode === "PICKUP" ? selectedOption.desiredAt : null,
+        desiredDropoffAt: selectedOption.desiredMode === "DROPOFF" ? selectedOption.desiredAt : null,
+        preferredVehicleId: selectedOption.vehicleId,
+        context
+      });
+
+      const rideRequest = createResult?.rideRequest ?? null;
+      const pickupName = resolveStopName(repository, session.slots.pickupStopId);
+      const dropoffName = resolveStopName(repository, session.slots.dropoffStopId);
+      const plannedPickupLabel = formatTimeOnly(
+        rideRequest?.assignment?.plannedPickupAt ?? selectedOption.plannedPickupAt,
+        timeZone
+      );
+      const desiredLabel = formatDateTime(selectedOption.desiredAt, timeZone);
+
+      applySessionMutation({
+        repository,
+        lineUserId,
+        session: null,
+        clearSession: true
+      });
+
+      return {
+        handled: true,
+        clearSession: true,
+        nextSession: null,
+        resultStatus: typeof createResult?.status === "string" ? createResult.status : null,
+        createdRideRequest: rideRequest,
+        messageText:
+          `${pickupName}から${dropoffName}まで、${desiredLabel}に${selectedOption.partySize}名、` +
+          `${plannedPickupLabel}で予約しました。`
+      };
+    }
+
+    default: {
+      session.phase = "ASK_PICKUP";
+      return {
+        handled: true,
+        clearSession: false,
+        nextSession: session,
+        messageText: "バス停の予約をします。どこから乗りたいですか？"
+      };
+    }
+  }
+}
+
+export function persistLineChatBookingSession({
+  repository,
+  lineUserId,
+  result
+}) {
+  if (!result?.handled) {
+    return;
+  }
+  applySessionMutation({
+    repository,
+    lineUserId,
+    session: result.nextSession,
+    clearSession: result.clearSession === true
+  });
+}

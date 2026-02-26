@@ -556,7 +556,7 @@ test("line webhook verifies signature and sends reply", async () => {
   );
 });
 
-test("line webhook sends reservation miniapp URL when user sends 予約", async () => {
+test("line webhook sends reservation miniapp URL when user sends ミニアプリ", async () => {
   await withTemporaryEnv(
     {
       LINE_CHANNEL_SECRET: "line_secret_test",
@@ -608,7 +608,7 @@ test("line webhook sends reservation miniapp URL when user sends 予約", async 
             message: {
               type: "text",
               id: "100002",
-              text: "予約"
+              text: "ミニアプリ"
             }
           }
         ]
@@ -659,6 +659,275 @@ test("line webhook sends reservation miniapp URL when user sends 予約", async 
           postedBody.messages[0].text.includes("mode=reserve"),
           true
         );
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    }
+  );
+});
+
+test("line webhook can create reservation via chat conversation with stop/time variations", async () => {
+  await withTemporaryEnv(
+    {
+      LINE_CHANNEL_SECRET: "line_secret_test",
+      LINE_CHANNEL_ACCESS_TOKEN: "line_access_token_test",
+      LINE_MINIAPP_URL: "https://example.com/line-reservation/",
+      LINE_BOOKING_LLM_ENABLED: "false"
+    },
+    async () => {
+      const repository = new InMemoryRepository({
+        stops: [
+          { id: "stop_undo", name: "安並運動公園", lat: 32.9991, lng: 132.9312 },
+          { id: "stop_rotary", name: "安並運動公園 ロータリー", lat: 32.9994, lng: 132.9306 },
+          { id: "stop_kotsu", name: "交通公園", lat: 32.9987, lng: 132.9321 },
+          { id: "stop_akita", name: "秋田", lat: 33.0011, lng: 132.9288 },
+          { id: "stop_akita_tenmangu", name: "秋田天満宮", lat: 33.0006, lng: 132.9296 }
+        ],
+        vehicles: [
+          {
+            id: "veh_chat_1",
+            status: "ACTIVE",
+            capacity: 6,
+            onboardCount: 0,
+            currentLocation: { lat: 32.9991, lng: 132.9312 },
+            route: []
+          }
+        ],
+        users: [{ id: "line_chat_user_1", name: "LINE会話予約利用者" }],
+        phoneIdentities: [
+          {
+            id: "phone_chat_1",
+            userId: "line_chat_user_1",
+            normalizedPhoneE164: "+818012345670",
+            source: "SEED",
+            verified: true,
+            lastSeenAt: "2026-02-21T12:00:00.000Z",
+            blockStatus: "ACTIVE"
+          }
+        ],
+        lineIdentities: [
+          {
+            id: "line_chat_1",
+            lineUserId: "U_chat_booking_1",
+            userId: "line_chat_user_1",
+            source: "SEED",
+            verified: true,
+            displayName: "LINE会話予約利用者",
+            lastSeenAt: "2026-02-21T12:00:00.000Z",
+            blockStatus: "ACTIVE"
+          }
+        ],
+        serviceProfiles: [createDefaultServiceProfile()]
+      });
+
+      const { server } = createReqmoServer({ repository });
+      const replyMessages = [];
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = async (url, init) => {
+        if (String(url) === "https://api.line.me/v2/bot/message/reply") {
+          replyMessages.push(JSON.parse(init.body));
+        }
+        return new Response("", { status: 200 });
+      };
+
+      async function sendChatText(text, replyToken) {
+        const webhookPayload = {
+          destination: "Uxxxxxxxxx",
+          events: [
+            {
+              type: "message",
+              mode: "active",
+              timestamp: Date.now(),
+              replyToken,
+              source: {
+                type: "user",
+                userId: "U_chat_booking_1"
+              },
+              message: {
+                type: "text",
+                id: String(Date.now()),
+                text
+              }
+            }
+          ]
+        };
+        const rawBody = JSON.stringify(webhookPayload);
+        const signature = createHmac("sha256", "line_secret_test")
+          .update(rawBody)
+          .digest("base64");
+        const before = replyMessages.length;
+
+        const response = await invokeServer({
+          server,
+          method: "POST",
+          url: "/api/line/webhook",
+          rawBody,
+          headers: {
+            "x-line-signature": signature
+          }
+        });
+
+        assert.equal(response.statusCode, 200);
+        const payload = JSON.parse(response.payload);
+        assert.equal(payload.status, "OK");
+        assert.equal(payload.handledEvents, 1);
+        assert.equal(replyMessages.length, before + 1);
+        return replyMessages[before].messages[0].text;
+      }
+
+      try {
+        const step1 = await sendChatText("予約", "reply_token_chat_1");
+        assert.equal(step1.includes("どこから乗りたいですか"), true);
+
+        const step2 = await sendChatText("運動公園", "reply_token_chat_2");
+        assert.equal(step2.includes("安並運動公園"), true);
+        assert.equal(step2.includes("ロータリー"), true);
+
+        const step3 = await sendChatText("ろったり", "reply_token_chat_3");
+        assert.equal(step3.includes("安並運動公園 ロータリー"), true);
+
+        const step4 = await sendChatText("はい", "reply_token_chat_4");
+        assert.equal(step4.includes("どこまで行きたいですか"), true);
+
+        const step5 = await sendChatText("秋田", "reply_token_chat_5");
+        assert.equal(step5.includes("秋田"), true);
+        assert.equal(step5.includes("秋田天満宮"), true);
+
+        const step6 = await sendChatText("秋田", "reply_token_chat_6");
+        assert.equal(step6.includes("秋田"), true);
+        assert.equal(step6.includes("よろしいですか"), true);
+
+        const step7 = await sendChatText("はい", "reply_token_chat_7");
+        assert.equal(step7.includes("何名、何時"), true);
+
+        const step8 = await sendChatText("昼ごろ", "reply_token_chat_8");
+        assert.equal(step8.includes("何名乗りますか"), true);
+
+        const step9 = await sendChatText("3名", "reply_token_chat_9");
+        assert.equal(step9.includes("予約してよろしいでしょうか"), true);
+        assert.equal(step9.includes("最大15分程度遅れる場合もあります"), true);
+
+        const step10 = await sendChatText("お願い", "reply_token_chat_10");
+        assert.equal(step10.includes("予約しました"), true);
+
+        const created = repository.listRideRequests();
+        assert.equal(created.length, 1);
+        assert.equal(created[0].pickup?.stopId, "stop_rotary");
+        assert.equal(created[0].dropoff?.stopId, "stop_akita");
+        assert.equal(created[0].partySize, 3);
+        assert.equal(Boolean(created[0].timeWindow?.desiredPickupAt), true);
+        assert.equal(repository.getLineChatSession("U_chat_booking_1"), null);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    }
+  );
+});
+
+test("line webhook asks phone and name before booking when user is not registered", async () => {
+  await withTemporaryEnv(
+    {
+      LINE_CHANNEL_SECRET: "line_secret_test",
+      LINE_CHANNEL_ACCESS_TOKEN: "line_access_token_test",
+      LINE_MINIAPP_URL: "https://example.com/line-reservation/",
+      LINE_BOOKING_LLM_ENABLED: "false"
+    },
+    async () => {
+      const repository = new InMemoryRepository({
+        stops: [{ id: "stop_a", name: "中村駅", lat: 32.9898, lng: 132.9334 }],
+        vehicles: [
+          {
+            id: "veh_reg_1",
+            status: "ACTIVE",
+            capacity: 6,
+            onboardCount: 0,
+            currentLocation: { lat: 32.9898, lng: 132.9334 },
+            route: []
+          }
+        ],
+        users: [{ id: "line_unregistered_user_1", name: "" }],
+        lineIdentities: [
+          {
+            id: "line_unregistered_1",
+            lineUserId: "U_unregistered_chat_1",
+            userId: "line_unregistered_user_1",
+            source: "SEED",
+            verified: true,
+            displayName: "未登録利用者",
+            lastSeenAt: "2026-02-21T12:00:00.000Z",
+            blockStatus: "ACTIVE"
+          }
+        ],
+        serviceProfiles: [createDefaultServiceProfile()]
+      });
+
+      const { server } = createReqmoServer({ repository });
+      const replyMessages = [];
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = async (url, init) => {
+        if (String(url) === "https://api.line.me/v2/bot/message/reply") {
+          replyMessages.push(JSON.parse(init.body));
+        }
+        return new Response("", { status: 200 });
+      };
+
+      async function sendChatText(text, replyToken) {
+        const webhookPayload = {
+          destination: "Uxxxxxxxxx",
+          events: [
+            {
+              type: "message",
+              mode: "active",
+              timestamp: Date.now(),
+              replyToken,
+              source: {
+                type: "user",
+                userId: "U_unregistered_chat_1"
+              },
+              message: {
+                type: "text",
+                id: String(Date.now()),
+                text
+              }
+            }
+          ]
+        };
+        const rawBody = JSON.stringify(webhookPayload);
+        const signature = createHmac("sha256", "line_secret_test")
+          .update(rawBody)
+          .digest("base64");
+        const before = replyMessages.length;
+
+        const response = await invokeServer({
+          server,
+          method: "POST",
+          url: "/api/line/webhook",
+          rawBody,
+          headers: {
+            "x-line-signature": signature
+          }
+        });
+        assert.equal(response.statusCode, 200);
+        assert.equal(replyMessages.length, before + 1);
+        return replyMessages[before].messages[0].text;
+      }
+
+      try {
+        const step1 = await sendChatText("予約", "reply_token_reg_1");
+        assert.equal(step1.includes("電話番号"), true);
+        assert.equal(step1.includes("どこから乗りたいですか"), false);
+
+        const step2 = await sendChatText("080-9999-8888", "reply_token_reg_2");
+        assert.equal(step2.includes("お名前"), true);
+        assert.equal(step2.includes("どこから乗りたいですか"), false);
+
+        const step3 = await sendChatText("山田 太郎", "reply_token_reg_3");
+        assert.equal(step3.includes("登録しました"), true);
+        assert.equal(step3.includes("どこから乗りたいですか"), true);
+
+        const registration = repository.findPhoneIdentityByUserId("line_unregistered_user_1");
+        assert.equal(registration?.normalizedPhoneE164, "+818099998888");
+        assert.equal(repository.getUser("line_unregistered_user_1")?.name, "山田 太郎");
       } finally {
         globalThis.fetch = originalFetch;
       }

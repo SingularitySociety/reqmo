@@ -45,6 +45,14 @@ import {
   sendLineReplyMessage,
   verifyLineWebhookSignature
 } from "../line/service.ts";
+import {
+  clearLineChatBookingSession,
+  getLineChatBookingSession,
+  handleLineChatBookingMessage,
+  persistLineChatBookingSession,
+  resolveLineBookingConfig,
+  shouldBypassBookingSession
+} from "../line/chatBooking.ts";
 
 function jsonResponse(res, status, body) {
   const payload = JSON.stringify(body);
@@ -866,7 +874,8 @@ async function handleLineWebhookEvent({
   repository,
   serviceProfileId,
   config,
-  event
+  event,
+  requestContext = {}
 }) {
   const replyToken = typeof event?.replyToken === "string" ? event.replyToken.trim() : "";
   if (!replyToken) {
@@ -1076,6 +1085,72 @@ async function handleLineWebhookEvent({
     };
   }
 
+  let bookingSession = getLineChatBookingSession({
+    repository,
+    lineUserId
+  });
+  if (bookingSession && shouldBypassBookingSession(command.type)) {
+    clearLineChatBookingSession({
+      repository,
+      lineUserId
+    });
+    bookingSession = null;
+  }
+  if (bookingSession || command.type === "BOOK") {
+    const bookingResult = await handleLineChatBookingMessage({
+      repository,
+      serviceProfileId,
+      lineUserId,
+      requesterId: user.id,
+      tenantId: resolveLineMiniAppTenantId(null),
+      text,
+      sessionState: bookingSession,
+      registrationStatus: registration,
+      displayName: identity.displayName ?? user.name ?? null,
+      defaultCountryCode: resolveDefaultCountryCode(repository, serviceProfileId),
+      startIfNeeded: command.type === "BOOK",
+      context: requestContext,
+      llmConfig: resolveLineBookingConfig(),
+      passenger: buildLineMiniAppPassenger({
+        user,
+        registration
+      })
+    });
+
+    if (bookingResult.handled) {
+      const bookingPhase = String(bookingResult?.nextSession?.phase ?? "").toUpperCase();
+      const registrationFlowActive = bookingPhase === "REGISTER_PHONE" || bookingPhase === "REGISTER_NAME";
+      persistLineChatBookingSession({
+        repository,
+        lineUserId,
+        result: bookingResult
+      });
+      await sendLineReplyMessage({
+        channelAccessToken: config.channelAccessToken,
+        replyToken,
+        messages: [
+          {
+            type: "text",
+            text: bookingResult.messageText,
+            quickReply: registrationFlowActive
+              ? buildLineQuickReplyForRegistration({
+                  miniAppUrl: registerMiniAppUrl,
+                  busMapUrl
+                })
+              : buildLineQuickReplyForReservation({
+                  miniAppUrl: reserveMiniAppUrl || miniAppUrl,
+                  busMapUrl
+                })
+          }
+        ]
+      });
+      return {
+        status: "REPLIED",
+        type: bookingResult.clearSession ? "booking-complete" : "booking-conversation"
+      };
+    }
+  }
+
   if (!registration.isRegistered && command.type !== "HELP" && command.type !== "BUS_LOCATION") {
     await sendLineReplyMessage({
       channelAccessToken: config.channelAccessToken,
@@ -1099,7 +1174,7 @@ async function handleLineWebhookEvent({
     };
   }
 
-  if (command.type === "BOOK" || command.type === "OPEN_MINIAPP") {
+  if (command.type === "OPEN_MINIAPP") {
     await sendLineReplyMessage({
       channelAccessToken: config.channelAccessToken,
       replyToken,
@@ -1617,7 +1692,8 @@ export function createReqmoServer({
               repository,
               serviceProfileId: activeServiceProfileId,
               config,
-              event
+              event,
+              requestContext
             });
             results.push(result);
           } catch (error) {

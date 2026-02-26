@@ -9,8 +9,8 @@ const LINE_RICHMENU_ALIAS_ENDPOINT = "https://api.line.me/v2/bot/richmenu/alias"
 const LINE_RICHMENU_CONTENT_BASE = "https://api-data.line.me/v2/bot/richmenu";
 const RICH_MENU_WIDTH = 2500;
 const RICH_MENU_HEIGHT = 843;
-const DEFAULT_REGISTER_RICHMENU_ALIAS = "reqmo_register_v2";
-const DEFAULT_RESERVATION_RICHMENU_ALIAS = "reqmo_reservation_v3";
+const DEFAULT_REGISTER_RICHMENU_ALIAS = "reqmo_register_v3";
+const DEFAULT_RESERVATION_RICHMENU_ALIAS = "reqmo_reservation_v4";
 const richMenuAliasCache = new Map();
 const ACTIVE_RIDE_STATUSES = new Set([
   "REQUESTED",
@@ -377,11 +377,90 @@ function drawText({
   }
 }
 
+function drawCircle(rgb, width, height, centerX, centerY, radius, color) {
+  const cx = Math.trunc(Number(centerX));
+  const cy = Math.trunc(Number(centerY));
+  const r = Math.max(1, Math.trunc(Number(radius)));
+  for (let dy = -r; dy <= r; dy += 1) {
+    for (let dx = -r; dx <= r; dx += 1) {
+      if (dx * dx + dy * dy <= r * r) {
+        setRgbPixel(rgb, width, height, cx + dx, cy + dy, color);
+      }
+    }
+  }
+}
+
+function drawIcon({
+  rgb,
+  width,
+  height,
+  segment,
+  icon = "DOT",
+  color = { r: 255, g: 255, b: 255 }
+}) {
+  if (!segment) {
+    return;
+  }
+  const segmentWidth = Math.max(1, segment.end - segment.start);
+  const centerX = Math.floor((segment.start + segment.end) / 2);
+  const centerY = Math.floor(height / 2);
+  const unit = Math.max(8, Math.floor(Math.min(segmentWidth, height) / 10));
+  const normalizedIcon = normalizeTrimmedText(icon).toUpperCase();
+
+  if (normalizedIcon === "CHAT") {
+    drawRect(rgb, width, height, centerX - unit * 3, centerY - unit * 2, unit * 6, unit * 4, color);
+    drawRect(rgb, width, height, centerX - unit, centerY + unit * 2, unit * 2, unit, color);
+    return;
+  }
+  if (normalizedIcon === "MINIAPP") {
+    drawRect(rgb, width, height, centerX - unit * 3, centerY - unit * 3, unit * 6, unit * 6, color);
+    drawRect(rgb, width, height, centerX - unit * 2, centerY - unit * 2, unit * 4, unit * 4, parseHexColor("#0f172a"));
+    drawCircle(rgb, width, height, centerX, centerY + unit * 2, Math.max(2, Math.floor(unit * 0.45)), color);
+    return;
+  }
+  if (normalizedIcon === "STATUS") {
+    drawRect(rgb, width, height, centerX - unit * 3, centerY - unit * 3, unit * 6, unit * 6, color);
+    drawRect(rgb, width, height, centerX - unit * 2, centerY - unit * 2, unit * 3, unit * 0.8, parseHexColor("#0f172a"));
+    drawRect(rgb, width, height, centerX - unit * 2, centerY - unit * 0.4, unit * 4, unit * 0.8, parseHexColor("#0f172a"));
+    drawRect(rgb, width, height, centerX - unit * 2, centerY + unit * 1.2, unit * 2.5, unit * 0.8, parseHexColor("#0f172a"));
+    return;
+  }
+  if (normalizedIcon === "PROFILE") {
+    drawCircle(rgb, width, height, centerX, centerY - unit * 1.4, Math.max(2, Math.floor(unit * 1.3)), color);
+    drawRect(rgb, width, height, centerX - unit * 2.2, centerY, unit * 4.4, unit * 3.1, color);
+    return;
+  }
+  if (normalizedIcon === "BUS") {
+    drawRect(rgb, width, height, centerX - unit * 3.5, centerY - unit * 2, unit * 7, unit * 4, color);
+    drawRect(rgb, width, height, centerX - unit * 2.8, centerY - unit * 1.2, unit * 5.2, unit * 1.6, parseHexColor("#0f172a"));
+    drawCircle(rgb, width, height, centerX - unit * 2, centerY + unit * 2.4, Math.max(2, Math.floor(unit * 0.9)), parseHexColor("#0f172a"));
+    drawCircle(rgb, width, height, centerX + unit * 2, centerY + unit * 2.4, Math.max(2, Math.floor(unit * 0.9)), parseHexColor("#0f172a"));
+    return;
+  }
+  if (normalizedIcon === "REGISTER") {
+    drawRect(rgb, width, height, centerX - unit * 3, centerY - unit * 3, unit * 6, unit * 6, color);
+    drawRect(rgb, width, height, centerX - unit * 2, centerY - unit * 1.8, unit * 2.8, unit * 0.8, parseHexColor("#0f172a"));
+    drawRect(rgb, width, height, centerX - unit * 2, centerY - unit * 0.2, unit * 3.6, unit * 0.8, parseHexColor("#0f172a"));
+    drawRect(rgb, width, height, centerX - unit * 0.8, centerY + unit * 1.4, unit * 2, unit * 0.8, parseHexColor("#0f172a"));
+    drawRect(rgb, width, height, centerX - unit * 0.2, centerY + unit * 0.8, unit * 0.8, unit * 2, parseHexColor("#0f172a"));
+    return;
+  }
+  if (normalizedIcon === "HELP") {
+    drawCircle(rgb, width, height, centerX, centerY - unit * 0.4, Math.max(2, Math.floor(unit * 2.3)), color);
+    drawRect(rgb, width, height, centerX - unit * 0.5, centerY - unit * 1.4, unit, unit * 2.2, parseHexColor("#0f172a"));
+    drawCircle(rgb, width, height, centerX, centerY + unit * 1.8, Math.max(2, Math.floor(unit * 0.55)), parseHexColor("#0f172a"));
+    return;
+  }
+
+  drawCircle(rgb, width, height, centerX, centerY, Math.max(2, Math.floor(unit * 1.8)), color);
+}
+
 function createStripedPng({
   width = RICH_MENU_WIDTH,
   height = RICH_MENU_HEIGHT,
   segments = [],
-  labels = []
+  labels = [],
+  icons = []
 } = {}) {
   const safeWidth = Number.isFinite(Number(width)) ? Math.max(1, Math.trunc(Number(width))) : RICH_MENU_WIDTH;
   const safeHeight = Number.isFinite(Number(height)) ? Math.max(1, Math.trunc(Number(height))) : RICH_MENU_HEIGHT;
@@ -462,6 +541,25 @@ function createStripedPng({
       centerX: Math.floor((segment.start + segment.end) / 2),
       centerY: Math.floor(safeHeight / 2),
       scale,
+      color: labelColor
+    });
+  });
+
+  const normalizedIcons = Array.isArray(icons) ? icons : [];
+  normalizedIcons.forEach((icon, index) => {
+    const targetIndex = Number.isFinite(Number(icon?.segmentIndex))
+      ? Math.trunc(Number(icon.segmentIndex))
+      : index;
+    const segment = segmentBounds[targetIndex];
+    if (!segment) {
+      return;
+    }
+    drawIcon({
+      rgb,
+      width: safeWidth,
+      height: safeHeight,
+      segment,
+      icon: icon?.icon,
       color: labelColor
     });
   });
@@ -674,15 +772,16 @@ function buildLineRegistrationRichMenu({ miniAppUrl }) {
         { ratio: 1, color: "#0f766e" },
         { ratio: 1, color: "#1d4ed8" }
       ],
-      labels: [
-        { segmentIndex: 0, text: "REGISTER" },
-        { segmentIndex: 1, text: "HELP" }
+      icons: [
+        { segmentIndex: 0, icon: "REGISTER" },
+        { segmentIndex: 1, icon: "HELP" }
       ]
     })
   };
 }
 
 function buildLineReservationRichMenu({ miniAppUrl, busMapUrl = "" }) {
+  const chatReserveText = "予約";
   const reserveUrl = appendMiniAppModeQuery(miniAppUrl, "reserve");
   const registerUrl = appendMiniAppModeQuery(miniAppUrl, "register");
   const normalizedBusMapUrl = normalizeHttpUrl(busMapUrl);
@@ -700,7 +799,19 @@ function buildLineReservationRichMenu({ miniAppUrl, busMapUrl = "" }) {
           bounds: {
             x: 0,
             y: 0,
-            width: 625,
+            width: 500,
+            height: RICH_MENU_HEIGHT
+          },
+          action: {
+            type: "message",
+            text: chatReserveText
+          }
+        },
+        {
+          bounds: {
+            x: 500,
+            y: 0,
+            width: 500,
             height: RICH_MENU_HEIGHT
           },
           action: {
@@ -710,9 +821,9 @@ function buildLineReservationRichMenu({ miniAppUrl, busMapUrl = "" }) {
         },
         {
           bounds: {
-            x: 625,
+            x: 1000,
             y: 0,
-            width: 625,
+            width: 500,
             height: RICH_MENU_HEIGHT
           },
           action: {
@@ -722,9 +833,9 @@ function buildLineReservationRichMenu({ miniAppUrl, busMapUrl = "" }) {
         },
         {
           bounds: {
-            x: 1250,
+            x: 1500,
             y: 0,
-            width: 625,
+            width: 500,
             height: RICH_MENU_HEIGHT
           },
           action: {
@@ -734,9 +845,9 @@ function buildLineReservationRichMenu({ miniAppUrl, busMapUrl = "" }) {
         },
         {
           bounds: {
-            x: 1875,
+            x: 2000,
             y: 0,
-            width: 625,
+            width: 500,
             height: RICH_MENU_HEIGHT
           },
           action: normalizedBusMapUrl
@@ -756,13 +867,15 @@ function buildLineReservationRichMenu({ miniAppUrl, busMapUrl = "" }) {
         { ratio: 1, color: "#0f766e" },
         { ratio: 1, color: "#1d4ed8" },
         { ratio: 1, color: "#b45309" },
-        { ratio: 1, color: "#334155" }
+        { ratio: 1, color: "#334155" },
+        { ratio: 1, color: "#0f172a" }
       ],
-      labels: [
-        { segmentIndex: 0, text: "BOOK" },
-        { segmentIndex: 1, text: "STATUS" },
-        { segmentIndex: 2, text: "PROFILE" },
-        { segmentIndex: 3, text: "BUS" }
+      icons: [
+        { segmentIndex: 0, icon: "CHAT" },
+        { segmentIndex: 1, icon: "MINIAPP" },
+        { segmentIndex: 2, icon: "STATUS" },
+        { segmentIndex: 3, icon: "PROFILE" },
+        { segmentIndex: 4, icon: "BUS" }
       ]
     })
   };
@@ -1096,7 +1209,7 @@ export function parseLineMessageCommand(text) {
     return { type: "UNKNOWN" };
   }
 
-  if (/^(予約|予約する|新規予約|予約登録|予約作成)$/i.test(normalized)) {
+  if (/^(予約|予約する|新規予約|予約登録|予約作成|チャット予約)$/i.test(normalized)) {
     return { type: "BOOK" };
   }
 
@@ -1178,10 +1291,11 @@ export function linkLineUserByPhone({
 export function buildLineHelpMessage({ miniAppUrl = "", busMapUrl = "" }) {
   const lines = [
     "使い方:",
-    "・「予約」または「予約する」: ミニアプリで新規予約",
+    "・「予約」または「予約する」: チャットで新規予約を開始",
     "・「予約確認」: 直近の予約を表示",
     "・「バス位置」: 現在の車両位置マップを表示",
     "・「登録」: 初回登録フォームを表示",
+    "・「ミニアプリ」: ミニアプリ予約画面を開く",
     "・「連携 08012345678」: 電話番号で利用者連携"
   ];
   if (miniAppUrl) {
@@ -1236,7 +1350,7 @@ export function buildLineWelcomeMessages({ miniAppUrl = "", busMapUrl = "" }) {
   return [
     {
       type: "text",
-      text: "友だち追加ありがとうございます。予約・予約確認をご利用いただけます。",
+      text: "友だち追加ありがとうございます。チャット予約・予約確認をご利用いただけます。",
       quickReply: {
         items: quickReplyItems
       }

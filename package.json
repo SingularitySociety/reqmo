@@ -3,6 +3,8 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@graphai/gemini_agent": "^2.0.5",
+    "graphai": "^2.0.16",
     "highs-solver": "0.9.1"
   }
 }

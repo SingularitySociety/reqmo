@@ -8,6 +8,7 @@ const COLLECTIONS = [
   "trips",
   "phoneIdentities",
   "lineIdentities",
+  "lineChatSessions",
   "callEvents",
   "serviceProfiles",
   "farePolicies",
@@ -50,6 +51,7 @@ export class FirestoreRepository extends InMemoryRepository {
       trips,
       phoneIdentities,
       lineIdentities,
+      lineChatSessions,
       callEvents,
       serviceProfiles,
       farePolicies,
@@ -63,6 +65,7 @@ export class FirestoreRepository extends InMemoryRepository {
       tenantRef.collection("trips").get(),
       tenantRef.collection("phoneIdentities").get(),
       tenantRef.collection("lineIdentities").get(),
+      tenantRef.collection("lineChatSessions").get(),
       tenantRef.collection("callEvents").get(),
       tenantRef.collection("serviceProfiles").get(),
       tenantRef.collection("farePolicies").get(),
@@ -81,6 +84,10 @@ export class FirestoreRepository extends InMemoryRepository {
         ...doc.data()
       })),
       lineIdentities: lineIdentities.docs.map((doc) => ({
+        lineUserId: doc.id,
+        ...doc.data()
+      })),
+      lineChatSessions: lineChatSessions.docs.map((doc) => ({
         lineUserId: doc.id,
         ...doc.data()
       })),
@@ -247,6 +254,21 @@ export class FirestoreRepository extends InMemoryRepository {
     const next = super.linkLineIdentity({ userId, lineUserId, source, verified, displayName });
     this.writeDocument("lineIdentities", next.lineUserId, next);
     return next;
+  }
+
+  upsertLineChatSession(lineUserId, session) {
+    const next = super.upsertLineChatSession(lineUserId, session);
+    this.writeDocument("lineChatSessions", next.lineUserId, next);
+    return next;
+  }
+
+  clearLineChatSession(lineUserId) {
+    const key = typeof lineUserId === "string" ? lineUserId.trim() : "";
+    const removed = super.clearLineChatSession(lineUserId);
+    if (removed && key) {
+      this.deleteDocument("lineChatSessions", key);
+    }
+    return removed;
   }
 
   saveCallEvent(callEvent) {
