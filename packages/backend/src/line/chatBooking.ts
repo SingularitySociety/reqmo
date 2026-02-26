@@ -47,6 +47,12 @@ const NLU_RESPONSE_SCHEMA = {
     dropoffStopId: {
       anyOf: [{ type: "string" }, { type: "null" }]
     },
+    pickupHint: {
+      anyOf: [{ type: "string" }, { type: "null" }]
+    },
+    dropoffHint: {
+      anyOf: [{ type: "string" }, { type: "null" }]
+    },
     desiredAtIso: {
       anyOf: [{ type: "string" }, { type: "null" }]
     },
@@ -92,6 +98,9 @@ function normalizeSessionPhase(value) {
 }
 
 function toIsoString(dateValue) {
+  if (dateValue === null || dateValue === undefined || dateValue === "") {
+    return null;
+  }
   const date = dateValue instanceof Date ? dateValue : new Date(dateValue);
   if (Number.isNaN(date.getTime())) {
     return null;
@@ -120,6 +129,9 @@ function createInitialSession(now = new Date()) {
       desiredMode: "PICKUP",
       partySize: null
     },
+    prefill: {
+      dropoffQuery: null
+    },
     pending: {
       field: null,
       options: [],
@@ -137,6 +149,7 @@ function normalizeSession(raw, now = new Date()) {
   }
   const base = createInitialSession(now);
   const slots = raw.slots && typeof raw.slots === "object" ? raw.slots : {};
+  const prefill = raw.prefill && typeof raw.prefill === "object" ? raw.prefill : {};
   const pending = raw.pending && typeof raw.pending === "object" ? raw.pending : {};
   const registration = raw.registration && typeof raw.registration === "object" ? raw.registration : {};
 
@@ -182,6 +195,9 @@ function normalizeSession(raw, now = new Date()) {
       desiredMode,
       partySize
     },
+    prefill: {
+      dropoffQuery: normalizeTrimmedText(prefill.dropoffQuery) || null
+    },
     pending: {
       field: normalizeTrimmedText(pending.field) || null,
       options: normalizedPendingOptions,
@@ -202,10 +218,16 @@ function normalizeSession(raw, now = new Date()) {
                 const num = Number(pending.selectedOption.partySize);
                 return Number.isFinite(num) && num > 0 ? Math.min(MAX_PARTY_SIZE, Math.max(1, Math.trunc(num))) : 1;
               })(),
-              requestType:
-                normalizeTrimmedText(pending.selectedOption.requestType).toUpperCase() === "ARRIVE_BY"
-                  ? "ARRIVE_BY"
-                  : "DEPART_AT"
+              requestType: (() => {
+                const requestType = normalizeTrimmedText(pending.selectedOption.requestType).toUpperCase();
+                if (requestType === "ARRIVE_BY") {
+                  return "ARRIVE_BY";
+                }
+                if (requestType === "ASAP") {
+                  return "ASAP";
+                }
+                return "DEPART_AT";
+              })()
             }
           : null
     },
@@ -610,10 +632,69 @@ function parseDesiredMode(text) {
   if (!normalized) {
     return null;
   }
-  if (/(到着|着きたい|までに|まで)/.test(normalized)) {
+  if (/から.+まで/.test(normalized)) {
+    return null;
+  }
+  if (/(到着|着きたい|までに|降車時刻|降車時間|着時刻|着時間)/.test(normalized)) {
     return "DROPOFF";
   }
   return null;
+}
+
+function sanitizeStopQuery(value) {
+  const normalized = normalizeTrimmedText(value);
+  if (!normalized) {
+    return null;
+  }
+
+  const withoutTrailingMeta = normalized
+    .replace(/[、,，。．!！?？]+$/g, "")
+    .replace(
+      /(?:\d{1,2}\s*時(?:\s*\d{1,2}\s*分)?|\d{1,2}[:：]\d{1,2}|[一二三四五六七八九十\d]{1,2}\s*(?:名|人)|昼ごろ|朝|夕方|夕刻|夜|今すぐ|できるだけ早く|最短|asap).*$/i,
+      ""
+    )
+    .trim();
+
+  if (!withoutTrailingMeta) {
+    return null;
+  }
+
+  return withoutTrailingMeta
+    .replace(/^(乗車(?:地|場所)?|出発(?:地|場所)?|from[:：]?)\s*/i, "")
+    .replace(/^(降車(?:地|場所)?|目的地|to[:：]?)\s*/i, "")
+    .trim();
+}
+
+function parseStopPairFromText(text) {
+  const normalized = normalizeTrimmedText(text);
+  if (!normalized) {
+    return { pickupQuery: null, dropoffQuery: null };
+  }
+
+  const patterns = [
+    /(.+?)から(.+?)(?:までに|まで|へ|に)(?=[\s、,，。．0-9一二三四五六七八九十]|$)/,
+    /(.+?)[→＞>](.+?)(?:[、,，。．\s]|$)/
+  ];
+
+  for (const pattern of patterns) {
+    const match = normalized.match(pattern);
+    if (!match) {
+      continue;
+    }
+    const pickupQuery = sanitizeStopQuery(match[1]);
+    const dropoffQuery = sanitizeStopQuery(match[2]);
+    if (pickupQuery && dropoffQuery) {
+      return {
+        pickupQuery,
+        dropoffQuery
+      };
+    }
+  }
+
+  return {
+    pickupQuery: null,
+    dropoffQuery: null
+  };
 }
 
 function parseDesiredTimeFromText(text, { now = new Date(), timeZone = DEFAULT_TIME_ZONE } = {}) {
@@ -821,6 +902,7 @@ function buildNluPrompt({
     "必ずJSONだけを返してください。説明文は不要です。",
     "目的: ユーザー入力から確認(YES/NO)、停留所候補、人数、希望時刻を抽出する。",
     "selectedStopIdは stopCandidates の stopId から選んでください。候補外なら null。",
+    "「AからBまで」のような入力では pickupHint=A, dropoffHint=B を設定する。",
     "desiredMode は PICKUP / DROPOFF / null。",
     "desiredAtIso は ISO8601 UTC文字列。推定不可なら null。",
     "partySize は 1-8 の整数。",
@@ -954,6 +1036,8 @@ function mergeTurnUnderstanding({
   const llmSelectedStopId = normalizeTrimmedText(llm.selectedStopId);
   const llmPickupStopId = normalizeTrimmedText(llm.pickupStopId);
   const llmDropoffStopId = normalizeTrimmedText(llm.dropoffStopId);
+  const llmPickupHint = sanitizeStopQuery(llm.pickupHint);
+  const llmDropoffHint = sanitizeStopQuery(llm.dropoffHint);
 
   let selectedStopId = null;
   for (const candidate of [llmSelectedStopId, llmPickupStopId, llmDropoffStopId]) {
@@ -968,7 +1052,34 @@ function mergeTurnUnderstanding({
     partySize,
     desiredAtIso,
     desiredMode,
-    selectedStopId
+    selectedStopId,
+    pickupHint: llmPickupHint,
+    dropoffHint: llmDropoffHint
+  };
+}
+
+function applyUnderstandingToSessionSlots(session, understanding) {
+  if (!session || !understanding) {
+    return;
+  }
+  if (understanding.desiredAtIso) {
+    session.slots.desiredAt = understanding.desiredAtIso;
+  }
+  if (understanding.desiredMode) {
+    session.slots.desiredMode = understanding.desiredMode;
+  }
+  if (understanding.partySize) {
+    session.slots.partySize = understanding.partySize;
+  }
+}
+
+function resolveCompositeStopQueries({ text, understanding }) {
+  const parsed = parseStopPairFromText(text);
+  const pickupQuery = parsed.pickupQuery || sanitizeStopQuery(understanding?.pickupHint);
+  const dropoffQuery = parsed.dropoffQuery || sanitizeStopQuery(understanding?.dropoffHint);
+  return {
+    pickupQuery: pickupQuery || null,
+    dropoffQuery: dropoffQuery || null
   };
 }
 
@@ -1019,6 +1130,75 @@ function resolveBestCandidate({
   return scored[0] ?? null;
 }
 
+function toTimestamp(value) {
+  const iso = toIsoString(value);
+  if (!iso) {
+    return null;
+  }
+  const ts = new Date(iso).getTime();
+  return Number.isFinite(ts) ? ts : null;
+}
+
+function resolveOptionRequestType(option, desiredMode = "PICKUP") {
+  const requestType = normalizeTrimmedText(option?.requestType).toUpperCase();
+  if (requestType === "ARRIVE_BY" || requestType === "DEPART_AT" || requestType === "ASAP") {
+    return requestType;
+  }
+  return desiredMode === "DROPOFF" ? "ARRIVE_BY" : "DEPART_AT";
+}
+
+function resolveOptionDesiredAt(option, desiredAt, desiredMode = "PICKUP") {
+  const requestType = resolveOptionRequestType(option, desiredMode);
+  if (requestType === "ARRIVE_BY") {
+    return toIsoString(option?.desiredDropoffAt ?? desiredAt);
+  }
+  if (requestType === "DEPART_AT") {
+    return toIsoString(option?.desiredPickupAt ?? desiredAt);
+  }
+  return null;
+}
+
+function resolveOptionTargetAt(option, desiredMode = "PICKUP") {
+  if (desiredMode === "DROPOFF") {
+    return toTimestamp(option?.plannedDropoffAt);
+  }
+  return toTimestamp(option?.plannedPickupAt);
+}
+
+function selectBookingOption(options, { desiredAt, desiredMode = "PICKUP" } = {}) {
+  if (!Array.isArray(options) || !options.length) {
+    return null;
+  }
+  const desiredTimestamp = toTimestamp(desiredAt);
+  const expectedRequestType = desiredMode === "DROPOFF" ? "ARRIVE_BY" : "DEPART_AT";
+  const preferred = options.filter(
+    (option) => resolveOptionRequestType(option, desiredMode) === expectedRequestType
+  );
+  const pool = preferred.length ? preferred : options;
+  if (!Number.isFinite(desiredTimestamp)) {
+    return pool[0] ?? null;
+  }
+
+  return pool
+    .map((option, index) => {
+      const targetAt = resolveOptionTargetAt(option, desiredMode);
+      return {
+        option,
+        index,
+        delta:
+          Number.isFinite(targetAt) && Number.isFinite(desiredTimestamp)
+            ? Math.abs(targetAt - desiredTimestamp)
+            : Number.POSITIVE_INFINITY
+      };
+    })
+    .sort((left, right) => {
+      if (left.delta !== right.delta) {
+        return left.delta - right.delta;
+      }
+      return left.index - right.index;
+    })[0]?.option;
+}
+
 async function buildBookingOptionProposal({
   repository,
   serviceProfileId,
@@ -1066,11 +1246,13 @@ async function buildBookingOptionProposal({
     };
   }
 
-  const selected = options.options[0];
+  const selected = selectBookingOption(options.options, { desiredAt, desiredMode }) ?? options.options[0];
   const pickupName = resolveStopName(repository, pickupStopId);
   const dropoffName = resolveStopName(repository, dropoffStopId);
   const desiredLabel = formatDateTime(desiredAt, timeZone);
   const plannedPickupLabel = formatTimeOnly(selected.plannedPickupAt, timeZone);
+  const selectedRequestType = resolveOptionRequestType(selected, desiredMode);
+  const selectedDesiredAt = resolveOptionDesiredAt(selected, desiredAt, desiredMode);
 
   return {
     status: "ASSIGNABLE",
@@ -1081,8 +1263,8 @@ async function buildBookingOptionProposal({
       vehicleId: selected.vehicleId ?? null,
       plannedPickupAt: toIsoString(selected.plannedPickupAt),
       plannedDropoffAt: toIsoString(selected.plannedDropoffAt),
-      requestType: desiredMode === "DROPOFF" ? "ARRIVE_BY" : "DEPART_AT",
-      desiredAt,
+      requestType: selectedRequestType,
+      desiredAt: selectedDesiredAt,
       desiredMode,
       partySize
     }
@@ -1306,8 +1488,19 @@ export async function handleLineChatBookingMessage({
     now,
     timeZone
   });
+  const compositeQueries = resolveCompositeStopQueries({
+    text: messageText,
+    understanding
+  });
+  const compositePickupCandidates = compositeQueries.pickupQuery
+    ? buildStopCandidates(allStops, compositeQueries.pickupQuery, STOP_CANDIDATE_LIMIT)
+    : [];
+  const compositeDropoffCandidates = compositeQueries.dropoffQuery
+    ? buildStopCandidates(allStops, compositeQueries.dropoffQuery, STOP_CANDIDATE_LIMIT)
+    : [];
 
   const session = touchSession(clone(currentSession), now);
+  applyUnderstandingToSessionSlots(session, understanding);
   if (
     !registration.isRegistered &&
     session.phase !== "REGISTER_PHONE" &&
@@ -1470,7 +1663,11 @@ export async function handleLineChatBookingMessage({
     }
 
     case "ASK_PICKUP": {
-      if (!stopCandidates.length) {
+      const pickupCandidates = compositePickupCandidates.length ? compositePickupCandidates : stopCandidates;
+      session.prefill.dropoffQuery =
+        compositeQueries.dropoffQuery && compositeDropoffCandidates.length ? compositeQueries.dropoffQuery : null;
+
+      if (!pickupCandidates.length) {
         return {
           handled: true,
           clearSession: false,
@@ -1478,11 +1675,11 @@ export async function handleLineChatBookingMessage({
           messageText: "乗車するバス停名が見つかりませんでした。もう一度入力してください。"
         };
       }
-      if (shouldAskStopDisambiguation(stopCandidates)) {
+      if (shouldAskStopDisambiguation(pickupCandidates)) {
         session.phase = "DISAMBIG_PICKUP";
         session.pending = {
           field: "pickup",
-          options: stopCandidates,
+          options: pickupCandidates,
           selectedStopId: null,
           selectedOption: null
         };
@@ -1490,14 +1687,14 @@ export async function handleLineChatBookingMessage({
           handled: true,
           clearSession: false,
           nextSession: session,
-          messageText: buildDisambiguationPrompt(stopCandidates)
+          messageText: buildDisambiguationPrompt(pickupCandidates)
         };
       }
-      const selected = stopCandidates[0];
+      const selected = pickupCandidates[0];
       session.phase = "CONFIRM_PICKUP";
       session.pending = {
         field: "pickup",
-        options: stopCandidates,
+        options: pickupCandidates,
         selectedStopId: selected.stopId,
         selectedOption: null
       };
@@ -1551,6 +1748,44 @@ export async function handleLineChatBookingMessage({
           };
         }
         session.slots.pickupStopId = selectedStopId;
+        const prefilledDropoffQuery = session.prefill?.dropoffQuery;
+        session.prefill.dropoffQuery = null;
+        if (prefilledDropoffQuery) {
+          const prefilledCandidates = buildStopCandidates(allStops, prefilledDropoffQuery, STOP_CANDIDATE_LIMIT)
+            .filter((candidate) => candidate.stopId !== selectedStopId);
+          if (prefilledCandidates.length) {
+            if (shouldAskStopDisambiguation(prefilledCandidates)) {
+              session.phase = "DISAMBIG_DROPOFF";
+              session.pending = {
+                field: "dropoff",
+                options: prefilledCandidates,
+                selectedStopId: null,
+                selectedOption: null
+              };
+              return {
+                handled: true,
+                clearSession: false,
+                nextSession: session,
+                messageText: buildDisambiguationPrompt(prefilledCandidates)
+              };
+            }
+            const selectedDropoff = prefilledCandidates[0];
+            session.phase = "CONFIRM_DROPOFF";
+            session.pending = {
+              field: "dropoff",
+              options: prefilledCandidates,
+              selectedStopId: selectedDropoff.stopId,
+              selectedOption: null
+            };
+            return {
+              handled: true,
+              clearSession: false,
+              nextSession: session,
+              messageText: buildStopConfirmationPrompt(selectedDropoff.name)
+            };
+          }
+        }
+
         session.phase = "ASK_DROPOFF";
         session.pending = {
           field: null,
@@ -1568,6 +1803,7 @@ export async function handleLineChatBookingMessage({
 
       if (understanding.confirmation === "NO") {
         session.phase = "ASK_PICKUP";
+        session.prefill.dropoffQuery = null;
         session.pending = {
           field: null,
           options: [],
@@ -1582,7 +1818,10 @@ export async function handleLineChatBookingMessage({
         };
       }
 
-      const freshCandidates = buildStopCandidates(allStops, messageText, STOP_CANDIDATE_LIMIT);
+      const freshCandidates =
+        compositePickupCandidates.length ? compositePickupCandidates : buildStopCandidates(allStops, messageText, STOP_CANDIDATE_LIMIT);
+      session.prefill.dropoffQuery =
+        compositeQueries.dropoffQuery && compositeDropoffCandidates.length ? compositeQueries.dropoffQuery : null;
       if (!freshCandidates.length) {
         return {
           handled: true,
@@ -1623,7 +1862,8 @@ export async function handleLineChatBookingMessage({
     }
 
     case "ASK_DROPOFF": {
-      if (!stopCandidates.length) {
+      const dropoffCandidates = compositeDropoffCandidates.length ? compositeDropoffCandidates : stopCandidates;
+      if (!dropoffCandidates.length) {
         return {
           handled: true,
           clearSession: false,
@@ -1631,11 +1871,11 @@ export async function handleLineChatBookingMessage({
           messageText: "降車するバス停名が見つかりませんでした。もう一度入力してください。"
         };
       }
-      if (shouldAskStopDisambiguation(stopCandidates)) {
+      if (shouldAskStopDisambiguation(dropoffCandidates)) {
         session.phase = "DISAMBIG_DROPOFF";
         session.pending = {
           field: "dropoff",
-          options: stopCandidates,
+          options: dropoffCandidates,
           selectedStopId: null,
           selectedOption: null
         };
@@ -1643,14 +1883,14 @@ export async function handleLineChatBookingMessage({
           handled: true,
           clearSession: false,
           nextSession: session,
-          messageText: buildDisambiguationPrompt(stopCandidates)
+          messageText: buildDisambiguationPrompt(dropoffCandidates)
         };
       }
-      const selected = stopCandidates[0];
+      const selected = dropoffCandidates[0];
       session.phase = "CONFIRM_DROPOFF";
       session.pending = {
         field: "dropoff",
-        options: stopCandidates,
+        options: dropoffCandidates,
         selectedStopId: selected.stopId,
         selectedOption: null
       };
@@ -1720,13 +1960,36 @@ export async function handleLineChatBookingMessage({
         }
 
         session.slots.dropoffStopId = selectedStopId;
-        session.phase = "ASK_TIME_AND_PARTY";
         session.pending = {
           field: null,
           options: [],
           selectedStopId: null,
           selectedOption: null
         };
+
+        if (session.slots.desiredAt && session.slots.partySize) {
+          return proposeWithCurrentSlots();
+        }
+        if (!session.slots.desiredAt && session.slots.partySize) {
+          session.phase = "ASK_TIME";
+          return {
+            handled: true,
+            clearSession: false,
+            nextSession: session,
+            messageText: "何時に乗りたいですか？"
+          };
+        }
+        if (session.slots.desiredAt && !session.slots.partySize) {
+          session.phase = "ASK_PARTY";
+          return {
+            handled: true,
+            clearSession: false,
+            nextSession: session,
+            messageText: "何名乗りますか？"
+          };
+        }
+
+        session.phase = "ASK_TIME_AND_PARTY";
         return {
           handled: true,
           clearSession: false,
@@ -1751,7 +2014,8 @@ export async function handleLineChatBookingMessage({
         };
       }
 
-      const freshCandidates = buildStopCandidates(allStops, messageText, STOP_CANDIDATE_LIMIT);
+      const freshCandidates =
+        compositeDropoffCandidates.length ? compositeDropoffCandidates : buildStopCandidates(allStops, messageText, STOP_CANDIDATE_LIMIT);
       if (!freshCandidates.length) {
         return {
           handled: true,
@@ -1921,6 +2185,14 @@ export async function handleLineChatBookingMessage({
         };
       }
 
+      const selectedRequestType =
+        normalizeTrimmedText(selectedOption.requestType).toUpperCase() === "ARRIVE_BY"
+          ? "ARRIVE_BY"
+          : normalizeTrimmedText(selectedOption.requestType).toUpperCase() === "ASAP"
+            ? "ASAP"
+            : "DEPART_AT";
+      const selectedDesiredAt = toIsoString(selectedOption.desiredAt ?? session.slots.desiredAt);
+
       const createResult = await createRideRequest({
         repository,
         serviceProfileId,
@@ -1931,9 +2203,9 @@ export async function handleLineChatBookingMessage({
         partySize: selectedOption.partySize,
         passenger,
         channel: "LINE_CHAT",
-        requestType: selectedOption.requestType,
-        desiredPickupAt: selectedOption.desiredMode === "PICKUP" ? selectedOption.desiredAt : null,
-        desiredDropoffAt: selectedOption.desiredMode === "DROPOFF" ? selectedOption.desiredAt : null,
+        requestType: selectedRequestType,
+        desiredPickupAt: selectedRequestType === "DEPART_AT" ? selectedDesiredAt : null,
+        desiredDropoffAt: selectedRequestType === "ARRIVE_BY" ? selectedDesiredAt : null,
         preferredVehicleId: selectedOption.vehicleId,
         context
       });
@@ -1945,7 +2217,7 @@ export async function handleLineChatBookingMessage({
         rideRequest?.assignment?.plannedPickupAt ?? selectedOption.plannedPickupAt,
         timeZone
       );
-      const desiredLabel = formatDateTime(selectedOption.desiredAt, timeZone);
+      const desiredLabel = formatDateTime(selectedDesiredAt, timeZone);
 
       applySessionMutation({
         repository,

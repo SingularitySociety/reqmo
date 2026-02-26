@@ -824,6 +824,265 @@ test("line webhook can create reservation via chat conversation with stop/time v
   );
 });
 
+test("line webhook keeps proposed pickup time consistent after confirmation", async () => {
+  await withTemporaryEnv(
+    {
+      LINE_CHANNEL_SECRET: "line_secret_test",
+      LINE_CHANNEL_ACCESS_TOKEN: "line_access_token_test",
+      LINE_MINIAPP_URL: "https://example.com/line-reservation/",
+      LINE_BOOKING_LLM_ENABLED: "false"
+    },
+    async () => {
+      const repository = new InMemoryRepository({
+        stops: [
+          { id: "stop_akita", name: "秋田", lat: 33.0011, lng: 132.9288 },
+          { id: "stop_adachi", name: "安並団地入口", lat: 32.9978, lng: 132.9342 }
+        ],
+        vehicles: [
+          {
+            id: "veh_consistent_1",
+            status: "ACTIVE",
+            capacity: 6,
+            onboardCount: 0,
+            currentLocation: { lat: 33.0011, lng: 132.9288 },
+            route: []
+          }
+        ],
+        users: [{ id: "line_consistent_user_1", name: "時刻整合テスト利用者" }],
+        phoneIdentities: [
+          {
+            id: "phone_consistent_1",
+            userId: "line_consistent_user_1",
+            normalizedPhoneE164: "+818012345671",
+            source: "SEED",
+            verified: true,
+            lastSeenAt: "2026-02-21T12:00:00.000Z",
+            blockStatus: "ACTIVE"
+          }
+        ],
+        lineIdentities: [
+          {
+            id: "line_consistent_1",
+            lineUserId: "U_chat_consistent_1",
+            userId: "line_consistent_user_1",
+            source: "SEED",
+            verified: true,
+            displayName: "時刻整合テスト利用者",
+            lastSeenAt: "2026-02-21T12:00:00.000Z",
+            blockStatus: "ACTIVE"
+          }
+        ],
+        serviceProfiles: [createDefaultServiceProfile()]
+      });
+
+      const { server } = createReqmoServer({ repository });
+      const replyMessages = [];
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = async (url, init) => {
+        if (String(url) === "https://api.line.me/v2/bot/message/reply") {
+          replyMessages.push(JSON.parse(init.body));
+        }
+        return new Response("", { status: 200 });
+      };
+
+      async function sendChatText(text, replyToken) {
+        const webhookPayload = {
+          destination: "Uxxxxxxxxx",
+          events: [
+            {
+              type: "message",
+              mode: "active",
+              timestamp: Date.now(),
+              replyToken,
+              source: {
+                type: "user",
+                userId: "U_chat_consistent_1"
+              },
+              message: {
+                type: "text",
+                id: String(Date.now()),
+                text
+              }
+            }
+          ]
+        };
+        const rawBody = JSON.stringify(webhookPayload);
+        const signature = createHmac("sha256", "line_secret_test")
+          .update(rawBody)
+          .digest("base64");
+        const before = replyMessages.length;
+
+        const response = await invokeServer({
+          server,
+          method: "POST",
+          url: "/api/line/webhook",
+          rawBody,
+          headers: {
+            "x-line-signature": signature
+          }
+        });
+        assert.equal(response.statusCode, 200);
+        assert.equal(replyMessages.length, before + 1);
+        return replyMessages[before].messages[0].text;
+      }
+
+      try {
+        assert.equal((await sendChatText("予約", "reply_token_consistent_1")).includes("どこから乗りたいですか"), true);
+        assert.equal((await sendChatText("秋田", "reply_token_consistent_2")).includes("よろしいですか"), true);
+        assert.equal((await sendChatText("はい", "reply_token_consistent_3")).includes("どこまで行きたいですか"), true);
+        assert.equal((await sendChatText("安並団地入口", "reply_token_consistent_4")).includes("よろしいですか"), true);
+        assert.equal((await sendChatText("はい", "reply_token_consistent_5")).includes("何名、何時"), true);
+
+        const proposalMessage = await sendChatText("1名、15時", "reply_token_consistent_6");
+        assert.equal(proposalMessage.includes("予約してよろしいでしょうか"), true);
+        const proposalTime = proposalMessage.match(/(\d{2}:\d{2})で予約できます/);
+        assert.equal(Boolean(proposalTime?.[1]), true);
+
+        const bookedMessage = await sendChatText("はい", "reply_token_consistent_7");
+        assert.equal(bookedMessage.includes("予約しました"), true);
+        const bookedTime = bookedMessage.match(/(\d{2}:\d{2})で予約しました/);
+        assert.equal(Boolean(bookedTime?.[1]), true);
+        assert.equal(bookedTime?.[1], proposalTime?.[1]);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    }
+  );
+});
+
+test("line webhook can decompose pickup/dropoff/time/party from one message", async () => {
+  await withTemporaryEnv(
+    {
+      LINE_CHANNEL_SECRET: "line_secret_test",
+      LINE_CHANNEL_ACCESS_TOKEN: "line_access_token_test",
+      LINE_MINIAPP_URL: "https://example.com/line-reservation/",
+      LINE_BOOKING_LLM_ENABLED: "false"
+    },
+    async () => {
+      const repository = new InMemoryRepository({
+        stops: [
+          { id: "stop_akita", name: "秋田", lat: 33.0011, lng: 132.9288 },
+          { id: "stop_adachi", name: "足立", lat: 32.9969, lng: 132.9348 }
+        ],
+        vehicles: [
+          {
+            id: "veh_compound_1",
+            status: "ACTIVE",
+            capacity: 6,
+            onboardCount: 0,
+            currentLocation: { lat: 33.0011, lng: 132.9288 },
+            route: []
+          }
+        ],
+        users: [{ id: "line_compound_user_1", name: "一括入力利用者" }],
+        phoneIdentities: [
+          {
+            id: "phone_compound_1",
+            userId: "line_compound_user_1",
+            normalizedPhoneE164: "+818012345672",
+            source: "SEED",
+            verified: true,
+            lastSeenAt: "2026-02-21T12:00:00.000Z",
+            blockStatus: "ACTIVE"
+          }
+        ],
+        lineIdentities: [
+          {
+            id: "line_compound_1",
+            lineUserId: "U_chat_compound_1",
+            userId: "line_compound_user_1",
+            source: "SEED",
+            verified: true,
+            displayName: "一括入力利用者",
+            lastSeenAt: "2026-02-21T12:00:00.000Z",
+            blockStatus: "ACTIVE"
+          }
+        ],
+        serviceProfiles: [createDefaultServiceProfile()]
+      });
+
+      const { server } = createReqmoServer({ repository });
+      const replyMessages = [];
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = async (url, init) => {
+        if (String(url) === "https://api.line.me/v2/bot/message/reply") {
+          replyMessages.push(JSON.parse(init.body));
+        }
+        return new Response("", { status: 200 });
+      };
+
+      async function sendChatText(text, replyToken) {
+        const webhookPayload = {
+          destination: "Uxxxxxxxxx",
+          events: [
+            {
+              type: "message",
+              mode: "active",
+              timestamp: Date.now(),
+              replyToken,
+              source: {
+                type: "user",
+                userId: "U_chat_compound_1"
+              },
+              message: {
+                type: "text",
+                id: String(Date.now()),
+                text
+              }
+            }
+          ]
+        };
+        const rawBody = JSON.stringify(webhookPayload);
+        const signature = createHmac("sha256", "line_secret_test")
+          .update(rawBody)
+          .digest("base64");
+        const before = replyMessages.length;
+
+        const response = await invokeServer({
+          server,
+          method: "POST",
+          url: "/api/line/webhook",
+          rawBody,
+          headers: {
+            "x-line-signature": signature
+          }
+        });
+        assert.equal(response.statusCode, 200);
+        assert.equal(replyMessages.length, before + 1);
+        return replyMessages[before].messages[0].text;
+      }
+
+      try {
+        assert.equal((await sendChatText("予約", "reply_token_compound_1")).includes("どこから乗りたいですか"), true);
+
+        const compound = await sendChatText("秋田から足立まで2名、15時", "reply_token_compound_2");
+        assert.equal(compound.includes("秋田"), true);
+        assert.equal(compound.includes("よろしいですか"), true);
+
+        const confirmPickup = await sendChatText("はい", "reply_token_compound_3");
+        assert.equal(confirmPickup.includes("足立"), true);
+        assert.equal(confirmPickup.includes("よろしいですか"), true);
+
+        const proposal = await sendChatText("はい", "reply_token_compound_4");
+        assert.equal(proposal.includes("2名"), true);
+        assert.equal(proposal.includes("予約してよろしいでしょうか"), true);
+
+        const booked = await sendChatText("はい", "reply_token_compound_5");
+        assert.equal(booked.includes("予約しました"), true);
+
+        const created = repository.listRideRequests();
+        assert.equal(created.length, 1);
+        assert.equal(created[0].pickup?.stopId, "stop_akita");
+        assert.equal(created[0].dropoff?.stopId, "stop_adachi");
+        assert.equal(created[0].partySize, 2);
+        assert.equal(Boolean(created[0].timeWindow?.desiredPickupAt), true);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    }
+  );
+});
+
 test("line webhook asks phone and name before booking when user is not registered", async () => {
   await withTemporaryEnv(
     {
