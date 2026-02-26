@@ -1840,6 +1840,118 @@ export async function handleLineChatBookingMessage({
     };
   }
 
+  function resetPendingSelection() {
+    session.pending = {
+      field: null,
+      options: [],
+      selectedStopId: null,
+      selectedOption: null
+    };
+  }
+
+  async function proceedAfterDropoffSelection(selectedStopId) {
+    if (session.slots.pickupStopId && selectedStopId === session.slots.pickupStopId) {
+      session.phase = "ASK_DROPOFF";
+      resetPendingSelection();
+      return {
+        handled: true,
+        clearSession: false,
+        nextSession: session,
+        messageText: "乗車バス停と同じ停留所は指定できません。別の降車バス停を入力してください。"
+      };
+    }
+
+    session.slots.dropoffStopId = selectedStopId;
+    resetPendingSelection();
+
+    if (session.slots.desiredAt && session.slots.partySize) {
+      return proposeWithCurrentSlots();
+    }
+    if (!session.slots.desiredAt && session.slots.partySize) {
+      session.phase = "ASK_TIME";
+      return {
+        handled: true,
+        clearSession: false,
+        nextSession: session,
+        messageText: "何時に乗りたいですか？"
+      };
+    }
+    if (session.slots.desiredAt && !session.slots.partySize) {
+      session.phase = "ASK_PARTY";
+      return {
+        handled: true,
+        clearSession: false,
+        nextSession: session,
+        messageText: "何名乗りますか？"
+      };
+    }
+
+    session.phase = "ASK_TIME_AND_PARTY";
+    return {
+      handled: true,
+      clearSession: false,
+      nextSession: session,
+      messageText: buildTimeAndPartyPrompt()
+    };
+  }
+
+  async function proceedAfterPickupSelection(selectedStopId) {
+    session.slots.pickupStopId = selectedStopId;
+    const prefilledDropoffQuery = session.prefill?.dropoffQuery;
+    session.prefill.dropoffQuery = null;
+
+    if (prefilledDropoffQuery) {
+      const prefilledCandidates = buildStopCandidates(allStops, prefilledDropoffQuery, STOP_CANDIDATE_LIMIT).filter(
+        (candidate) => candidate.stopId !== selectedStopId
+      );
+      if (prefilledCandidates.length) {
+        if (shouldAskStopDisambiguation(prefilledCandidates)) {
+          session.phase = "DISAMBIG_DROPOFF";
+          session.pending = {
+            field: "dropoff",
+            options: prefilledCandidates,
+            selectedStopId: null,
+            selectedOption: null
+          };
+          return {
+            handled: true,
+            clearSession: false,
+            nextSession: session,
+            messageText: buildDisambiguationPrompt(prefilledCandidates)
+          };
+        }
+
+        const selectedDropoff = prefilledCandidates[0];
+        if (prefilledCandidates.length === 1) {
+          return proceedAfterDropoffSelection(selectedDropoff.stopId);
+        }
+
+        session.phase = "CONFIRM_DROPOFF";
+        session.pending = {
+          field: "dropoff",
+          options: prefilledCandidates,
+          selectedStopId: selectedDropoff.stopId,
+          selectedOption: null
+        };
+        return {
+          handled: true,
+          clearSession: false,
+          nextSession: session,
+          messageText: buildStopConfirmationPrompt(selectedDropoff.name)
+        };
+      }
+    }
+
+    session.phase = "ASK_DROPOFF";
+    resetPendingSelection();
+    return {
+      handled: true,
+      clearSession: false,
+      nextSession: session,
+      messageText: "どこまで行きたいですか？"
+    };
+  }
+
   switch (session.phase) {
     case "ASK_CANCEL_TARGET": {
       const refreshedOptions = mapCancellationOptions({
@@ -2097,6 +2209,9 @@ export async function handleLineChatBookingMessage({
         };
       }
       const selected = pickupCandidates[0];
+      if (pickupCandidates.length === 1) {
+        return proceedAfterPickupSelection(selected.stopId);
+      }
       session.phase = "CONFIRM_PICKUP";
       session.pending = {
         field: "pickup",
@@ -2153,58 +2268,7 @@ export async function handleLineChatBookingMessage({
             messageText: "もう一度、乗車するバス停を入力してください。"
           };
         }
-        session.slots.pickupStopId = selectedStopId;
-        const prefilledDropoffQuery = session.prefill?.dropoffQuery;
-        session.prefill.dropoffQuery = null;
-        if (prefilledDropoffQuery) {
-          const prefilledCandidates = buildStopCandidates(allStops, prefilledDropoffQuery, STOP_CANDIDATE_LIMIT)
-            .filter((candidate) => candidate.stopId !== selectedStopId);
-          if (prefilledCandidates.length) {
-            if (shouldAskStopDisambiguation(prefilledCandidates)) {
-              session.phase = "DISAMBIG_DROPOFF";
-              session.pending = {
-                field: "dropoff",
-                options: prefilledCandidates,
-                selectedStopId: null,
-                selectedOption: null
-              };
-              return {
-                handled: true,
-                clearSession: false,
-                nextSession: session,
-                messageText: buildDisambiguationPrompt(prefilledCandidates)
-              };
-            }
-            const selectedDropoff = prefilledCandidates[0];
-            session.phase = "CONFIRM_DROPOFF";
-            session.pending = {
-              field: "dropoff",
-              options: prefilledCandidates,
-              selectedStopId: selectedDropoff.stopId,
-              selectedOption: null
-            };
-            return {
-              handled: true,
-              clearSession: false,
-              nextSession: session,
-              messageText: buildStopConfirmationPrompt(selectedDropoff.name)
-            };
-          }
-        }
-
-        session.phase = "ASK_DROPOFF";
-        session.pending = {
-          field: null,
-          options: [],
-          selectedStopId: null,
-          selectedOption: null
-        };
-        return {
-          handled: true,
-          clearSession: false,
-          nextSession: session,
-          messageText: "どこまで行きたいですか？"
-        };
+        return proceedAfterPickupSelection(selectedStopId);
       }
 
       if (understanding.confirmation === "NO") {
@@ -2253,6 +2317,9 @@ export async function handleLineChatBookingMessage({
       }
 
       const selected = freshCandidates[0];
+      if (freshCandidates.length === 1) {
+        return proceedAfterPickupSelection(selected.stopId);
+      }
       session.pending = {
         field: "pickup",
         options: freshCandidates,
@@ -2293,6 +2360,9 @@ export async function handleLineChatBookingMessage({
         };
       }
       const selected = dropoffCandidates[0];
+      if (dropoffCandidates.length === 1) {
+        return proceedAfterDropoffSelection(selected.stopId);
+      }
       session.phase = "CONFIRM_DROPOFF";
       session.pending = {
         field: "dropoff",
@@ -2349,59 +2419,7 @@ export async function handleLineChatBookingMessage({
             messageText: "もう一度、降車するバス停を入力してください。"
           };
         }
-        if (session.slots.pickupStopId && selectedStopId === session.slots.pickupStopId) {
-          session.phase = "ASK_DROPOFF";
-          session.pending = {
-            field: null,
-            options: [],
-            selectedStopId: null,
-            selectedOption: null
-          };
-          return {
-            handled: true,
-            clearSession: false,
-            nextSession: session,
-            messageText: "乗車バス停と同じ停留所は指定できません。別の降車バス停を入力してください。"
-          };
-        }
-
-        session.slots.dropoffStopId = selectedStopId;
-        session.pending = {
-          field: null,
-          options: [],
-          selectedStopId: null,
-          selectedOption: null
-        };
-
-        if (session.slots.desiredAt && session.slots.partySize) {
-          return proposeWithCurrentSlots();
-        }
-        if (!session.slots.desiredAt && session.slots.partySize) {
-          session.phase = "ASK_TIME";
-          return {
-            handled: true,
-            clearSession: false,
-            nextSession: session,
-            messageText: "何時に乗りたいですか？"
-          };
-        }
-        if (session.slots.desiredAt && !session.slots.partySize) {
-          session.phase = "ASK_PARTY";
-          return {
-            handled: true,
-            clearSession: false,
-            nextSession: session,
-            messageText: "何名乗りますか？"
-          };
-        }
-
-        session.phase = "ASK_TIME_AND_PARTY";
-        return {
-          handled: true,
-          clearSession: false,
-          nextSession: session,
-          messageText: buildTimeAndPartyPrompt()
-        };
+        return proceedAfterDropoffSelection(selectedStopId);
       }
 
       if (understanding.confirmation === "NO") {
@@ -2447,6 +2465,9 @@ export async function handleLineChatBookingMessage({
       }
 
       const selected = freshCandidates[0];
+      if (freshCandidates.length === 1) {
+        return proceedAfterDropoffSelection(selected.stopId);
+      }
       session.pending = {
         field: "dropoff",
         options: freshCandidates,

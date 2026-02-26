@@ -932,17 +932,15 @@ test("line webhook keeps proposed pickup time consistent after confirmation", as
 
       try {
         assert.equal((await sendChatText("予約", "reply_token_consistent_1")).includes("どこから乗りたいですか"), true);
-        assert.equal((await sendChatText("秋田", "reply_token_consistent_2")).includes("よろしいですか"), true);
-        assert.equal((await sendChatText("はい", "reply_token_consistent_3")).includes("どこまで行きたいですか"), true);
-        assert.equal((await sendChatText("安並団地入口", "reply_token_consistent_4")).includes("よろしいですか"), true);
-        assert.equal((await sendChatText("はい", "reply_token_consistent_5")).includes("何名、何時"), true);
+        assert.equal((await sendChatText("秋田", "reply_token_consistent_2")).includes("どこまで行きたいですか"), true);
+        assert.equal((await sendChatText("安並団地入口", "reply_token_consistent_3")).includes("何名、何時"), true);
 
-        const proposalMessage = await sendChatText("1名、15時", "reply_token_consistent_6");
+        const proposalMessage = await sendChatText("1名、15時", "reply_token_consistent_4");
         assert.equal(proposalMessage.includes("予約してよろしいでしょうか"), true);
         const proposalTime = proposalMessage.match(/(\d{2}:\d{2})で予約できます/);
         assert.equal(Boolean(proposalTime?.[1]), true);
 
-        const bookedMessage = await sendChatText("はい", "reply_token_consistent_7");
+        const bookedMessage = await sendChatText("はい", "reply_token_consistent_5");
         assert.equal(bookedMessage.includes("予約しました"), true);
         const bookedTime = bookedMessage.match(/(\d{2}:\d{2})で予約しました/);
         assert.equal(Boolean(bookedTime?.[1]), true);
@@ -1061,17 +1059,12 @@ test("line webhook can decompose pickup/dropoff/time/party from one message", as
 
         const compound = await sendChatText("秋田から足立まで2名、15時", "reply_token_compound_2");
         assert.equal(compound.includes("秋田"), true);
-        assert.equal(compound.includes("よろしいですか"), true);
+        assert.equal(compound.includes("足立"), true);
+        assert.equal(compound.includes("2名"), true);
+        assert.equal(compound.includes("予約してよろしいでしょうか"), true);
+        assert.equal(compound.includes("ですね。よろしいですか？"), false);
 
-        const confirmPickup = await sendChatText("はい", "reply_token_compound_3");
-        assert.equal(confirmPickup.includes("足立"), true);
-        assert.equal(confirmPickup.includes("よろしいですか"), true);
-
-        const proposal = await sendChatText("はい", "reply_token_compound_4");
-        assert.equal(proposal.includes("2名"), true);
-        assert.equal(proposal.includes("予約してよろしいでしょうか"), true);
-
-        const booked = await sendChatText("はい", "reply_token_compound_5");
+        const booked = await sendChatText("はい", "reply_token_compound_3");
         assert.equal(booked.includes("予約しました"), true);
 
         const created = repository.listRideRequests();
@@ -1080,6 +1073,126 @@ test("line webhook can decompose pickup/dropoff/time/party from one message", as
         assert.equal(created[0].dropoff?.stopId, "stop_adachi");
         assert.equal(created[0].partySize, 2);
         assert.equal(Boolean(created[0].timeWindow?.desiredPickupAt), true);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    }
+  );
+});
+
+test("line webhook skips stop confirmation when each stop has a single candidate", async () => {
+  await withTemporaryEnv(
+    {
+      LINE_CHANNEL_SECRET: "line_secret_test",
+      LINE_CHANNEL_ACCESS_TOKEN: "line_access_token_test",
+      LINE_MINIAPP_URL: "https://example.com/line-reservation/",
+      LINE_BOOKING_LLM_ENABLED: "false"
+    },
+    async () => {
+      const repository = new InMemoryRepository({
+        stops: [
+          { id: "stop_mac", name: "MAC", lat: 33.0011, lng: 132.9288 },
+          { id: "stop_fuji", name: "フジグラン四万十", lat: 32.9969, lng: 132.9348 }
+        ],
+        vehicles: [
+          {
+            id: "veh_single_candidate_1",
+            status: "ACTIVE",
+            capacity: 6,
+            onboardCount: 0,
+            currentLocation: { lat: 33.0011, lng: 132.9288 },
+            route: []
+          }
+        ],
+        users: [{ id: "line_single_candidate_user_1", name: "単独候補利用者" }],
+        phoneIdentities: [
+          {
+            id: "phone_single_candidate_1",
+            userId: "line_single_candidate_user_1",
+            normalizedPhoneE164: "+818012345679",
+            source: "SEED",
+            verified: true,
+            lastSeenAt: "2026-02-21T12:00:00.000Z",
+            blockStatus: "ACTIVE"
+          }
+        ],
+        lineIdentities: [
+          {
+            id: "line_single_candidate_1",
+            lineUserId: "U_chat_single_candidate_1",
+            userId: "line_single_candidate_user_1",
+            source: "SEED",
+            verified: true,
+            displayName: "単独候補利用者",
+            lastSeenAt: "2026-02-21T12:00:00.000Z",
+            blockStatus: "ACTIVE"
+          }
+        ],
+        serviceProfiles: [createDefaultServiceProfile()]
+      });
+
+      const { server } = createReqmoServer({ repository });
+      const replyMessages = [];
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = async (url, init) => {
+        if (String(url) === "https://api.line.me/v2/bot/message/reply") {
+          replyMessages.push(JSON.parse(init.body));
+        }
+        return new Response("", { status: 200 });
+      };
+
+      async function sendChatText(text, replyToken) {
+        const webhookPayload = {
+          destination: "Uxxxxxxxxx",
+          events: [
+            {
+              type: "message",
+              mode: "active",
+              timestamp: Date.now(),
+              replyToken,
+              source: {
+                type: "user",
+                userId: "U_chat_single_candidate_1"
+              },
+              message: {
+                type: "text",
+                id: String(Date.now()),
+                text
+              }
+            }
+          ]
+        };
+        const rawBody = JSON.stringify(webhookPayload);
+        const signature = createHmac("sha256", "line_secret_test")
+          .update(rawBody)
+          .digest("base64");
+        const before = replyMessages.length;
+
+        const response = await invokeServer({
+          server,
+          method: "POST",
+          url: "/api/line/webhook",
+          rawBody,
+          headers: {
+            "x-line-signature": signature
+          }
+        });
+        assert.equal(response.statusCode, 200);
+        assert.equal(replyMessages.length, before + 1);
+        return replyMessages[before].messages[0].text;
+      }
+
+      try {
+        assert.equal((await sendChatText("予約", "reply_token_single_candidate_1")).includes("どこから乗りたいですか"), true);
+        const proposal = await sendChatText("Macからフジグランまで1名16時", "reply_token_single_candidate_2");
+        assert.equal(proposal.includes("MACからフジグラン四万十まで"), true);
+        assert.equal(proposal.includes("予約してよろしいでしょうか"), true);
+        assert.equal(proposal.includes("降車予定"), true);
+        assert.equal(proposal.includes("ですね。よろしいですか？"), false);
+
+        const booked = await sendChatText("はい", "reply_token_single_candidate_3");
+        assert.equal(booked.includes("予約しました"), true);
+        assert.equal(booked.includes("降車予定"), true);
       } finally {
         globalThis.fetch = originalFetch;
       }
