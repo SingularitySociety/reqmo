@@ -2358,7 +2358,10 @@ export async function handleLineChatBookingMessage({
 
     case "CONFIRM_PICKUP": {
       if (understanding.confirmation === "YES") {
-        const selectedStopId = session.pending?.selectedStopId;
+        const selectedStopId =
+          normalizeTrimmedText(session.pending?.selectedStopId) ||
+          normalizeTrimmedText(session.pending?.options?.[0]?.stopId) ||
+          null;
         if (!selectedStopId) {
           session.phase = "ASK_PICKUP";
           return {
@@ -2471,7 +2474,10 @@ export async function handleLineChatBookingMessage({
 
     case "CONFIRM_DROPOFF": {
       if (understanding.confirmation === "YES") {
-        const selectedStopId = session.pending?.selectedStopId;
+        const selectedStopId =
+          normalizeTrimmedText(session.pending?.selectedStopId) ||
+          normalizeTrimmedText(session.pending?.options?.[0]?.stopId) ||
+          null;
         if (!selectedStopId) {
           session.phase = "ASK_DROPOFF";
           return {

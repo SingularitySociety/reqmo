@@ -1194,6 +1194,161 @@ test("line webhook skips stop confirmation when each stop is confidently resolve
   );
 });
 
+test("line webhook recovers from legacy confirm state when selected stop id is missing", async () => {
+  await withTemporaryEnv(
+    {
+      LINE_CHANNEL_SECRET: "line_secret_test",
+      LINE_CHANNEL_ACCESS_TOKEN: "line_access_token_test",
+      LINE_MINIAPP_URL: "https://example.com/line-reservation/",
+      LINE_BOOKING_LLM_ENABLED: "false"
+    },
+    async () => {
+      const repository = new InMemoryRepository({
+        stops: [
+          { id: "stop_oyanagi", name: "大柳", lat: 33.0011, lng: 132.9288 },
+          { id: "stop_shimoda_sm", name: "下田分岐（サニーマート前）", lat: 32.9969, lng: 132.9348 },
+          { id: "stop_shimoda_sk", name: "下田分岐（すき家前）", lat: 32.9963, lng: 132.9342 }
+        ],
+        vehicles: [
+          {
+            id: "veh_legacy_confirm_1",
+            status: "ACTIVE",
+            capacity: 6,
+            onboardCount: 0,
+            currentLocation: { lat: 33.0011, lng: 132.9288 },
+            route: []
+          }
+        ],
+        users: [{ id: "line_legacy_confirm_user_1", name: "確認復旧利用者" }],
+        phoneIdentities: [
+          {
+            id: "phone_legacy_confirm_1",
+            userId: "line_legacy_confirm_user_1",
+            normalizedPhoneE164: "+818012345674",
+            source: "SEED",
+            verified: true,
+            lastSeenAt: "2026-02-21T12:00:00.000Z",
+            blockStatus: "ACTIVE"
+          }
+        ],
+        lineIdentities: [
+          {
+            id: "line_legacy_confirm_1",
+            lineUserId: "U_chat_legacy_confirm_1",
+            userId: "line_legacy_confirm_user_1",
+            source: "SEED",
+            verified: true,
+            displayName: "確認復旧利用者",
+            lastSeenAt: "2026-02-21T12:00:00.000Z",
+            blockStatus: "ACTIVE"
+          }
+        ],
+        lineChatSessions: [
+          {
+            lineUserId: "U_chat_legacy_confirm_1",
+            version: 1,
+            mode: "LINE_CHAT_BOOKING",
+            phase: "CONFIRM_DROPOFF",
+            registration: {
+              name: "確認復旧利用者",
+              phoneNumber: "+818012345674"
+            },
+            slots: {
+              pickupStopId: "stop_oyanagi",
+              dropoffStopId: null,
+              desiredAt: null,
+              desiredMode: "PICKUP",
+              partySize: null
+            },
+            prefill: {
+              dropoffQuery: null
+            },
+            cancellation: {
+              options: [],
+              selectedRequestId: null
+            },
+            pending: {
+              field: "dropoff",
+              options: [
+                { stopId: "stop_shimoda_sm", name: "下田分岐（サニーマート前）", score: 0.99 },
+                { stopId: "stop_shimoda_sk", name: "下田分岐（すき家前）", score: 0.93 }
+              ],
+              selectedStopId: null,
+              selectedOption: null
+            },
+            createdAt: "2026-02-26T06:00:00.000Z",
+            updatedAt: "2026-02-26T06:00:00.000Z"
+          }
+        ],
+        serviceProfiles: [createDefaultServiceProfile()]
+      });
+
+      const { server } = createReqmoServer({ repository });
+      const replyMessages = [];
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = async (url, init) => {
+        if (String(url) === "https://api.line.me/v2/bot/message/reply") {
+          replyMessages.push(JSON.parse(init.body));
+        }
+        return new Response("", { status: 200 });
+      };
+
+      async function sendChatText(text, replyToken) {
+        const webhookPayload = {
+          destination: "Uxxxxxxxxx",
+          events: [
+            {
+              type: "message",
+              mode: "active",
+              timestamp: Date.now(),
+              replyToken,
+              source: {
+                type: "user",
+                userId: "U_chat_legacy_confirm_1"
+              },
+              message: {
+                type: "text",
+                id: String(Date.now()),
+                text
+              }
+            }
+          ]
+        };
+        const rawBody = JSON.stringify(webhookPayload);
+        const signature = createHmac("sha256", "line_secret_test")
+          .update(rawBody)
+          .digest("base64");
+        const before = replyMessages.length;
+
+        const response = await invokeServer({
+          server,
+          method: "POST",
+          url: "/api/line/webhook",
+          rawBody,
+          headers: {
+            "x-line-signature": signature
+          }
+        });
+        assert.equal(response.statusCode, 200);
+        assert.equal(replyMessages.length, before + 1);
+        return replyMessages[before].messages[0].text;
+      }
+
+      try {
+        const response = await sendChatText("はい", "reply_token_legacy_confirm_1");
+        assert.equal(response.includes("何名、何時"), true);
+        assert.equal(response.includes("どちらの下田分岐"), false);
+
+        const session = repository.getLineChatSession("U_chat_legacy_confirm_1");
+        assert.equal(session?.phase, "ASK_TIME_AND_PARTY");
+        assert.equal(session?.slots?.dropoffStopId, "stop_shimoda_sm");
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    }
+  );
+});
+
 test("line webhook can cancel reservation via chat conversation", async () => {
   await withTemporaryEnv(
     {
