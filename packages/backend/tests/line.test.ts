@@ -560,6 +560,162 @@ test("line webhook verifies signature and sends reply", async () => {
   );
 });
 
+test("line webhook reservation summary includes all reservations", async () => {
+  await withTemporaryEnv(
+    {
+      LINE_CHANNEL_SECRET: "line_secret_test",
+      LINE_CHANNEL_ACCESS_TOKEN: "line_access_token_test",
+      LINE_MINIAPP_URL: "https://example.com/line-reservation/"
+    },
+    async () => {
+      const repository = new InMemoryRepository({
+        stops: [
+          { id: "stop_a", name: "中村駅", lat: 32.9898, lng: 132.9334 },
+          { id: "stop_b", name: "市役所前", lat: 32.9911, lng: 132.9272 }
+        ],
+        users: [{ id: "line_user_many_1", name: "LINE一覧利用者" }],
+        phoneIdentities: [
+          {
+            id: "phone_many_1",
+            userId: "line_user_many_1",
+            normalizedPhoneE164: "+818012345690",
+            source: "SEED",
+            verified: true,
+            lastSeenAt: "2026-02-21T12:00:00.000Z",
+            blockStatus: "ACTIVE"
+          }
+        ],
+        lineIdentities: [
+          {
+            id: "line_many_1",
+            lineUserId: "U_reply_many_1",
+            userId: "line_user_many_1",
+            source: "SEED",
+            verified: true,
+            displayName: "LINE一覧利用者",
+            lastSeenAt: "2026-02-21T12:00:00.000Z",
+            blockStatus: "ACTIVE"
+          }
+        ],
+        rideRequests: [
+          {
+            id: "req_many_1",
+            requesterId: "line_user_many_1",
+            status: "ASSIGNED",
+            pickup: { mode: "FIXED_STOP", stopId: "stop_a" },
+            dropoff: { mode: "FIXED_STOP", stopId: "stop_b" },
+            assignment: {
+              plannedPickupAt: "2026-02-25T01:00:00.000Z",
+              plannedDropoffAt: "2026-02-25T01:10:00.000Z"
+            }
+          },
+          {
+            id: "req_many_2",
+            requesterId: "line_user_many_1",
+            status: "ASSIGNED",
+            pickup: { mode: "FIXED_STOP", stopId: "stop_a" },
+            dropoff: { mode: "FIXED_STOP", stopId: "stop_b" },
+            assignment: {
+              plannedPickupAt: "2026-02-25T02:00:00.000Z",
+              plannedDropoffAt: "2026-02-25T02:10:00.000Z"
+            }
+          },
+          {
+            id: "req_many_3",
+            requesterId: "line_user_many_1",
+            status: "ASSIGNED",
+            pickup: { mode: "FIXED_STOP", stopId: "stop_a" },
+            dropoff: { mode: "FIXED_STOP", stopId: "stop_b" },
+            assignment: {
+              plannedPickupAt: "2026-02-25T03:00:00.000Z",
+              plannedDropoffAt: "2026-02-25T03:10:00.000Z"
+            }
+          },
+          {
+            id: "req_many_4",
+            requesterId: "line_user_many_1",
+            status: "ASSIGNED",
+            pickup: { mode: "FIXED_STOP", stopId: "stop_a" },
+            dropoff: { mode: "FIXED_STOP", stopId: "stop_b" },
+            assignment: {
+              plannedPickupAt: "2026-02-25T04:00:00.000Z",
+              plannedDropoffAt: "2026-02-25T04:10:00.000Z"
+            }
+          }
+        ],
+        serviceProfiles: [createDefaultServiceProfile()]
+      });
+
+      const { server } = createReqmoServer({ repository });
+      const webhookPayload = {
+        destination: "Uxxxxxxxxx",
+        events: [
+          {
+            type: "message",
+            mode: "active",
+            timestamp: Date.now(),
+            replyToken: "reply_token_many_1",
+            source: {
+              type: "user",
+              userId: "U_reply_many_1"
+            },
+            message: {
+              type: "text",
+              id: "200001",
+              text: "予約確認"
+            }
+          }
+        ]
+      };
+      const rawBody = JSON.stringify(webhookPayload);
+      const signature = createHmac("sha256", "line_secret_test")
+        .update(rawBody)
+        .digest("base64");
+
+      const fetchCalls = [];
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = async (url, init) => {
+        fetchCalls.push({
+          url: String(url),
+          init
+        });
+        return new Response("", { status: 200 });
+      };
+
+      try {
+        const response = await invokeServer({
+          server,
+          method: "POST",
+          url: "/api/line/webhook",
+          rawBody,
+          headers: {
+            "x-line-signature": signature
+          }
+        });
+
+        assert.equal(response.statusCode, 200);
+        const payload = JSON.parse(response.payload);
+        assert.equal(payload.status, "OK");
+        assert.equal(payload.handledEvents, 1);
+        const replyCall = fetchCalls.find(
+          (call) => call.url === "https://api.line.me/v2/bot/message/reply"
+        );
+        assert.equal(Boolean(replyCall), true);
+
+        const postedBody = JSON.parse(replyCall.init.body);
+        const text = postedBody.messages[0].text;
+        assert.equal(text.includes("4件を表示します。"), true);
+        assert.equal(text.includes("予約ID: req_many_1"), true);
+        assert.equal(text.includes("予約ID: req_many_2"), true);
+        assert.equal(text.includes("予約ID: req_many_3"), true);
+        assert.equal(text.includes("予約ID: req_many_4"), true);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    }
+  );
+});
+
 test("line webhook sends reservation form URL when user sends フォーム予約", async () => {
   await withTemporaryEnv(
     {

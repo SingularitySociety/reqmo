@@ -1017,8 +1017,7 @@ async function handleLineWebhookEvent({
     }
     const requests = listLineUserRideRequests({
       repository,
-      userId: linked.user.id,
-      limit: 3
+      userId: linked.user.id
     });
     registration = resolveLineUserRegistrationStatus({
       repository,
@@ -1202,8 +1201,7 @@ async function handleLineWebhookEvent({
   if (command.type === "RESERVATION") {
     const requests = listLineUserRideRequests({
       repository,
-      userId: user.id,
-      limit: 3
+      userId: user.id
     });
     await sendLineReplyMessage({
       channelAccessToken: config.channelAccessToken,

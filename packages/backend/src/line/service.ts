@@ -1132,25 +1132,28 @@ export function registerLineMiniAppUser({
 export function listLineUserRideRequests({
   repository,
   userId,
-  limit = 3
+  limit = null
 }) {
-  const normalizedLimit = Math.min(Math.max(Math.trunc(Number(limit) || 3), 1), 10);
+  const numericLimit = Number(limit);
+  const normalizedLimit =
+    Number.isFinite(numericLimit) && numericLimit > 0
+      ? Math.min(Math.max(Math.trunc(numericLimit), 1), 100)
+      : null;
   const requests = typeof repository?.listRideRequests === "function"
     ? repository.listRideRequests().filter((request) => request.requesterId === userId)
     : [];
+  const applyLimit = (entries) => (normalizedLimit ? entries.slice(0, normalizedLimit) : entries);
+  const sortByRecent = (left, right) => resolveRequestSortTime(right) - resolveRequestSortTime(left);
 
   const active = requests
     .filter((request) => ACTIVE_RIDE_STATUSES.has(normalizeTrimmedText(request?.status).toUpperCase()))
-    .sort((left, right) => resolveRequestSortTime(left) - resolveRequestSortTime(right))
-    .slice(0, normalizedLimit);
+    .sort(sortByRecent);
 
   if (active.length) {
-    return active;
+    return applyLimit(active);
   }
 
-  return requests
-    .sort((left, right) => resolveRequestSortTime(right) - resolveRequestSortTime(left))
-    .slice(0, normalizedLimit);
+  return applyLimit(requests.sort(sortByRecent));
 }
 
 export function buildLineRideSummaryLines({ repository, rideRequest, index }) {
@@ -1181,7 +1184,7 @@ export function buildReservationSummaryText({
     return lines.join("\n");
   }
 
-  lines.push(`直近${requests.length}件を表示します。`);
+  lines.push(`${requests.length}件を表示します。`);
   requests.forEach((request, index) => {
     lines.push(...buildLineRideSummaryLines({ repository, rideRequest: request, index }));
   });
@@ -1283,7 +1286,7 @@ export function buildLineHelpMessage({ miniAppUrl = "", busMapUrl = "" }) {
     "・「予約」または「チャット予約」: チャットで新規予約を開始",
     "・「フォーム予約」: 予約フォームを開く",
     "・「取り消し」または「キャンセル」: チャットで予約取消を開始",
-    "・「予約確認」: 直近の予約を表示",
+    "・「予約確認」: 予約を表示",
     "・「バス位置」: 現在の車両位置マップを表示",
     "・「登録」: 初回登録フォームを表示",
     "・「連携 08012345678」: 電話番号で利用者連携"
