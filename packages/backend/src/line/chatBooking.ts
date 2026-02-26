@@ -1,4 +1,4 @@
-import { GraphAI } from "graphai";
+import { GraphAI, agentInfoWrapper } from "graphai";
 import { geminiAgent } from "@graphai/gemini_agent";
 
 import { cancelRideRequest, createRideRequest, listRideRequestOptions } from "../api/functions.ts";
@@ -69,6 +69,15 @@ const NLU_RESPONSE_SCHEMA = {
     },
     partySize: {
       anyOf: [{ type: "number" }, { type: "null" }]
+    },
+    cancelSelectionIndex: {
+      anyOf: [{ type: "number" }, { type: "null" }]
+    },
+    cancelRequestId: {
+      anyOf: [{ type: "string" }, { type: "null" }]
+    },
+    nextPrompt: {
+      anyOf: [{ type: "string" }, { type: "null" }]
     },
     confidence: {
       anyOf: [{ type: "number" }, { type: "null" }]
@@ -616,10 +625,25 @@ function parseCancellationSelection(text) {
 
 function resolveCancellationSelection({
   text,
-  options
+  options,
+  preferredRequestId = null,
+  preferredIndex = null
 }) {
   if (!Array.isArray(options) || !options.length) {
     return null;
+  }
+  const normalizedPreferredRequestId = normalizeTrimmedText(preferredRequestId);
+  if (normalizedPreferredRequestId) {
+    const preferredById = options.find(
+      (option) => normalizeTrimmedText(option.requestId).toLowerCase() === normalizedPreferredRequestId.toLowerCase()
+    );
+    if (preferredById) {
+      return preferredById;
+    }
+  }
+  const normalizedPreferredIndex = normalizeSelectionIndex(preferredIndex);
+  if (normalizedPreferredIndex && normalizedPreferredIndex <= options.length) {
+    return options[normalizedPreferredIndex - 1];
   }
   const parsed = parseCancellationSelection(text);
   if (parsed.requestId) {
@@ -1077,6 +1101,32 @@ function normalizeConfirmation(value) {
   return "UNKNOWN";
 }
 
+function normalizeSelectionIndex(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) {
+    return null;
+  }
+  const index = Math.trunc(num);
+  return index >= 1 ? index : null;
+}
+
+function sanitizeNextPrompt(value) {
+  const prompt = normalizeTrimmedText(value);
+  if (!prompt) {
+    return null;
+  }
+  if (prompt.length > 120) {
+    return null;
+  }
+  if (/^```/.test(prompt)) {
+    return null;
+  }
+  if (/[{}\[\]]/.test(prompt)) {
+    return null;
+  }
+  return prompt;
+}
+
 function toCandidateBrief(candidates) {
   if (!Array.isArray(candidates)) {
     return [];
@@ -1094,7 +1144,8 @@ function buildNluPrompt({
   slots,
   stopCandidates,
   now,
-  timeZone
+  timeZone,
+  previousExtraction = null
 }) {
   const context = {
     nowIso: now.toISOString(),
@@ -1102,7 +1153,8 @@ function buildNluPrompt({
     phase,
     slots,
     stopCandidates: toCandidateBrief(stopCandidates),
-    userText: text
+    userText: text,
+    previousExtraction: previousExtraction && typeof previousExtraction === "object" ? previousExtraction : null
   };
 
   return [
@@ -1114,6 +1166,10 @@ function buildNluPrompt({
     "desiredMode は PICKUP / DROPOFF / null。",
     "desiredAtIso は ISO8601 UTC文字列。推定不可なら null。",
     "partySize は 1-8 の整数。",
+    "cancelSelectionIndex はキャンセル候補番号(1始まり)。不明なら null。",
+    "cancelRequestId は req_xxx 形式の予約ID。不明なら null。",
+    "nextPrompt は次にユーザーへ返す短い日本語1文。不要なら null。",
+    "過去の previousExtraction がある場合、妥当な値は維持し、今回入力で明確に更新される項目のみ更新する。",
     "context:",
     JSON.stringify(context)
   ].join("\n");
@@ -1142,6 +1198,19 @@ export function resolveLineBookingConfig({ env = process.env } = {}) {
   };
 }
 
+function mergeExtractionPatch(baseValue, patchValue) {
+  const base = baseValue && typeof baseValue === "object" ? baseValue : {};
+  const patch = patchValue && typeof patchValue === "object" ? patchValue : {};
+  const merged = { ...base };
+  Object.entries(patch).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") {
+      return;
+    }
+    merged[key] = value;
+  });
+  return merged;
+}
+
 async function runBookingNlu({
   text,
   phase,
@@ -1154,20 +1223,33 @@ async function runBookingNlu({
     return null;
   }
 
-  const prompt = buildNluPrompt({
-    text,
-    phase,
-    slots,
-    stopCandidates,
-    now,
-    timeZone: config.timeZone
-  });
-
   const graphData = {
     version: 0.5,
+    loop: {
+      count: 2
+    },
     nodes: {
+      context: {
+        value: {
+          text,
+          phase,
+          slots,
+          stopCandidates,
+          nowIso: now.toISOString(),
+          timeZone: config.timeZone
+        }
+      },
+      extraction: {
+        value: {},
+        update: ":mergedExtraction",
+        isResult: true
+      },
       prompt: {
-        value: prompt
+        agent: "buildBookingNluPromptAgent",
+        inputs: {
+          context: ":context",
+          extraction: ":extraction"
+        }
       },
       llm: {
         agent: "geminiAgent",
@@ -1184,15 +1266,57 @@ async function runBookingNlu({
         inputs: {
           prompt: ":prompt"
         },
-        isResult: true
+        isResult: false
+      },
+      parsed: {
+        agent: "jsonParseAgent",
+        inputs: {
+          text: ":llm.text"
+        }
+      },
+      mergedExtraction: {
+        agent: "mergeExtractionAgent",
+        inputs: {
+          base: ":extraction",
+          patch: ":parsed"
+        }
       }
     }
   };
 
+  const buildBookingNluPromptAgent = agentInfoWrapper(async ({ namedInputs }) => {
+    const context = namedInputs?.context && typeof namedInputs.context === "object" ? namedInputs.context : {};
+    const extraction = namedInputs?.extraction && typeof namedInputs.extraction === "object" ? namedInputs.extraction : {};
+    const nowValue = toIsoString(context.nowIso) ?? now.toISOString();
+    return buildNluPrompt({
+      text: normalizeTrimmedText(context.text) || text,
+      phase: normalizeSessionPhase(context.phase || phase),
+      slots: context.slots && typeof context.slots === "object" ? context.slots : slots,
+      stopCandidates: Array.isArray(context.stopCandidates) ? context.stopCandidates : stopCandidates,
+      now: new Date(nowValue),
+      timeZone: normalizeTrimmedText(context.timeZone) || config.timeZone,
+      previousExtraction: extraction
+    });
+  });
+
+  const jsonParseAgent = agentInfoWrapper(async ({ namedInputs }) => {
+    const parsed = parseJsonLoose(namedInputs?.text);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  });
+
+  const mergeExtractionAgent = agentInfoWrapper(async ({ namedInputs }) => {
+    return mergeExtractionPatch(namedInputs?.base, namedInputs?.patch);
+  });
+
   try {
     const graph = new GraphAI(
       graphData,
-      { geminiAgent },
+      {
+        geminiAgent,
+        buildBookingNluPromptAgent,
+        jsonParseAgent,
+        mergeExtractionAgent
+      },
       {
         config: {
           geminiAgent: {
@@ -1202,8 +1326,8 @@ async function runBookingNlu({
       }
     );
     const result = await graph.run();
-    const llmText = normalizeTrimmedText(result?.llm?.text);
-    return parseJsonLoose(llmText);
+    const extraction = result?.extraction;
+    return extraction && typeof extraction === "object" ? extraction : null;
   } catch {
     return null;
   }
@@ -1246,6 +1370,9 @@ function mergeTurnUnderstanding({
   const llmDropoffStopId = normalizeTrimmedText(llm.dropoffStopId);
   const llmPickupHint = sanitizeStopQuery(llm.pickupHint);
   const llmDropoffHint = sanitizeStopQuery(llm.dropoffHint);
+  const cancelSelectionIndex = normalizeSelectionIndex(llm.cancelSelectionIndex);
+  const cancelRequestId = normalizeTrimmedText(llm.cancelRequestId) || null;
+  const nextPrompt = sanitizeNextPrompt(llm.nextPrompt);
 
   let selectedStopId = null;
   for (const candidate of [llmSelectedStopId, llmPickupStopId, llmDropoffStopId]) {
@@ -1262,7 +1389,10 @@ function mergeTurnUnderstanding({
     desiredMode,
     selectedStopId,
     pickupHint: llmPickupHint,
-    dropoffHint: llmDropoffHint
+    dropoffHint: llmDropoffHint,
+    cancelSelectionIndex,
+    cancelRequestId,
+    nextPrompt
   };
 }
 
@@ -1312,6 +1442,11 @@ function buildStopConfirmationPrompt(stopName) {
 
 function buildTimeAndPartyPrompt() {
   return "何名、何時に乗りたいですか？";
+}
+
+function resolveNextPromptHint(understanding, fallbackText) {
+  const hinted = sanitizeNextPrompt(understanding?.nextPrompt);
+  return hinted || fallbackText;
 }
 
 function resolveBestCandidate({
@@ -1873,7 +2008,7 @@ export async function handleLineChatBookingMessage({
         handled: true,
         clearSession: false,
         nextSession: session,
-        messageText: "何時に乗りたいですか？"
+        messageText: resolveNextPromptHint(understanding, "何時に乗りたいですか？")
       };
     }
     if (session.slots.desiredAt && !session.slots.partySize) {
@@ -1882,7 +2017,7 @@ export async function handleLineChatBookingMessage({
         handled: true,
         clearSession: false,
         nextSession: session,
-        messageText: "何名乗りますか？"
+        messageText: resolveNextPromptHint(understanding, "何名乗りますか？")
       };
     }
 
@@ -1891,7 +2026,7 @@ export async function handleLineChatBookingMessage({
       handled: true,
       clearSession: false,
       nextSession: session,
-      messageText: buildTimeAndPartyPrompt()
+      messageText: resolveNextPromptHint(understanding, buildTimeAndPartyPrompt())
     };
   }
 
@@ -1979,14 +2114,16 @@ export async function handleLineChatBookingMessage({
       }
       const selected = resolveCancellationSelection({
         text: messageText,
-        options: refreshedOptions
+        options: refreshedOptions,
+        preferredRequestId: understanding.cancelRequestId,
+        preferredIndex: understanding.cancelSelectionIndex
       });
       if (!selected) {
         return {
           handled: true,
           clearSession: false,
           nextSession: session,
-          messageText: buildCancellationSelectionPrompt(refreshedOptions, { timeZone })
+          messageText: resolveNextPromptHint(understanding, buildCancellationSelectionPrompt(refreshedOptions, { timeZone }))
         };
       }
       session.phase = "CONFIRM_CANCEL";
@@ -2058,7 +2195,9 @@ export async function handleLineChatBookingMessage({
 
       const reselection = resolveCancellationSelection({
         text: messageText,
-        options
+        options,
+        preferredRequestId: understanding.cancelRequestId,
+        preferredIndex: understanding.cancelSelectionIndex
       });
       if (reselection) {
         session.cancellation.selectedRequestId = reselection.requestId;
@@ -2074,7 +2213,7 @@ export async function handleLineChatBookingMessage({
         handled: true,
         clearSession: false,
         nextSession: session,
-        messageText: "予約を取り消しますか？「はい」または「いいえ」でお答えください。"
+        messageText: resolveNextPromptHint(understanding, "予約を取り消しますか？「はい」または「いいえ」でお答えください。")
       };
     }
 
@@ -2190,7 +2329,7 @@ export async function handleLineChatBookingMessage({
           handled: true,
           clearSession: false,
           nextSession: session,
-          messageText: "乗車するバス停名が見つかりませんでした。もう一度入力してください。"
+          messageText: resolveNextPromptHint(understanding, "乗車するバス停名が見つかりませんでした。もう一度入力してください。")
         };
       }
       if (shouldAskStopDisambiguation(pickupCandidates)) {
@@ -2265,7 +2404,7 @@ export async function handleLineChatBookingMessage({
             handled: true,
             clearSession: false,
             nextSession: session,
-            messageText: "もう一度、乗車するバス停を入力してください。"
+            messageText: resolveNextPromptHint(understanding, "もう一度、乗車するバス停を入力してください。")
           };
         }
         return proceedAfterPickupSelection(selectedStopId);
@@ -2297,7 +2436,10 @@ export async function handleLineChatBookingMessage({
           handled: true,
           clearSession: false,
           nextSession: session,
-          messageText: "はい/いいえでお答えいただくか、別の乗車バス停を入力してください。"
+          messageText: resolveNextPromptHint(
+            understanding,
+            "はい/いいえでお答えいただくか、別の乗車バス停を入力してください。"
+          )
         };
       }
       if (shouldAskStopDisambiguation(freshCandidates)) {
@@ -2341,7 +2483,7 @@ export async function handleLineChatBookingMessage({
           handled: true,
           clearSession: false,
           nextSession: session,
-          messageText: "降車するバス停名が見つかりませんでした。もう一度入力してください。"
+          messageText: resolveNextPromptHint(understanding, "降車するバス停名が見つかりませんでした。もう一度入力してください。")
         };
       }
       if (shouldAskStopDisambiguation(dropoffCandidates)) {
@@ -2416,7 +2558,7 @@ export async function handleLineChatBookingMessage({
             handled: true,
             clearSession: false,
             nextSession: session,
-            messageText: "もう一度、降車するバス停を入力してください。"
+            messageText: resolveNextPromptHint(understanding, "もう一度、降車するバス停を入力してください。")
           };
         }
         return proceedAfterDropoffSelection(selectedStopId);
@@ -2445,7 +2587,10 @@ export async function handleLineChatBookingMessage({
           handled: true,
           clearSession: false,
           nextSession: session,
-          messageText: "はい/いいえでお答えいただくか、別の降車バス停を入力してください。"
+          messageText: resolveNextPromptHint(
+            understanding,
+            "はい/いいえでお答えいただくか、別の降車バス停を入力してください。"
+          )
         };
       }
       if (shouldAskStopDisambiguation(freshCandidates)) {
@@ -2498,7 +2643,7 @@ export async function handleLineChatBookingMessage({
           handled: true,
           clearSession: false,
           nextSession: session,
-          messageText: "何時ごろ乗りたいですか？あわせて人数も教えてください。"
+          messageText: resolveNextPromptHint(understanding, "何時ごろ乗りたいですか？あわせて人数も教えてください。")
         };
       }
 
@@ -2508,7 +2653,7 @@ export async function handleLineChatBookingMessage({
           handled: true,
           clearSession: false,
           nextSession: session,
-          messageText: "何時に乗りたいですか？"
+          messageText: resolveNextPromptHint(understanding, "何時に乗りたいですか？")
         };
       }
 
@@ -2518,7 +2663,7 @@ export async function handleLineChatBookingMessage({
           handled: true,
           clearSession: false,
           nextSession: session,
-          messageText: "何名乗りますか？"
+          messageText: resolveNextPromptHint(understanding, "何名乗りますか？")
         };
       }
 
@@ -2531,7 +2676,7 @@ export async function handleLineChatBookingMessage({
           handled: true,
           clearSession: false,
           nextSession: session,
-          messageText: "何時に乗りたいですか？（例: 12時、12:30、昼ごろ）"
+          messageText: resolveNextPromptHint(understanding, "何時に乗りたいですか？（例: 12時、12:30、昼ごろ）")
         };
       }
       session.slots.desiredAt = understanding.desiredAtIso;
@@ -2545,7 +2690,7 @@ export async function handleLineChatBookingMessage({
           handled: true,
           clearSession: false,
           nextSession: session,
-          messageText: "何名乗りますか？"
+          messageText: resolveNextPromptHint(understanding, "何名乗りますか？")
         };
       }
 
@@ -2558,7 +2703,7 @@ export async function handleLineChatBookingMessage({
           handled: true,
           clearSession: false,
           nextSession: session,
-          messageText: "人数を教えてください。（例: 1名、2名、3名）"
+          messageText: resolveNextPromptHint(understanding, "人数を教えてください。（例: 1名、2名、3名）")
         };
       }
       session.slots.partySize = understanding.partySize;
@@ -2569,7 +2714,7 @@ export async function handleLineChatBookingMessage({
           handled: true,
           clearSession: false,
           nextSession: session,
-          messageText: "何時に乗りたいですか？"
+          messageText: resolveNextPromptHint(understanding, "何時に乗りたいですか？")
         };
       }
 
@@ -2590,14 +2735,14 @@ export async function handleLineChatBookingMessage({
             handled: true,
             clearSession: false,
             nextSession: session,
-            messageText: "承知しました。時間または人数を変更します。何名、何時に乗りたいですか？"
+            messageText: resolveNextPromptHint(understanding, "承知しました。時間または人数を変更します。何名、何時に乗りたいですか？")
           };
         }
         return {
           handled: true,
           clearSession: false,
           nextSession: session,
-          messageText: "予約してよろしいですか？「はい」または「いいえ」でお答えください。"
+          messageText: resolveNextPromptHint(understanding, "予約してよろしいですか？「はい」または「いいえ」でお答えください。")
         };
       }
 
