@@ -1,7 +1,7 @@
 import { GraphAI } from "graphai";
 import { geminiAgent } from "@graphai/gemini_agent";
 
-import { createRideRequest, listRideRequestOptions } from "../api/functions.ts";
+import { cancelRideRequest, createRideRequest, listRideRequestOptions } from "../api/functions.ts";
 import { normalizePhoneNumber } from "../telephony/phoneNumber.ts";
 import { registerLineMiniAppUser } from "./service.ts";
 
@@ -10,6 +10,14 @@ const DEFAULT_TIME_ZONE = "Asia/Tokyo";
 const DEFAULT_COUNTRY_CODE = "+81";
 const STOP_CANDIDATE_LIMIT = 5;
 const MAX_PARTY_SIZE = 8;
+const CANCELLABLE_RIDE_LIMIT = 3;
+const CANCELLABLE_RIDE_STATUSES = new Set([
+  "REQUESTED",
+  "ASSIGNED",
+  "PICKUP_PENDING",
+  "IN_PROGRESS",
+  "ONBOARD"
+]);
 
 const YES_PATTERN = /^(はい|うん|ok|okay|yes|y|お願い|お願いします|お願い致します|確定|予約して|予約して下さい|予約してください)$/i;
 const NO_PATTERN = /^(いいえ|違う|ちがう|no|n|キャンセル|やめる|やめます|戻る|戻して)$/i;
@@ -92,7 +100,9 @@ function normalizeSessionPhase(value) {
     "ASK_TIME_AND_PARTY",
     "ASK_TIME",
     "ASK_PARTY",
-    "CONFIRM_BOOKING"
+    "CONFIRM_BOOKING",
+    "ASK_CANCEL_TARGET",
+    "CONFIRM_CANCEL"
   ]);
   return known.has(phase) ? phase : "ASK_PICKUP";
 }
@@ -132,6 +142,10 @@ function createInitialSession(now = new Date()) {
     prefill: {
       dropoffQuery: null
     },
+    cancellation: {
+      options: [],
+      selectedRequestId: null
+    },
     pending: {
       field: null,
       options: [],
@@ -150,6 +164,7 @@ function normalizeSession(raw, now = new Date()) {
   const base = createInitialSession(now);
   const slots = raw.slots && typeof raw.slots === "object" ? raw.slots : {};
   const prefill = raw.prefill && typeof raw.prefill === "object" ? raw.prefill : {};
+  const cancellation = raw.cancellation && typeof raw.cancellation === "object" ? raw.cancellation : {};
   const pending = raw.pending && typeof raw.pending === "object" ? raw.pending : {};
   const registration = raw.registration && typeof raw.registration === "object" ? raw.registration : {};
 
@@ -197,6 +212,35 @@ function normalizeSession(raw, now = new Date()) {
     },
     prefill: {
       dropoffQuery: normalizeTrimmedText(prefill.dropoffQuery) || null
+    },
+    cancellation: {
+      options: Array.isArray(cancellation.options)
+        ? cancellation.options
+            .map((item) => {
+              if (!item || typeof item !== "object") {
+                return null;
+              }
+              const requestId = normalizeTrimmedText(item.requestId);
+              const pickupName = normalizeTrimmedText(item.pickupName);
+              const dropoffName = normalizeTrimmedText(item.dropoffName);
+              const pickupAt = toIsoString(item.pickupAt);
+              const partySize = normalizePartySize(item.partySize) ?? 1;
+              const status = normalizeTrimmedText(item.status).toUpperCase() || null;
+              if (!requestId || !pickupName || !dropoffName) {
+                return null;
+              }
+              return {
+                requestId,
+                pickupName,
+                dropoffName,
+                pickupAt,
+                partySize,
+                status
+              };
+            })
+            .filter(Boolean)
+        : [],
+      selectedRequestId: normalizeTrimmedText(cancellation.selectedRequestId) || null
     },
     pending: {
       field: normalizeTrimmedText(pending.field) || null,
@@ -413,6 +457,29 @@ function resolveStopName(repository, stopId) {
   return stop?.name ?? stopId;
 }
 
+function resolveLocationLabel(repository, location) {
+  if (!location || typeof location !== "object") {
+    return "未設定";
+  }
+  const mode = normalizeTrimmedText(location.mode).toUpperCase();
+  if (mode === "FIXED_STOP") {
+    const stopId = normalizeTrimmedText(location.stopId);
+    return stopId ? resolveStopName(repository, stopId) : "停留所未設定";
+  }
+  if (mode === "FREE_POINT") {
+    const title = normalizeTrimmedText(location.title);
+    if (title) {
+      return title;
+    }
+    const lat = Number(location?.point?.lat);
+    const lng = Number(location?.point?.lng);
+    if (Number.isFinite(lat) && Number.isFinite(lng)) {
+      return `${lat.toFixed(5)},${lng.toFixed(5)}`;
+    }
+  }
+  return normalizeTrimmedText(location.title) || "未設定";
+}
+
 function formatTimeOnly(value, timeZone = DEFAULT_TIME_ZONE) {
   const iso = toIsoString(value);
   if (!iso) {
@@ -439,6 +506,147 @@ function formatDateTime(value, timeZone = DEFAULT_TIME_ZONE) {
     minute: "2-digit",
     hour12: false
   });
+}
+
+function resolveRideRequestPickupAt(rideRequest) {
+  return (
+    rideRequest?.assignment?.plannedPickupAt ??
+    rideRequest?.timeWindow?.desiredPickupAt ??
+    rideRequest?.timeWindow?.desiredDropoffAt ??
+    rideRequest?.createdAt ??
+    null
+  );
+}
+
+function isCancellableRideRequest(rideRequest) {
+  const status = normalizeTrimmedText(rideRequest?.status).toUpperCase();
+  return CANCELLABLE_RIDE_STATUSES.has(status);
+}
+
+function listCancellableRideRequests({
+  repository,
+  requesterId,
+  limit = CANCELLABLE_RIDE_LIMIT
+}) {
+  const normalizedLimit = Math.min(Math.max(Math.trunc(Number(limit) || CANCELLABLE_RIDE_LIMIT), 1), 10);
+  const requests =
+    typeof repository?.listRideRequests === "function"
+      ? repository.listRideRequests().filter((request) => request?.requesterId === requesterId)
+      : [];
+
+  return requests
+    .filter((request) => isCancellableRideRequest(request))
+    .sort((left, right) => {
+      const leftTs = toTimestamp(resolveRideRequestPickupAt(left));
+      const rightTs = toTimestamp(resolveRideRequestPickupAt(right));
+      const leftComparable = Number.isFinite(leftTs) ? leftTs : Number.POSITIVE_INFINITY;
+      const rightComparable = Number.isFinite(rightTs) ? rightTs : Number.POSITIVE_INFINITY;
+      if (leftComparable !== rightComparable) {
+        return leftComparable - rightComparable;
+      }
+      return normalizeTrimmedText(left?.id).localeCompare(normalizeTrimmedText(right?.id));
+    })
+    .slice(0, normalizedLimit);
+}
+
+function mapCancellationOptions({
+  repository,
+  requests
+}) {
+  if (!Array.isArray(requests)) {
+    return [];
+  }
+  return requests
+    .map((request) => {
+      const requestId = normalizeTrimmedText(request?.id);
+      const pickupName = resolveLocationLabel(repository, request?.pickup);
+      const dropoffName = resolveLocationLabel(repository, request?.dropoff);
+      const pickupAt = toIsoString(resolveRideRequestPickupAt(request));
+      const partySize = normalizePartySize(request?.partySize) ?? 1;
+      const status = normalizeTrimmedText(request?.status).toUpperCase() || null;
+      if (!requestId) {
+        return null;
+      }
+      return {
+        requestId,
+        pickupName,
+        dropoffName,
+        pickupAt,
+        partySize,
+        status
+      };
+    })
+    .filter(Boolean);
+}
+
+function buildCancellationSelectionPrompt(options, { timeZone = DEFAULT_TIME_ZONE } = {}) {
+  if (!Array.isArray(options) || !options.length) {
+    return "キャンセル可能な予約が見つかりませんでした。";
+  }
+  const lines = ["どの予約をキャンセルしますか？"];
+  options.forEach((option, index) => {
+    const pickupAt = formatDateTime(option.pickupAt, timeZone);
+    lines.push(
+      `${index + 1}. ${option.pickupName} -> ${option.dropoffName} / ${pickupAt} / ${option.partySize}名`
+    );
+  });
+  return lines.join("\n");
+}
+
+function buildCancellationConfirmPrompt(option, { timeZone = DEFAULT_TIME_ZONE } = {}) {
+  if (!option) {
+    return "キャンセル対象の予約が見つかりませんでした。";
+  }
+  const pickupAt = formatDateTime(option.pickupAt, timeZone);
+  return `${option.pickupName}から${option.dropoffName}まで、${pickupAt}に${option.partySize}名の予約を取り消しします。よろしいですか？`;
+}
+
+function parseCancellationSelection(text) {
+  const normalized = normalizeTrimmedText(text);
+  if (!normalized) {
+    return { index: null, requestId: null };
+  }
+  const requestIdMatch = normalized.match(/\b(req[_-][\w-]+)\b/i);
+  const indexMatch = normalized.match(/(\d{1,2})\s*(?:番|ばん|件|つ)?/);
+  return {
+    index: indexMatch ? Number(indexMatch[1]) : null,
+    requestId: requestIdMatch ? normalizeTrimmedText(requestIdMatch[1]) : null
+  };
+}
+
+function resolveCancellationSelection({
+  text,
+  options
+}) {
+  if (!Array.isArray(options) || !options.length) {
+    return null;
+  }
+  const parsed = parseCancellationSelection(text);
+  if (parsed.requestId) {
+    const byId = options.find(
+      (option) => normalizeTrimmedText(option.requestId).toLowerCase() === parsed.requestId.toLowerCase()
+    );
+    if (byId) {
+      return byId;
+    }
+  }
+  if (Number.isFinite(parsed.index) && parsed.index >= 1 && parsed.index <= options.length) {
+    return options[parsed.index - 1];
+  }
+
+  const scored = options
+    .map((option) => {
+      const signature = `${option.pickupName} ${option.dropoffName} ${formatDateTime(option.pickupAt)}`;
+      return {
+        option,
+        score: computeStopMatchScore(text, signature)
+      };
+    })
+    .sort((left, right) => right.score - left.score);
+  if (scored[0]?.score >= 0.85) {
+    return scored[0].option;
+  }
+  return null;
 }
 
 function resolveTimeZoneOffsetMs(date, timeZone) {
@@ -1387,6 +1595,7 @@ export async function handleLineChatBookingMessage({
   displayName = null,
   defaultCountryCode = DEFAULT_COUNTRY_CODE,
   startIfNeeded = false,
+  startCancelIfNeeded = false,
   context = {},
   llmConfig = resolveLineBookingConfig(),
   passenger = null,
@@ -1406,12 +1615,46 @@ export async function handleLineChatBookingMessage({
   const timeZone = llmConfig?.timeZone || DEFAULT_TIME_ZONE;
   let currentSession = sessionState ? normalizeSession(sessionState, now) : null;
 
-  if (!currentSession && !startIfNeeded) {
+  if (!currentSession && !startIfNeeded && !startCancelIfNeeded) {
     return {
       handled: false,
       clearSession: false,
       nextSession: null,
       messageText: ""
+    };
+  }
+
+  if (!currentSession && startCancelIfNeeded) {
+    const cancellableRequests = listCancellableRideRequests({
+      repository,
+      requesterId
+    });
+    const cancellationOptions = mapCancellationOptions({
+      repository,
+      requests: cancellableRequests
+    });
+    const nextSession = touchSession(
+      {
+        ...createInitialSession(now),
+        phase: "ASK_CANCEL_TARGET",
+        cancellation: {
+          options: cancellationOptions,
+          selectedRequestId: null
+        }
+      },
+      now
+    );
+    applySessionMutation({
+      repository,
+      lineUserId,
+      session: nextSession,
+      clearSession: false
+    });
+    return {
+      handled: true,
+      clearSession: false,
+      nextSession,
+      messageText: buildCancellationSelectionPrompt(cancellationOptions, { timeZone })
     };
   }
 
@@ -1425,7 +1668,7 @@ export async function handleLineChatBookingMessage({
     return started;
   }
 
-  if (isLineBookingCancelText(messageText)) {
+  if (isLineBookingCancelText(messageText) && !startCancelIfNeeded) {
     applySessionMutation({
       repository,
       lineUserId,
@@ -1437,6 +1680,40 @@ export async function handleLineChatBookingMessage({
       clearSession: true,
       nextSession: null,
       messageText: "予約会話を終了しました。もう一度予約する場合は「予約」と送ってください。"
+    };
+  }
+
+  if (startCancelIfNeeded) {
+    const cancellableRequests = listCancellableRideRequests({
+      repository,
+      requesterId
+    });
+    const cancellationOptions = mapCancellationOptions({
+      repository,
+      requests: cancellableRequests
+    });
+    currentSession = touchSession(
+      {
+        ...createInitialSession(now),
+        phase: "ASK_CANCEL_TARGET",
+        cancellation: {
+          options: cancellationOptions,
+          selectedRequestId: null
+        }
+      },
+      now
+    );
+    applySessionMutation({
+      repository,
+      lineUserId,
+      session: currentSession,
+      clearSession: false
+    });
+    return {
+      handled: true,
+      clearSession: false,
+      nextSession: currentSession,
+      messageText: buildCancellationSelectionPrompt(cancellationOptions, { timeZone })
     };
   }
 
@@ -1504,7 +1781,9 @@ export async function handleLineChatBookingMessage({
   if (
     !registration.isRegistered &&
     session.phase !== "REGISTER_PHONE" &&
-    session.phase !== "REGISTER_NAME"
+    session.phase !== "REGISTER_NAME" &&
+    session.phase !== "ASK_CANCEL_TARGET" &&
+    session.phase !== "CONFIRM_CANCEL"
   ) {
     const initialized = initializeSessionForRegistration(session, registrationStatus);
     return {
@@ -1560,6 +1839,131 @@ export async function handleLineChatBookingMessage({
   }
 
   switch (session.phase) {
+    case "ASK_CANCEL_TARGET": {
+      const refreshedOptions = mapCancellationOptions({
+        repository,
+        requests: listCancellableRideRequests({
+          repository,
+          requesterId
+        })
+      });
+      session.cancellation.options = refreshedOptions;
+      session.cancellation.selectedRequestId = null;
+      if (!refreshedOptions.length) {
+        applySessionMutation({
+          repository,
+          lineUserId,
+          session: null,
+          clearSession: true
+        });
+        return {
+          handled: true,
+          clearSession: true,
+          nextSession: null,
+          messageText: "キャンセル可能な予約が見つかりませんでした。"
+        };
+      }
+      const selected = resolveCancellationSelection({
+        text: messageText,
+        options: refreshedOptions
+      });
+      if (!selected) {
+        return {
+          handled: true,
+          clearSession: false,
+          nextSession: session,
+          messageText: buildCancellationSelectionPrompt(refreshedOptions, { timeZone })
+        };
+      }
+      session.phase = "CONFIRM_CANCEL";
+      session.cancellation.selectedRequestId = selected.requestId;
+      return {
+        handled: true,
+        clearSession: false,
+        nextSession: session,
+        messageText: buildCancellationConfirmPrompt(selected, { timeZone })
+      };
+    }
+
+    case "CONFIRM_CANCEL": {
+      const selectedRequestId = normalizeTrimmedText(session.cancellation?.selectedRequestId);
+      const options = Array.isArray(session.cancellation?.options) ? session.cancellation.options : [];
+      const selectedOption = options.find((option) => option.requestId === selectedRequestId) || null;
+
+      if (understanding.confirmation === "YES") {
+        if (!selectedOption) {
+          session.phase = "ASK_CANCEL_TARGET";
+          return {
+            handled: true,
+            clearSession: false,
+            nextSession: session,
+            messageText: buildCancellationSelectionPrompt(options, { timeZone })
+          };
+        }
+        try {
+          await cancelRideRequest({
+            repository,
+            requestId: selectedOption.requestId,
+            reason: "PASSENGER_CANCELLED",
+            context
+          });
+        } catch {
+          session.phase = "ASK_CANCEL_TARGET";
+          return {
+            handled: true,
+            clearSession: false,
+            nextSession: session,
+            messageText: "予約を取り消せませんでした。別の予約を選ぶか、時間をおいて再度お試しください。"
+          };
+        }
+
+        applySessionMutation({
+          repository,
+          lineUserId,
+          session: null,
+          clearSession: true
+        });
+        return {
+          handled: true,
+          clearSession: true,
+          nextSession: null,
+          messageText: `${selectedOption.pickupName}から${selectedOption.dropoffName}までの予約を取り消しました。`
+        };
+      }
+
+      if (understanding.confirmation === "NO") {
+        session.phase = "ASK_CANCEL_TARGET";
+        session.cancellation.selectedRequestId = null;
+        return {
+          handled: true,
+          clearSession: false,
+          nextSession: session,
+          messageText: buildCancellationSelectionPrompt(options, { timeZone })
+        };
+      }
+
+      const reselection = resolveCancellationSelection({
+        text: messageText,
+        options
+      });
+      if (reselection) {
+        session.cancellation.selectedRequestId = reselection.requestId;
+        return {
+          handled: true,
+          clearSession: false,
+          nextSession: session,
+          messageText: buildCancellationConfirmPrompt(reselection, { timeZone })
+        };
+      }
+
+      return {
+        handled: true,
+        clearSession: false,
+        nextSession: session,
+        messageText: "予約を取り消しますか？「はい」または「いいえ」でお答えください。"
+      };
+    }
+
     case "REGISTER_PHONE": {
       const normalizedPhoneE164 = parsePhoneNumberCandidate(messageText, defaultCountryCode);
       if (!normalizedPhoneE164) {

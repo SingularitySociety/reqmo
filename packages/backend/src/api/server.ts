@@ -1096,7 +1096,7 @@ async function handleLineWebhookEvent({
     });
     bookingSession = null;
   }
-  if (bookingSession || command.type === "BOOK") {
+  if (bookingSession || command.type === "BOOK" || command.type === "CANCEL_RESERVATION") {
     const bookingResult = await handleLineChatBookingMessage({
       repository,
       serviceProfileId,
@@ -1109,6 +1109,7 @@ async function handleLineWebhookEvent({
       displayName: identity.displayName ?? user.name ?? null,
       defaultCountryCode: resolveDefaultCountryCode(repository, serviceProfileId),
       startIfNeeded: command.type === "BOOK",
+      startCancelIfNeeded: command.type === "CANCEL_RESERVATION",
       context: requestContext,
       llmConfig: resolveLineBookingConfig(),
       passenger: buildLineMiniAppPassenger({

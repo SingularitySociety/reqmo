@@ -1083,6 +1083,134 @@ test("line webhook can decompose pickup/dropoff/time/party from one message", as
   );
 });
 
+test("line webhook can cancel reservation via chat conversation", async () => {
+  await withTemporaryEnv(
+    {
+      LINE_CHANNEL_SECRET: "line_secret_test",
+      LINE_CHANNEL_ACCESS_TOKEN: "line_access_token_test",
+      LINE_MINIAPP_URL: "https://example.com/line-reservation/",
+      LINE_BOOKING_LLM_ENABLED: "false"
+    },
+    async () => {
+      const repository = new InMemoryRepository({
+        stops: [
+          { id: "stop_akita", name: "秋田", lat: 33.0011, lng: 132.9288 },
+          { id: "stop_adachi", name: "足立", lat: 32.9969, lng: 132.9348 }
+        ],
+        users: [{ id: "line_cancel_user_1", name: "キャンセル利用者" }],
+        phoneIdentities: [
+          {
+            id: "phone_cancel_1",
+            userId: "line_cancel_user_1",
+            normalizedPhoneE164: "+818012345673",
+            source: "SEED",
+            verified: true,
+            lastSeenAt: "2026-02-21T12:00:00.000Z",
+            blockStatus: "ACTIVE"
+          }
+        ],
+        lineIdentities: [
+          {
+            id: "line_cancel_1",
+            lineUserId: "U_chat_cancel_1",
+            userId: "line_cancel_user_1",
+            source: "SEED",
+            verified: true,
+            displayName: "キャンセル利用者",
+            lastSeenAt: "2026-02-21T12:00:00.000Z",
+            blockStatus: "ACTIVE"
+          }
+        ],
+        rideRequests: [
+          {
+            id: "req_cancel_target_1",
+            requesterId: "line_cancel_user_1",
+            status: "ASSIGNED",
+            pickup: { mode: "FIXED_STOP", stopId: "stop_akita" },
+            dropoff: { mode: "FIXED_STOP", stopId: "stop_adachi" },
+            partySize: 2,
+            assignment: {
+              plannedPickupAt: "2026-02-26T06:00:00.000Z",
+              plannedDropoffAt: "2026-02-26T06:20:00.000Z"
+            }
+          }
+        ],
+        serviceProfiles: [createDefaultServiceProfile()]
+      });
+
+      const { server } = createReqmoServer({ repository });
+      const replyMessages = [];
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = async (url, init) => {
+        if (String(url) === "https://api.line.me/v2/bot/message/reply") {
+          replyMessages.push(JSON.parse(init.body));
+        }
+        return new Response("", { status: 200 });
+      };
+
+      async function sendChatText(text, replyToken) {
+        const webhookPayload = {
+          destination: "Uxxxxxxxxx",
+          events: [
+            {
+              type: "message",
+              mode: "active",
+              timestamp: Date.now(),
+              replyToken,
+              source: {
+                type: "user",
+                userId: "U_chat_cancel_1"
+              },
+              message: {
+                type: "text",
+                id: String(Date.now()),
+                text
+              }
+            }
+          ]
+        };
+        const rawBody = JSON.stringify(webhookPayload);
+        const signature = createHmac("sha256", "line_secret_test")
+          .update(rawBody)
+          .digest("base64");
+        const before = replyMessages.length;
+
+        const response = await invokeServer({
+          server,
+          method: "POST",
+          url: "/api/line/webhook",
+          rawBody,
+          headers: {
+            "x-line-signature": signature
+          }
+        });
+        assert.equal(response.statusCode, 200);
+        assert.equal(replyMessages.length, before + 1);
+        return replyMessages[before].messages[0].text;
+      }
+
+      try {
+        const step1 = await sendChatText("取り消し", "reply_token_cancel_1");
+        assert.equal(step1.includes("どの予約をキャンセルしますか"), true);
+        assert.equal(step1.includes("1."), true);
+
+        const step2 = await sendChatText("1番", "reply_token_cancel_2");
+        assert.equal(step2.includes("予約を取り消しします"), true);
+        assert.equal(step2.includes("よろしいですか"), true);
+
+        const step3 = await sendChatText("はい", "reply_token_cancel_3");
+        assert.equal(step3.includes("予約を取り消しました"), true);
+
+        const cancelled = repository.getRideRequest("req_cancel_target_1");
+        assert.equal(cancelled?.status, "CANCELLED");
+        assert.equal(repository.getLineChatSession("U_chat_cancel_1"), null);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    }
+  );
+});
+
 test("line webhook asks phone and name before booking when user is not registered", async () => {
   await withTemporaryEnv(
     {

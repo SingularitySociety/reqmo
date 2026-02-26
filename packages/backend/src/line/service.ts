@@ -1213,6 +1213,10 @@ export function parseLineMessageCommand(text) {
     return { type: "BOOK" };
   }
 
+  if (/^(予約)?(取り消し|取消|キャンセル)(する|したい)?$/i.test(normalized) || /^(予約キャンセル|予約取消)$/i.test(normalized)) {
+    return { type: "CANCEL_RESERVATION" };
+  }
+
   if (/^(登録|初回登録|利用者登録|プロフィール登録)$/i.test(normalized)) {
     return { type: "REGISTER" };
   }
@@ -1292,6 +1296,7 @@ export function buildLineHelpMessage({ miniAppUrl = "", busMapUrl = "" }) {
   const lines = [
     "使い方:",
     "・「予約」または「予約する」: チャットで新規予約を開始",
+    "・「取り消し」または「キャンセル」: チャットで予約取消を開始",
     "・「予約確認」: 直近の予約を表示",
     "・「バス位置」: 現在の車両位置マップを表示",
     "・「登録」: 初回登録フォームを表示",
