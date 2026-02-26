@@ -781,9 +781,8 @@ function buildLineRegistrationRichMenu({ miniAppUrl }) {
 }
 
 function buildLineReservationRichMenu({ miniAppUrl, busMapUrl = "" }) {
-  const chatReserveText = "予約";
+  const chatReserveText = "チャット予約";
   const reserveUrl = appendMiniAppModeQuery(miniAppUrl, "reserve");
-  const registerUrl = appendMiniAppModeQuery(miniAppUrl, "register");
   const normalizedBusMapUrl = normalizeHttpUrl(busMapUrl);
   return {
     menuPayload: {
@@ -799,7 +798,7 @@ function buildLineReservationRichMenu({ miniAppUrl, busMapUrl = "" }) {
           bounds: {
             x: 0,
             y: 0,
-            width: 500,
+            width: 625,
             height: RICH_MENU_HEIGHT
           },
           action: {
@@ -809,9 +808,9 @@ function buildLineReservationRichMenu({ miniAppUrl, busMapUrl = "" }) {
         },
         {
           bounds: {
-            x: 500,
+            x: 625,
             y: 0,
-            width: 500,
+            width: 625,
             height: RICH_MENU_HEIGHT
           },
           action: {
@@ -821,9 +820,9 @@ function buildLineReservationRichMenu({ miniAppUrl, busMapUrl = "" }) {
         },
         {
           bounds: {
-            x: 1000,
+            x: 1250,
             y: 0,
-            width: 500,
+            width: 625,
             height: RICH_MENU_HEIGHT
           },
           action: {
@@ -833,21 +832,9 @@ function buildLineReservationRichMenu({ miniAppUrl, busMapUrl = "" }) {
         },
         {
           bounds: {
-            x: 1500,
+            x: 1875,
             y: 0,
-            width: 500,
-            height: RICH_MENU_HEIGHT
-          },
-          action: {
-            type: "uri",
-            uri: registerUrl
-          }
-        },
-        {
-          bounds: {
-            x: 2000,
-            y: 0,
-            width: 500,
+            width: 625,
             height: RICH_MENU_HEIGHT
           },
           action: normalizedBusMapUrl
@@ -867,15 +854,13 @@ function buildLineReservationRichMenu({ miniAppUrl, busMapUrl = "" }) {
         { ratio: 1, color: "#0f766e" },
         { ratio: 1, color: "#1d4ed8" },
         { ratio: 1, color: "#b45309" },
-        { ratio: 1, color: "#334155" },
         { ratio: 1, color: "#0f172a" }
       ],
       icons: [
         { segmentIndex: 0, icon: "CHAT" },
         { segmentIndex: 1, icon: "MINIAPP" },
         { segmentIndex: 2, icon: "STATUS" },
-        { segmentIndex: 3, icon: "PROFILE" },
-        { segmentIndex: 4, icon: "BUS" }
+        { segmentIndex: 3, icon: "BUS" }
       ]
     })
   };
@@ -1192,7 +1177,7 @@ export function buildReservationSummaryText({
 
   if (!Array.isArray(requests) || requests.length === 0) {
     lines.push("現在、確認できる予約はありません。");
-    lines.push("新規予約はミニアプリからお願いします。");
+    lines.push("新規予約は「チャット予約」または「フォーム予約」でお願いします。");
     return lines.join("\n");
   }
 
@@ -1230,7 +1215,7 @@ export function parseLineMessageCommand(text) {
     return { type: "HELP" };
   }
 
-  if (/^(ミニアプリ|miniapp)$/i.test(normalized)) {
+  if (/^(フォーム予約|予約フォーム|ミニアプリ|miniapp)$/i.test(normalized)) {
     return { type: "OPEN_MINIAPP" };
   }
 
@@ -1295,16 +1280,16 @@ export function linkLineUserByPhone({
 export function buildLineHelpMessage({ miniAppUrl = "", busMapUrl = "" }) {
   const lines = [
     "使い方:",
-    "・「予約」または「予約する」: チャットで新規予約を開始",
+    "・「予約」または「チャット予約」: チャットで新規予約を開始",
+    "・「フォーム予約」: 予約フォームを開く",
     "・「取り消し」または「キャンセル」: チャットで予約取消を開始",
     "・「予約確認」: 直近の予約を表示",
     "・「バス位置」: 現在の車両位置マップを表示",
     "・「登録」: 初回登録フォームを表示",
-    "・「ミニアプリ」: ミニアプリ予約画面を開く",
     "・「連携 08012345678」: 電話番号で利用者連携"
   ];
   if (miniAppUrl) {
-    lines.push(`・ミニアプリ: ${miniAppUrl}`);
+    lines.push(`・フォーム予約: ${miniAppUrl}`);
   }
   if (busMapUrl) {
     lines.push(`・バス位置マップ: ${busMapUrl}`);
@@ -1319,8 +1304,23 @@ export function buildLineWelcomeMessages({ miniAppUrl = "", busMapUrl = "" }) {
       type: "action",
       action: {
         type: "message",
-        label: "予約する",
-        text: "予約"
+        label: "チャット予約",
+        text: "チャット予約"
+      }
+    },
+    {
+      type: "action",
+      action: {
+        ...(miniAppUrl
+          ? {
+              type: "uri",
+              uri: miniAppUrl
+            }
+          : {
+              type: "message",
+              text: "フォーム予約"
+            }),
+        label: "フォーム予約"
       }
     },
     {
@@ -1330,32 +1330,27 @@ export function buildLineWelcomeMessages({ miniAppUrl = "", busMapUrl = "" }) {
         label: "予約確認",
         text: "予約確認"
       }
+    },
+    {
+      type: "action",
+      action: {
+        ...(busMapUrl
+          ? {
+              type: "uri",
+              uri: busMapUrl
+            }
+          : {
+              type: "message",
+              text: "バス位置"
+            }),
+        label: "バス位置"
+      }
     }
   ];
-  if (miniAppUrl) {
-    quickReplyItems.push({
-      type: "action",
-      action: {
-        type: "uri",
-        label: "ミニアプリ",
-        uri: miniAppUrl
-      }
-    });
-  }
-  if (busMapUrl) {
-    quickReplyItems.push({
-      type: "action",
-      action: {
-        type: "uri",
-        label: "バス位置",
-        uri: busMapUrl
-      }
-    });
-  }
   return [
     {
       type: "text",
-      text: "友だち追加ありがとうございます。チャット予約・予約確認をご利用いただけます。",
+      text: "友だち追加ありがとうございます。チャット予約・フォーム予約・予約確認をご利用いただけます。",
       quickReply: {
         items: quickReplyItems
       }

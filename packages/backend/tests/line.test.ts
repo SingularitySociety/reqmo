@@ -560,7 +560,7 @@ test("line webhook verifies signature and sends reply", async () => {
   );
 });
 
-test("line webhook sends reservation miniapp URL when user sends ミニアプリ", async () => {
+test("line webhook sends reservation form URL when user sends フォーム予約", async () => {
   await withTemporaryEnv(
     {
       LINE_CHANNEL_SECRET: "line_secret_test",
@@ -609,14 +609,14 @@ test("line webhook sends reservation miniapp URL when user sends ミニアプリ
               type: "user",
               userId: "U_book_chat_1"
             },
-            message: {
-              type: "text",
-              id: "100002",
-              text: "ミニアプリ"
+              message: {
+                type: "text",
+                id: "100002",
+                text: "フォーム予約"
+              }
             }
-          }
-        ]
-      };
+          ]
+        };
       const rawBody = JSON.stringify(webhookPayload);
       const signature = createHmac("sha256", "line_secret_test")
         .update(rawBody)

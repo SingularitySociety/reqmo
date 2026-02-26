@@ -738,54 +738,54 @@ function resolveDefaultCountryCode(repository, serviceProfileId) {
 }
 
 function buildLineQuickReplyForReservation({ miniAppUrl, busMapUrl = "" }) {
-  const items = [];
-  if (miniAppUrl) {
-    items.push({
-      type: "action",
-      action: {
-        type: "uri",
-        label: "予約する",
-        uri: miniAppUrl
-      }
-    });
-  }
-  items.push({
-    type: "action",
-    action: {
-      type: "message",
-      label: "予約確認",
-      text: "予約確認"
-    }
-  });
-  if (miniAppUrl) {
-    items.push({
-      type: "action",
-      action: {
-        type: "uri",
-        label: "ミニアプリ",
-        uri: miniAppUrl
-      }
-    });
-  }
-  if (busMapUrl) {
-    items.push({
-      type: "action",
-      action: {
-        type: "uri",
-        label: "バス位置",
-        uri: busMapUrl
-      }
-    });
-  } else {
-    items.push({
+  const items = [
+    {
       type: "action",
       action: {
         type: "message",
-        label: "バス位置",
-        text: "バス位置"
+        label: "チャット予約",
+        text: "チャット予約"
       }
-    });
-  }
+    },
+    {
+      type: "action",
+      action: {
+        ...(miniAppUrl
+          ? {
+              type: "uri",
+              uri: miniAppUrl
+            }
+          : {
+              type: "message",
+              text: "フォーム予約"
+            }),
+        label: "フォーム予約"
+      }
+    },
+    {
+      type: "action",
+      action: {
+        type: "message",
+        label: "予約確認",
+        text: "予約確認"
+      }
+    },
+    {
+      type: "action",
+      action: {
+        ...(busMapUrl
+          ? {
+              type: "uri",
+              uri: busMapUrl
+            }
+          : {
+              type: "message",
+              text: "バス位置"
+            }),
+        label: "バス位置"
+      }
+    }
+  ];
   return {
     items
   };
@@ -1185,7 +1185,7 @@ async function handleLineWebhookEvent({
           text:
             reserveMiniAppUrl
               ? `予約フォームはこちらです。\n${reserveMiniAppUrl}`
-              : "ミニアプリURLが未設定です。",
+              : "フォーム予約URLが未設定です。",
           quickReply: buildLineQuickReplyForReservation({
             miniAppUrl: reserveMiniAppUrl || miniAppUrl,
             busMapUrl
