@@ -1341,6 +1341,10 @@ export function createReqmoServer({
         return null;
       }
 
+      if (typeof repository.refreshConfiguration === "function") {
+        await repository.refreshConfiguration();
+      }
+
       const parsedUrl = new URL(req.url ?? "/", "http://localhost");
       const pathname = parsedUrl.pathname;
       const activatedVersion = activatePendingServiceProfileIfDue({ repository });

@@ -22,6 +22,19 @@ const COLLECTIONS = [
   "systemConfigs"
 ];
 
+const REFRESHABLE_CONFIGURATION_COLLECTIONS = [
+  "serviceProfiles",
+  "farePolicies",
+  "telephonyConfigs",
+  "tuningScenarioSuites",
+  "tuningRuns",
+  "tuningTrials",
+  "tuningRecommendations",
+  "serviceProfileVersions",
+  "auditLogs",
+  "systemConfigs"
+];
+
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -137,6 +150,25 @@ export class FirestoreRepository extends InMemoryRepository {
 
   collection(name) {
     return this.firestore.collection("tenants").doc(this.tenantId).collection(name);
+  }
+
+  async refreshConfiguration() {
+    await this.flush();
+    const snapshots = await Promise.all(
+      REFRESHABLE_CONFIGURATION_COLLECTIONS.map((name) => this.collection(name).get())
+    );
+
+    snapshots.forEach((snapshot, index) => {
+      const collectionName = REFRESHABLE_CONFIGURATION_COLLECTIONS[index];
+      const target = this[collectionName];
+      if (!(target instanceof Map)) {
+        return;
+      }
+      target.clear();
+      snapshot.docs.forEach((doc) => {
+        target.set(doc.id, { id: doc.id, ...doc.data() });
+      });
+    });
   }
 
   enqueue(task) {

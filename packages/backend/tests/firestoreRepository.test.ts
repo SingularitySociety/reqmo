@@ -147,3 +147,40 @@ test("FirestoreRepository persists operation settings and vehicle display fields
     { lat: 33.02, lng: 132.92 }
   );
 });
+
+test("FirestoreRepository refreshes service profiles changed by another Functions instance", async () => {
+  const firestore = new FakeFirestore({
+    "tenants/tenant_refresh/serviceProfiles/shimanto_weekday_v1": {
+      id: "shimanto_weekday_v1",
+      dispatchPolicy: {
+        weights: { detour: 0.25 }
+      }
+    }
+  });
+  const repository = await FirestoreRepository.create({
+    firestore,
+    tenantId: "tenant_refresh"
+  });
+
+  await firestore
+    .collection("tenants")
+    .doc("tenant_refresh")
+    .collection("serviceProfiles")
+    .doc("shimanto_weekday_v1")
+    .set({
+      id: "shimanto_weekday_v1",
+      dispatchPolicy: {
+        weights: { detour: 1.65 }
+      }
+    });
+
+  assert.equal(
+    repository.getServiceProfile("shimanto_weekday_v1")?.dispatchPolicy?.weights?.detour,
+    0.25
+  );
+  await repository.refreshConfiguration();
+  assert.equal(
+    repository.getServiceProfile("shimanto_weekday_v1")?.dispatchPolicy?.weights?.detour,
+    1.65
+  );
+});
