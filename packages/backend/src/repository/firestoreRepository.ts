@@ -12,7 +12,14 @@ const COLLECTIONS = [
   "callEvents",
   "serviceProfiles",
   "farePolicies",
-  "telephonyConfigs"
+  "telephonyConfigs",
+  "tuningScenarioSuites",
+  "tuningRuns",
+  "tuningTrials",
+  "tuningRecommendations",
+  "serviceProfileVersions",
+  "auditLogs",
+  "systemConfigs"
 ];
 
 function clone(value) {
@@ -56,6 +63,13 @@ export class FirestoreRepository extends InMemoryRepository {
       serviceProfiles,
       farePolicies,
       telephonyConfigs,
+      tuningScenarioSuites,
+      tuningRuns,
+      tuningTrials,
+      tuningRecommendations,
+      serviceProfileVersions,
+      auditLogs,
+      systemConfigs,
       counterSnapshot
     ] = await Promise.all([
       tenantRef.collection("users").get(),
@@ -70,6 +84,13 @@ export class FirestoreRepository extends InMemoryRepository {
       tenantRef.collection("serviceProfiles").get(),
       tenantRef.collection("farePolicies").get(),
       tenantRef.collection("telephonyConfigs").get(),
+      tenantRef.collection("tuningScenarioSuites").get(),
+      tenantRef.collection("tuningRuns").get(),
+      tenantRef.collection("tuningTrials").get(),
+      tenantRef.collection("tuningRecommendations").get(),
+      tenantRef.collection("serviceProfileVersions").get(),
+      tenantRef.collection("auditLogs").get(),
+      tenantRef.collection("systemConfigs").get(),
       tenantRef.collection("__meta").doc("counters").get()
     ]);
 
@@ -94,7 +115,14 @@ export class FirestoreRepository extends InMemoryRepository {
       callEvents: callEvents.docs.map((doc) => ({ id: doc.id, ...doc.data() })),
       serviceProfiles: serviceProfiles.docs.map((doc) => ({ id: doc.id, ...doc.data() })),
       farePolicies: farePolicies.docs.map((doc) => ({ id: doc.id, ...doc.data() })),
-      telephonyConfigs: telephonyConfigs.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
+      telephonyConfigs: telephonyConfigs.docs.map((doc) => ({ id: doc.id, ...doc.data() })),
+      tuningScenarioSuites: tuningScenarioSuites.docs.map((doc) => ({ id: doc.id, ...doc.data() })),
+      tuningRuns: tuningRuns.docs.map((doc) => ({ id: doc.id, ...doc.data() })),
+      tuningTrials: tuningTrials.docs.map((doc) => ({ id: doc.id, ...doc.data() })),
+      tuningRecommendations: tuningRecommendations.docs.map((doc) => ({ id: doc.id, ...doc.data() })),
+      serviceProfileVersions: serviceProfileVersions.docs.map((doc) => ({ id: doc.id, ...doc.data() })),
+      auditLogs: auditLogs.docs.map((doc) => ({ id: doc.id, ...doc.data() })),
+      systemConfigs: systemConfigs.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
     };
 
     const counter = Number(counterSnapshot.data()?.counter ?? 0);
@@ -274,6 +302,48 @@ export class FirestoreRepository extends InMemoryRepository {
   saveCallEvent(callEvent) {
     const next = super.saveCallEvent(callEvent);
     this.writeDocument("callEvents", next.id, next);
+    return next;
+  }
+
+  setTuningScenarioSuite(suite) {
+    const next = super.setTuningScenarioSuite(suite);
+    this.writeDocument("tuningScenarioSuites", next.id, next);
+    return next;
+  }
+
+  setTuningRun(run) {
+    const next = super.setTuningRun(run);
+    this.writeDocument("tuningRuns", next.id, next);
+    return next;
+  }
+
+  setTuningTrial(trial) {
+    const next = super.setTuningTrial(trial);
+    this.writeDocument("tuningTrials", next.id, next);
+    return next;
+  }
+
+  setTuningRecommendation(recommendation) {
+    const next = super.setTuningRecommendation(recommendation);
+    this.writeDocument("tuningRecommendations", next.id, next);
+    return next;
+  }
+
+  setServiceProfileVersion(version) {
+    const next = super.setServiceProfileVersion(version);
+    this.writeDocument("serviceProfileVersions", next.id, next);
+    return next;
+  }
+
+  saveAuditLog(log) {
+    const next = super.saveAuditLog(log);
+    this.writeDocument("auditLogs", next.id, next);
+    return next;
+  }
+
+  setSystemConfig(config) {
+    const next = super.setSystemConfig(config);
+    this.writeDocument("systemConfigs", next.id, next);
     return next;
   }
 

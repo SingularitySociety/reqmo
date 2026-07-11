@@ -8,6 +8,7 @@ Reqmo is an open-source, config-driven on-demand dispatch platform.
 - `packages/shared`: shared defaults and constants
 - `packages/web`: dispatcher/admin web UI (Vue + Vuetify)
 - `packages/web/simulation`: bus movement simulator UI (GPS + passenger event sender)
+- `packages/web/tuning`: isolated AI-assisted dispatch parameter tuning UI
 - `mobile/reqmo_mobile`: Flutter mobile baseline
 
 ## Backend API (local)
@@ -24,6 +25,11 @@ API examples:
 - `POST /api/ride-requests`
 - `POST /api/phone-rides`
 - `POST /api/telephony/ingest`
+- `POST /api/tuning/runs`
+
+## AI-assisted dispatch tuning
+
+Open `/tuning/` to save reproducible TRAIN/HOLDOUT booking scenarios, search safe parameter ranges, inspect before/after metrics, approve a draft profile, schedule activation, or roll back. Experiments use isolated in-memory state and never mutate live rides or vehicles. See `documents/ai-dispatch-tuning.md` for the workflow and API.
 
 ## Dispatch Weight Policy
 

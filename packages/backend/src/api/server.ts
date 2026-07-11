@@ -27,6 +27,18 @@ import {
 import { createRoutingContextFromEnv } from "../routing/service.ts";
 import { reverseGeocodePoint } from "../location/reverseGeocode.ts";
 import { getHighsRuntimeDiagnostics } from "../dispatch/highs.ts";
+import { loadLocalEnvFiles } from "../config/loadEnv.ts";
+import { createParameterSpace } from "../tuning/parameterSpace.ts";
+import { interpretTuningFeedback } from "../tuning/feedbackInterpreter.ts";
+import {
+  activatePendingServiceProfileIfDue,
+  approveTuningRecommendation,
+  createTuningScenarioSuite,
+  ensureActiveServiceProfileVersion,
+  executeTuningRun,
+  previewTuningScenarioSuite,
+  rollbackServiceProfile
+} from "../tuning/service.ts";
 import { normalizePhoneNumber } from "../telephony/phoneNumber.ts";
 import {
   buildLineHelpMessage,
@@ -290,6 +302,15 @@ function resolveActiveServiceProfileId({
 }) {
   const profiles = repository.listServiceProfiles();
   const profileIds = new Set(profiles.map((profile) => profile.id));
+
+  const persistedId = normalizeOptionalId(
+    typeof repository.getSystemConfig === "function"
+      ? repository.getSystemConfig("dispatch")?.activeServiceProfileId
+      : null
+  );
+  if (persistedId && profileIds.has(persistedId)) {
+    return persistedId;
+  }
 
   const requestedId = normalizeOptionalId(requestedServiceProfileId);
   if (requestedId && profileIds.has(requestedId)) {
@@ -1292,10 +1313,20 @@ export function createReqmoServer({
   routing = createRoutingContextFromEnv()
 } = {}) {
   const seeded = seedConfiguredData(repository, seedOptions);
-  const activeServiceProfileId = resolveActiveServiceProfileId({
+  let activeServiceProfileId = resolveActiveServiceProfileId({
     repository,
     requestedServiceProfileId: serviceProfileId,
     seededProfileId: seeded.profileId
+  });
+  if (typeof repository.getSystemConfig === "function" && !repository.getSystemConfig("dispatch")) {
+    repository.setSystemConfig({
+      id: "dispatch",
+      activeServiceProfileId
+    });
+  }
+  ensureActiveServiceProfileVersion({
+    repository,
+    profileId: activeServiceProfileId
   });
   const requestContext = {
     routing
@@ -1312,6 +1343,15 @@ export function createReqmoServer({
 
       const parsedUrl = new URL(req.url ?? "/", "http://localhost");
       const pathname = parsedUrl.pathname;
+      const activatedVersion = activatePendingServiceProfileIfDue({ repository });
+      if (activatedVersion?.profileId) {
+        activeServiceProfileId = activatedVersion.profileId;
+      } else {
+        const persistedActiveId = repository.getSystemConfig("dispatch")?.activeServiceProfileId;
+        if (persistedActiveId && repository.getServiceProfile(persistedActiveId)) {
+          activeServiceProfileId = persistedActiveId;
+        }
+      }
 
       if (req.method === "GET" && req.url === "/api/health") {
         const activeProfile = repository.getServiceProfile(activeServiceProfileId);
@@ -1863,6 +1903,179 @@ export function createReqmoServer({
         });
       }
 
+      if (req.method === "GET" && pathname === "/api/tuning/parameter-space") {
+        const profileId = parsedUrl.searchParams.get("profileId") ?? activeServiceProfileId;
+        const profile = repository.getServiceProfile(profileId);
+        if (!profile) {
+          throw new Error("Service profile not found");
+        }
+        return jsonResponse(res, 200, {
+          profileId: profile.id,
+          data: createParameterSpace(profile)
+        });
+      }
+
+      if (req.method === "GET" && pathname === "/api/tuning/scenario-suites") {
+        return jsonResponse(res, 200, {
+          data: repository.listTuningScenarioSuites()
+        });
+      }
+
+      const tuningSuitePathMatch = pathname.match(/^\/api\/tuning\/scenario-suites\/([^/]+)$/);
+      if (req.method === "GET" && tuningSuitePathMatch) {
+        const suite = repository.getTuningScenarioSuite(
+          decodeURIComponent(tuningSuitePathMatch[1])
+        );
+        if (!suite) {
+          return jsonResponse(res, 404, { error: "Tuning scenario suite not found" });
+        }
+        return jsonResponse(res, 200, suite);
+      }
+
+      if (req.method === "POST" && pathname === "/api/tuning/scenario-suites") {
+        const body = await parseJsonBody(req);
+        const suite = createTuningScenarioSuite({ repository, input: body });
+        await flushRepository(repository);
+        return jsonResponse(res, 200, {
+          status: "SAVED",
+          suite
+        });
+      }
+
+      if (req.method === "POST" && pathname === "/api/tuning/preview") {
+        const body = await parseJsonBody(req);
+        const preview = await previewTuningScenarioSuite({
+          repository,
+          input: body,
+          baseProfileId: body.baseProfileId ?? activeServiceProfileId,
+          routing
+        });
+        return jsonResponse(res, 200, {
+          status: "PREVIEWED",
+          ...preview
+        });
+      }
+
+      if (req.method === "GET" && pathname === "/api/tuning/runs") {
+        return jsonResponse(res, 200, {
+          data: repository.listTuningRuns()
+        });
+      }
+
+      const tuningRunPathMatch = pathname.match(/^\/api\/tuning\/runs\/([^/]+)$/);
+      if (req.method === "GET" && tuningRunPathMatch) {
+        const runId = decodeURIComponent(tuningRunPathMatch[1]);
+        const run = repository.getTuningRun(runId);
+        if (!run) {
+          return jsonResponse(res, 404, { error: "Tuning run not found" });
+        }
+        return jsonResponse(res, 200, {
+          run,
+          trials: repository.listTuningTrials(runId),
+          recommendation: run.recommendationId
+            ? repository.getTuningRecommendation(run.recommendationId)
+            : null
+        });
+      }
+
+      if (req.method === "POST" && pathname === "/api/tuning/runs") {
+        const body = await parseJsonBody(req);
+        const result = await executeTuningRun({
+          repository,
+          scenarioSuiteId: body.scenarioSuiteId,
+          baseProfileId: body.baseProfileId ?? activeServiceProfileId,
+          parameterSpace: body.parameterSpace ?? null,
+          maxTrials: body.maxTrials ?? 24,
+          seed: body.seed ?? null,
+          routing,
+          actor: body.actor ?? "tuning-web"
+        });
+        await flushRepository(repository);
+        return jsonResponse(res, 200, {
+          status: "COMPLETED",
+          ...result
+        });
+      }
+
+      if (req.method === "GET" && pathname === "/api/tuning/recommendations") {
+        return jsonResponse(res, 200, {
+          data: repository.listTuningRecommendations()
+        });
+      }
+
+      const tuningRecommendationPathMatch = pathname.match(
+        /^\/api\/tuning\/recommendations\/([^/]+)$/
+      );
+      if (req.method === "GET" && tuningRecommendationPathMatch) {
+        const recommendation = repository.getTuningRecommendation(
+          decodeURIComponent(tuningRecommendationPathMatch[1])
+        );
+        if (!recommendation) {
+          return jsonResponse(res, 404, { error: "Tuning recommendation not found" });
+        }
+        return jsonResponse(res, 200, recommendation);
+      }
+
+      const tuningApprovePathMatch = pathname.match(
+        /^\/api\/tuning\/recommendations\/([^/]+)\/approve$/
+      );
+      if (req.method === "POST" && tuningApprovePathMatch) {
+        const body = await parseJsonBody(req);
+        const result = approveTuningRecommendation({
+          repository,
+          recommendationId: decodeURIComponent(tuningApprovePathMatch[1]),
+          actor: body.actor ?? "tuning-web",
+          force: body.force === true,
+          activateAt: body.activateAt ?? null
+        });
+        if (result.status === "ACTIVE" && result.activeServiceProfileId) {
+          activeServiceProfileId = result.activeServiceProfileId;
+        }
+        await flushRepository(repository);
+        return jsonResponse(res, 200, result);
+      }
+
+      if (req.method === "POST" && pathname === "/api/tuning/rollback") {
+        const body = await parseJsonBody(req);
+        const result = rollbackServiceProfile({
+          repository,
+          versionId: body.versionId ?? null,
+          profileId: body.profileId ?? null,
+          actor: body.actor ?? "tuning-web",
+          reason: body.reason ?? "OPERATOR_ROLLBACK"
+        });
+        activeServiceProfileId = result.activeServiceProfileId;
+        await flushRepository(repository);
+        return jsonResponse(res, 200, result);
+      }
+
+      if (req.method === "GET" && pathname === "/api/tuning/profile-versions") {
+        return jsonResponse(res, 200, {
+          activeServiceProfileId,
+          data: repository.listServiceProfileVersions()
+        });
+      }
+
+      if (req.method === "GET" && pathname === "/api/tuning/audit-logs") {
+        return jsonResponse(res, 200, {
+          data: repository.listAuditLogs()
+        });
+      }
+
+      if (req.method === "POST" && pathname === "/api/tuning/feedback/interpret") {
+        const body = await parseJsonBody(req);
+        const result = await interpretTuningFeedback({
+          text: body.text,
+          context: {
+            vehicles: repository.listVehicles().map((vehicle) => ({
+              id: vehicle.id,
+              name: vehicle.name ?? null
+            }))
+          }
+        });
+        return jsonResponse(res, 200, result);
+      }
+
       if (req.method === "GET" && pathname === "/api/fare-policies") {
         return jsonResponse(res, 200, {
           data: repository.listFarePolicies()
@@ -2173,6 +2386,7 @@ export async function createReqmoServerFromEnv({
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
+  loadLocalEnvFiles();
   const port = Number(process.env.PORT ?? 8787);
 
   createReqmoServerFromEnv()

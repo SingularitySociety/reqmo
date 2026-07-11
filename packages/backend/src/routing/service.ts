@@ -297,6 +297,15 @@ export function createRoutingContextFromEnv(env = process.env) {
 }
 
 export async function createTravelEstimator({ points = [], context = {}, speedKmh = null }) {
+  if (typeof context?.travelMinutes === "function") {
+    return {
+      source: "FROZEN",
+      travelMinutes(from, to) {
+        const minutes = Number(context.travelMinutes(from, to));
+        return Number.isFinite(minutes) && minutes >= 0 ? minutes : 0;
+      }
+    };
+  }
   const normalizedSpeedKmh = normalizeSpeedKmh(speedKmh);
   const { unique, index } = dedupePoints(points);
   if (!unique.length) {

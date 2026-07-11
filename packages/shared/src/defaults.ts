@@ -81,7 +81,7 @@ export function createDefaultServiceProfile(overrides = {}) {
         pickupDelay: 0.4,
         detour: 0.25,
         deadhead: 0.2,
-        rideTimeDetour: 0.1,
+        rideTimeDetour: 0.3,
         lateness: 0.15,
         dropoffPriority: 0,
         existingDelaySum: 0

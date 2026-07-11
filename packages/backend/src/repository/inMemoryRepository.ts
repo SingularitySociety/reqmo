@@ -1,5 +1,9 @@
 import { createDefaultServiceProfile } from "../../../shared/src/defaults.ts";
 
+function clone(value) {
+  return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+}
+
 export class InMemoryRepository {
   constructor(seed = {}) {
     this.users = new Map();
@@ -14,6 +18,13 @@ export class InMemoryRepository {
     this.serviceProfiles = new Map();
     this.farePolicies = new Map();
     this.telephonyConfigs = new Map();
+    this.tuningScenarioSuites = new Map();
+    this.tuningRuns = new Map();
+    this.tuningTrials = new Map();
+    this.tuningRecommendations = new Map();
+    this.serviceProfileVersions = new Map();
+    this.auditLogs = new Map();
+    this.systemConfigs = new Map();
     this._counter = Number(seed.counter ?? 0);
 
     const defaultProfile = createDefaultServiceProfile();
@@ -63,6 +74,25 @@ export class InMemoryRepository {
           return;
         }
         this.lineChatSessions.set(lineUserId, { ...session, lineUserId });
+      });
+    }
+    for (const [seedKey, map, idKey] of [
+      ["tuningScenarioSuites", this.tuningScenarioSuites, "id"],
+      ["tuningRuns", this.tuningRuns, "id"],
+      ["tuningTrials", this.tuningTrials, "id"],
+      ["tuningRecommendations", this.tuningRecommendations, "id"],
+      ["serviceProfileVersions", this.serviceProfileVersions, "id"],
+      ["auditLogs", this.auditLogs, "id"],
+      ["systemConfigs", this.systemConfigs, "id"]
+    ]) {
+      if (!Array.isArray(seed[seedKey])) {
+        continue;
+      }
+      seed[seedKey].forEach((entry) => {
+        const id = entry?.[idKey];
+        if (id) {
+          map.set(id, clone(entry));
+        }
       });
     }
   }
@@ -401,5 +431,142 @@ export class InMemoryRepository {
 
   listCallEvents() {
     return Array.from(this.callEvents.values());
+  }
+
+  setTuningScenarioSuite(suite) {
+    const id = suite.id ?? this.nextId("tuning_suite");
+    const now = new Date().toISOString();
+    const current = this.tuningScenarioSuites.get(id);
+    const next = {
+      id,
+      createdAt: current?.createdAt ?? now,
+      updatedAt: now,
+      status: "ACTIVE",
+      ...clone(suite)
+    };
+    this.tuningScenarioSuites.set(id, next);
+    return clone(next);
+  }
+
+  getTuningScenarioSuite(id) {
+    return clone(this.tuningScenarioSuites.get(id) ?? null);
+  }
+
+  listTuningScenarioSuites() {
+    return Array.from(this.tuningScenarioSuites.values()).map(clone);
+  }
+
+  setTuningRun(run) {
+    const id = run.id ?? this.nextId("tuning_run");
+    const now = new Date().toISOString();
+    const current = this.tuningRuns.get(id);
+    const next = {
+      id,
+      createdAt: current?.createdAt ?? now,
+      updatedAt: now,
+      ...clone(run)
+    };
+    this.tuningRuns.set(id, next);
+    return clone(next);
+  }
+
+  getTuningRun(id) {
+    return clone(this.tuningRuns.get(id) ?? null);
+  }
+
+  listTuningRuns() {
+    return Array.from(this.tuningRuns.values()).map(clone);
+  }
+
+  setTuningTrial(trial) {
+    const id = trial.id ?? this.nextId("tuning_trial");
+    const next = { id, ...clone(trial) };
+    this.tuningTrials.set(id, next);
+    return clone(next);
+  }
+
+  listTuningTrials(runId = null) {
+    return Array.from(this.tuningTrials.values())
+      .filter((trial) => !runId || trial.runId === runId)
+      .map(clone);
+  }
+
+  setTuningRecommendation(recommendation) {
+    const id = recommendation.id ?? this.nextId("tuning_rec");
+    const now = new Date().toISOString();
+    const current = this.tuningRecommendations.get(id);
+    const next = {
+      id,
+      createdAt: current?.createdAt ?? now,
+      updatedAt: now,
+      status: "PENDING",
+      ...clone(recommendation)
+    };
+    this.tuningRecommendations.set(id, next);
+    return clone(next);
+  }
+
+  getTuningRecommendation(id) {
+    return clone(this.tuningRecommendations.get(id) ?? null);
+  }
+
+  listTuningRecommendations() {
+    return Array.from(this.tuningRecommendations.values()).map(clone);
+  }
+
+  setServiceProfileVersion(version) {
+    const id = version.id ?? this.nextId("profile_version");
+    const now = new Date().toISOString();
+    const current = this.serviceProfileVersions.get(id);
+    const next = {
+      id,
+      createdAt: current?.createdAt ?? now,
+      updatedAt: now,
+      ...clone(version)
+    };
+    this.serviceProfileVersions.set(id, next);
+    return clone(next);
+  }
+
+  getServiceProfileVersion(id) {
+    return clone(this.serviceProfileVersions.get(id) ?? null);
+  }
+
+  listServiceProfileVersions() {
+    return Array.from(this.serviceProfileVersions.values()).map(clone);
+  }
+
+  saveAuditLog(log) {
+    const id = log.id ?? this.nextId("audit");
+    const next = {
+      id,
+      createdAt: new Date().toISOString(),
+      ...clone(log)
+    };
+    this.auditLogs.set(id, next);
+    return clone(next);
+  }
+
+  listAuditLogs() {
+    return Array.from(this.auditLogs.values()).map(clone);
+  }
+
+  setSystemConfig(config) {
+    const id = config.id;
+    if (!id) {
+      throw new Error("System config id is required");
+    }
+    const next = {
+      ...clone(this.systemConfigs.get(id) ?? {}),
+      ...clone(config),
+      id,
+      updatedAt: new Date().toISOString()
+    };
+    this.systemConfigs.set(id, next);
+    return clone(next);
+  }
+
+  getSystemConfig(id) {
+    return clone(this.systemConfigs.get(id) ?? null);
   }
 }

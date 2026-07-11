@@ -16,6 +16,7 @@ Open [http://localhost:5173](http://localhost:5173).
 
 - Main dispatch UI: [http://localhost:5173](http://localhost:5173)
 - Analytics UI: [http://localhost:5173/analytics/](http://localhost:5173/analytics/)
+- AI dispatch tuning UI: [http://localhost:5173/tuning/](http://localhost:5173/tuning/)
 - Bus simulation UI: [http://localhost:5173/simulation/](http://localhost:5173/simulation/)
 - LINE reservation mini app UI: [http://localhost:5173/line-reservation/](http://localhost:5173/line-reservation/)
 - LINE user admin UI: [http://localhost:5173/line-admin/](http://localhost:5173/line-admin/)

@@ -1116,7 +1116,67 @@ export function updateVehicleConfig({
   return updated;
 }
 
+export function validateServiceProfile(profile) {
+  const errors = [];
+  if (!profile || typeof profile !== "object") {
+    return { ok: false, errors: ["profile is required"] };
+  }
+  if (typeof profile.id !== "string" || !profile.id.trim()) {
+    errors.push("id is required");
+  }
+  for (const field of [
+    "locationPolicy",
+    "reservationPolicy",
+    "fleetPolicy",
+    "poolingPolicy",
+    "dispatchPolicy",
+    "telephonyPolicy"
+  ]) {
+    if (!profile[field] || typeof profile[field] !== "object") {
+      errors.push(`${field} is required`);
+    }
+  }
+  const finiteNonNegative = (path, value, minimum = 0) => {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric) || numeric < minimum) {
+      errors.push(`${path} must be a finite number greater than or equal to ${minimum}`);
+    }
+  };
+  if (profile.dispatchPolicy) {
+    finiteNonNegative("dispatchPolicy.maxWaitMinutes", profile.dispatchPolicy.maxWaitMinutes, 1);
+    finiteNonNegative(
+      "dispatchPolicy.candidateVehicleLimit",
+      profile.dispatchPolicy.candidateVehicleLimit,
+      1
+    );
+    const weights = profile.dispatchPolicy.weights;
+    if (!weights || typeof weights !== "object") {
+      errors.push("dispatchPolicy.weights is required");
+    } else {
+      for (const key of ["pickupDelay", "detour", "deadhead", "lateness"]) {
+        finiteNonNegative(`dispatchPolicy.weights.${key}`, weights[key]);
+      }
+      if (weights.rideTimeDetour !== undefined) {
+        finiteNonNegative("dispatchPolicy.weights.rideTimeDetour", weights.rideTimeDetour, 0.3);
+      }
+    }
+  }
+  if (profile.poolingPolicy) {
+    finiteNonNegative(
+      "poolingPolicy.maxOnboardPerVehicle",
+      profile.poolingPolicy.maxOnboardPerVehicle,
+      1
+    );
+    finiteNonNegative("poolingPolicy.maxDetourMinutes", profile.poolingPolicy.maxDetourMinutes);
+  }
+  return { ok: errors.length === 0, errors };
+}
+
 export function upsertServiceProfile({ repository, profile }) {
+  const validation = validateServiceProfile(profile);
+  if (!validation.ok) {
+    throw new Error(`Invalid service profile: ${validation.errors.join(", ")}`);
+  }
   return repository.setServiceProfile(profile);
 }
 

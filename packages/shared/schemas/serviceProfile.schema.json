@@ -142,7 +142,7 @@
             "pickupDelay": { "type": "number", "minimum": 0 },
             "detour": { "type": "number", "minimum": 0 },
             "deadhead": { "type": "number", "minimum": 0 },
-            "rideTimeDetour": { "type": "number", "minimum": 0 },
+            "rideTimeDetour": { "type": "number", "minimum": 0.3 },
             "lateness": { "type": "number", "minimum": 0 },
             "dropoffPriority": { "type": "number", "minimum": 0 },
             "existingDelaySum": { "type": "number", "minimum": 0 }

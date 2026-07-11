@@ -32,6 +32,14 @@ npm run test:core
 - `POST /api/phone-rides`
 - `POST /api/telephony/ingest`
 - `POST /api/service-profiles`
+- `GET|POST /api/tuning/scenario-suites`
+- `GET|POST /api/tuning/runs`
+- `GET /api/tuning/recommendations`
+- `POST /api/tuning/recommendations/:id/approve`
+- `POST /api/tuning/rollback`
+- `POST /api/tuning/feedback/interpret`
+
+AI配車チューニングのデータモデル、運用、安全策は `documents/ai-dispatch-tuning.md` を参照してください。
 
 ## Seed Environment Variables
 

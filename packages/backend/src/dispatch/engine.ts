@@ -2285,6 +2285,7 @@ export async function dispatchRideRequest({
 
     return {
       status: "REJECTED",
+      reason: evaluated.reason,
       rideRequest: rejected,
       resolvedLocations: evaluated.resolvedLocations,
       diagnostics: evaluated.diagnostics ?? null

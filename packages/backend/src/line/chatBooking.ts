@@ -1181,7 +1181,7 @@ export function resolveLineBookingConfig({ env = process.env } = {}) {
   const apiKey =
     normalizeTrimmedText(env.LINE_BOOKING_LLM_API_KEY) ||
     normalizeTrimmedText(env.GOOGLE_GENAI_API_KEY);
-  const model = normalizeTrimmedText(env.LINE_BOOKING_LLM_MODEL) || "gemini-2.5-flash";
+  const model = normalizeTrimmedText(env.LINE_BOOKING_LLM_MODEL) || "gemini-3.5-flash";
   const temperatureRaw = Number(env.LINE_BOOKING_LLM_TEMPERATURE);
   const temperature = Number.isFinite(temperatureRaw)
     ? Math.min(1, Math.max(0, temperatureRaw))

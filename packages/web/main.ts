@@ -4689,6 +4689,17 @@ createApp({
         <div class="rq-clock-date">{{ currentDateLabel }}</div>
       </div>
       <v-btn
+        color="secondary"
+        variant="tonal"
+        size="small"
+        density="comfortable"
+        prepend-icon="mdi-tune-variant"
+        class="rq-analytics-link"
+        href="/tuning/"
+      >
+        AI調整
+      </v-btn>
+      <v-btn
         color="primary"
         variant="tonal"
         size="small"
