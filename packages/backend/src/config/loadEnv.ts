@@ -16,10 +16,10 @@ export function loadLocalEnvFiles() {
     path.resolve(cwd, "shimanto/.env"),
     path.resolve(cwd, "../.env"),
     path.resolve(cwd, "../shimanto/.env")
-  ].filter((value): value is string => Boolean(value));
+  ];
 
   for (const filePath of [...new Set(candidates)]) {
-    if (existsSync(filePath)) {
+    if (typeof filePath === "string" && filePath && existsSync(filePath)) {
       process.loadEnvFile(filePath);
     }
   }
